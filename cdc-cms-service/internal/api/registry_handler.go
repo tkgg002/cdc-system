@@ -200,11 +200,12 @@ func (h *RegistryHandler) Update(c *fiber.Ctx) error {
 	}
 
 	var update struct {
-		SyncEngine   *string `json:"sync_engine"`
-		SyncInterval *string `json:"sync_interval"`
-		Priority     *string `json:"priority"`
-		IsActive     *bool   `json:"is_active"`
-		Notes        *string `json:"notes"`
+		SyncEngine     *string `json:"sync_engine"`
+		SyncInterval   *string `json:"sync_interval"`
+		Priority       *string `json:"priority"`
+		IsActive       *bool   `json:"is_active"`
+		Notes          *string `json:"notes"`
+		TimestampField *string `json:"timestamp_field"`
 	}
 	if err := c.BodyParser(&update); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -231,6 +232,20 @@ func (h *RegistryHandler) Update(c *fiber.Ctx) error {
 	if update.Notes != nil {
 		updates["notes"] = *update.Notes
 		existing.Notes = update.Notes
+	}
+	// Bug B fix (2026-04-20): allow CMS to update Mongo timestamp field so
+	// recon source agent can filter the right field (updated_at vs
+	// lastUpdatedAt vs createdAt). Whitelist regexp guards against DB-level
+	// mischief even though recon_source_agent.go re-validates on use.
+	if update.TimestampField != nil {
+		tsf := *update.TimestampField
+		if !isValidTimestampField(tsf) {
+			return c.Status(400).JSON(fiber.Map{
+				"error": "invalid timestamp_field: must match [A-Za-z_][A-Za-z0-9_]{0,63}",
+			})
+		}
+		updates["timestamp_field"] = tsf
+		existing.TimestampField = &tsf
 	}
 
 	if len(updates) == 0 {
@@ -1201,4 +1216,71 @@ func (h *RegistryHandler) DispatchStatus(c *fiber.Ctx) error {
 		"entries":      entries,
 		"count":        len(entries),
 	})
+}
+
+// DetectTimestampField dispatches a re-scan of the Mongo source collection
+// so the worker can (re)pick the best timestamp field for recon windowing.
+//
+// Operators hit this when they see "SRC_FIELD_MISSING" or "timestamp_field
+// confidence: low" on a row — the worker will sample the collection, score
+// candidates (updated_at / lastUpdatedAt / createdAt / ...), and write the
+// winner back into cdc_table_registry (timestamp_field,
+// timestamp_field_source=auto, timestamp_field_confidence).
+//
+// Flow: CMS publishes → worker consumes cdc.cmd.detect-timestamp-field →
+// worker updates registry row → next recon tick uses the new field.
+//
+// POST /api/registry/:id/detect-timestamp-field
+// Response: 202 Accepted with the target_table so FE can poll.
+func (h *RegistryHandler) DetectTimestampField(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
+	}
+	entry, err := h.repo.GetByID(c.Context(), uint(id))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "not found"})
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"registry_id":  entry.ID,
+		"target_table": entry.TargetTable,
+		"source_table": entry.SourceTable,
+		"source_db":    entry.SourceDB,
+		"source_type":  entry.SourceType,
+	})
+	if err := h.natsClient.Conn.Publish("cdc.cmd.detect-timestamp-field", payload); err != nil {
+		h.logAction("detect-timestamp-field", entry.TargetTable, "error", nil, err.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
+	}
+
+	h.logAction("detect-timestamp-field", entry.TargetTable, "accepted", map[string]interface{}{
+		"user":         middleware.GetUsername(c),
+		"source_table": entry.SourceTable,
+	}, "")
+
+	return c.Status(202).JSON(fiber.Map{
+		"message":      "timestamp field detection dispatched",
+		"target_table": entry.TargetTable,
+	})
+}
+
+// isValidTimestampField returns true when the name is a safe Mongo field
+// identifier: ^[A-Za-z_][A-Za-z0-9_]{0,63}$. Matches resolveTimestampField
+// in centralized-data-service/internal/service/recon_source_agent.go so CMS
+// and Worker agree on what is storable. Rejects dotted paths ($where, etc).
+func isValidTimestampField(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for i, r := range s {
+		if r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			continue
+		}
+		if i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }

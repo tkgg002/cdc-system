@@ -31,6 +31,11 @@ type TableRegistry struct {
 	LastBridgeAt             *time.Time `gorm:"column:last_bridge_at" json:"last_bridge_at"`
 	IsPartitioned            *bool      `gorm:"column:is_partitioned;default:false" json:"is_partitioned"`
 	PartitionKey             *string    `gorm:"column:partition_key;default:_synced_at" json:"partition_key"`
+	// TimestampField — Mongo field used for recon window filter ($gte/$lt).
+	// Migration 016 (worker). Default "updated_at"; common overrides:
+	// "lastUpdatedAt", "createdAt", "updatedAt", "ts". Edited via
+	// TableRegistry CMS form (Bug B fix 2026-04-20).
+	TimestampField      *string    `gorm:"column:timestamp_field;default:updated_at" json:"timestamp_field"`
 	CreatedAt           time.Time  `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt           time.Time  `gorm:"column:updated_at" json:"updated_at"`
 	Notes               *string    `gorm:"column:notes" json:"notes"`

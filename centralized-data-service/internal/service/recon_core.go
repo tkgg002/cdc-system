@@ -375,8 +375,18 @@ func (rc *ReconCore) buildWindows(from, to time.Time) []window {
 // pickScanRange resolves the upper watermark (min of both sides' max
 // source ts, clamped to now − freeze margin) and the lower watermark
 // (upper − lookback).
+// tsField returns the entry's Mongo timestamp field (Bug B). Helper
+// keeps the nil-pointer dereference in one place + lets us unit-test
+// the default fallback behaviour when registry value is not set.
+func tsField(entry model.TableRegistry) string {
+	if entry.TimestampField == nil {
+		return ""
+	}
+	return *entry.TimestampField
+}
+
 func (rc *ReconCore) pickScanRange(ctx context.Context, entry model.TableRegistry) (time.Time, time.Time, error) {
-	srcMax, err := rc.sourceAgent.MaxWindowTs(ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable)
+	srcMax, err := rc.sourceAgent.MaxWindowTs(ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable, tsField(entry))
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("source max ts: %w", err)
 	}
@@ -443,12 +453,21 @@ func (rc *ReconCore) RunTier1(ctx context.Context, entry model.TableRegistry) *m
 	var drifted []winDrift
 	var totalSrc, totalDst int64
 
+	// Migration 017: CountInWindowWithFallback probes candidate fields
+	// when the primary returns 0 — prevents silent drift reports when
+	// registry `timestamp_field` is stale relative to actual collection
+	// schema (discovered runtime, auto-correcting).
+	fallbacks := entry.GetCandidates()
 	for _, w := range windows {
-		srcCount, err := rc.sourceAgent.CountInWindow(ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable, w.Lo, w.Hi)
+		srcCount, fieldUsed, err := rc.sourceAgent.CountInWindowWithFallback(
+			ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable,
+			tsField(entry), w.Lo, w.Hi, fallbacks,
+		)
 		if err != nil {
 			status = "failed"
 			return rc.errorReport(entry, "count", 1, fmt.Errorf("src count window %v: %w", w.Lo, err))
 		}
+		_ = fieldUsed // future: persist per-window fieldUsed for audit
 		dstCount, err := rc.destAgent.CountInWindow(ctx, entry.TargetTable, w.Lo, w.Hi)
 		if err != nil {
 			status = "failed"
@@ -472,10 +491,11 @@ func (rc *ReconCore) RunTier1(ctx context.Context, entry model.TableRegistry) *m
 
 	driftJSON, _ := json.Marshal(drifted)
 	duration := int(time.Since(handle.started).Milliseconds())
+	srcTotal := totalSrc
 	report := &model.ReconciliationReport{
 		TargetTable: entry.TargetTable,
 		SourceDB:    entry.SourceDB,
-		SourceCount: totalSrc,
+		SourceCount: &srcTotal,
 		DestCount:   totalDst,
 		Diff:        totalSrc - totalDst,
 		StaleCount:  len(drifted),
@@ -538,7 +558,7 @@ func (rc *ReconCore) RunTier2(ctx context.Context, entry model.TableRegistry) *m
 	var driftedWindows int
 
 	for _, w := range windows {
-		srcRes, err := rc.sourceAgent.HashWindow(ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable, w.Lo, w.Hi)
+		srcRes, err := rc.sourceAgent.HashWindow(ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable, tsField(entry), w.Lo, w.Hi)
 		if err != nil {
 			status = "failed"
 			return rc.errorReport(entry, "hash_window", 2, fmt.Errorf("src hash window %v: %w", w.Lo, err))
@@ -556,7 +576,7 @@ func (rc *ReconCore) RunTier2(ctx context.Context, entry model.TableRegistry) *m
 		driftedWindows++
 
 		// Drill-down: collect IDs on both sides.
-		srcIDs, err := rc.sourceAgent.ListIDsInWindow(ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable, w.Lo, w.Hi)
+		srcIDs, err := rc.sourceAgent.ListIDsInWindow(ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable, tsField(entry), w.Lo, w.Hi)
 		if err != nil {
 			rc.logger.Warn("src list ids failed", zap.Error(err))
 			continue
@@ -663,7 +683,7 @@ func (rc *ReconCore) RunTier3(ctx context.Context, entry model.TableRegistry) *m
 		return rc.RunTier2(ctx, entry)
 	}
 
-	srcBuckets, err := rc.sourceAgent.BucketHash(ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable)
+	srcBuckets, err := rc.sourceAgent.BucketHash(ctx, entry.SourceURL, entry.SourceDB, entry.SourceTable, tsField(entry))
 	if err != nil {
 		status = "failed"
 		return rc.errorReport(entry, "bucket_hash", 3, err)
@@ -705,10 +725,11 @@ func (rc *ReconCore) RunTier3(ctx context.Context, entry model.TableRegistry) *m
 	}
 	staleJSON, _ := json.Marshal(payload)
 	duration := int(time.Since(handle.started).Milliseconds())
+	srcBucketTotal := srcBuckets.Total
 	report := &model.ReconciliationReport{
 		TargetTable: entry.TargetTable,
 		SourceDB:    entry.SourceDB,
-		SourceCount: srcBuckets.Total,
+		SourceCount: &srcBucketTotal,
 		DestCount:   dstBuckets.Total,
 		Diff:        srcBuckets.Total - dstBuckets.Total,
 		StaleCount:  len(driftedBuckets),
@@ -859,8 +880,18 @@ func (rc *ReconCore) CheckAll(ctx context.Context) []*model.ReconciliationReport
 // Helpers
 // ============================================================
 
+// errorReport writes a `status='error'` row with structured ErrorCode
+// classification (Migration 017 / ADR v4 §2.3). SourceCount is left NULL
+// so FE can distinguish "query failed" from "query OK, 0 rows". Legacy
+// error rows created before migration 017 will have NULL error_code
+// and continue to render as generic "Lỗi nguồn" — intentional, no
+// backfill needed.
 func (rc *ReconCore) errorReport(entry model.TableRegistry, checkType string, tier int, err error) *model.ReconciliationReport {
 	errMsg := err.Error()
+	code := classifyMongoError(err)
+	if code == "" {
+		code = ErrCodeUnknown
+	}
 	report := &model.ReconciliationReport{
 		TargetTable:  entry.TargetTable,
 		SourceDB:     entry.SourceDB,
@@ -868,6 +899,7 @@ func (rc *ReconCore) errorReport(entry model.TableRegistry, checkType string, ti
 		Status:       "error",
 		Tier:         tier,
 		ErrorMessage: &errMsg,
+		ErrorCode:    code,
 		CheckedAt:    time.Now(),
 	}
 	rc.db.Create(report)

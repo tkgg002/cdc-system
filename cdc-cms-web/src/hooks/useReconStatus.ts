@@ -19,21 +19,66 @@ import { cmsApi } from '../services/api';
 
 // ---------- Types ----------
 
-export interface ReconReport {
-  id: number;
+/**
+ * ReconRow — strongly-typed row shape for the Data Integrity table.
+ *
+ * Source of truth: ADR v4 §2.2 (drift formula), §2.3 (error codes),
+ * §2.7 (full counts), §2.8 (FE rendering).
+ *
+ * Backend populates these via `ReconciliationHandler.LatestReport` (joins
+ * `cdc_reconciliation_report` with `cdc_table_registry`). Many fields are
+ * optional so the FE renders safely while backend rollout is in flight.
+ */
+export type ReconStatus =
+  | 'ok'
+  | 'ok_empty'
+  | 'warning'
+  | 'drift'
+  | 'dest_missing'
+  | 'source_missing_or_stale'
+  | 'error';
+
+export interface ReconRow {
   target_table: string;
-  source_db: string;
-  source_count: number;
+  sync_engine?: string | null;
+  source_type?: string | null;
+  /** NULL when source query failed — distinguishes from a real 0 count. */
+  source_count: number | null;
   dest_count: number;
+  /** 0–100, unsigned (|src-dst| / max(src,dst) * 100). Null until backend
+   *  ships drift_pct in the LatestReport response. */
+  drift_pct: number | null;
+  status: ReconStatus;
+  error_code?: string | null;
+  /** Full unfiltered Mongo count, refreshed daily (ADR §2.7). */
+  full_source_count?: number | null;
+  /** Full unfiltered Postgres count, refreshed daily. */
+  full_dest_count?: number | null;
+  full_count_at?: string | null;
+  timestamp_field?: string | null;
+  timestamp_field_source?: 'auto' | 'admin_override' | null;
+  timestamp_field_confidence?: 'high' | 'medium' | 'low' | null;
+  checked_at: string;
+  /** Optional — backend may omit for rows where the registry row was deleted. */
+  registry_id?: number | null;
+}
+
+/**
+ * Legacy ReconReport — kept as a superset of ReconRow so existing mutation
+ * callers (heal, check-all, retry, backfill) don't break. Once all call
+ * sites move to ReconRow this alias can be slimmed down.
+ */
+export interface ReconReport extends ReconRow {
+  id: number;
+  source_db: string;
   diff: number;
   missing_count: number;
   stale_count: number;
   check_type: string;
-  status: string;
   tier: number;
   duration_ms: number;
-  checked_at: string;
   healed_count: number;
+  source_query_method?: string;
 }
 
 export interface FailedLog {

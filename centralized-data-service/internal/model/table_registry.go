@@ -34,6 +34,28 @@ type TableRegistry struct {
 	LastBridgeAt             *time.Time `gorm:"column:last_bridge_at" json:"last_bridge_at"`
 	IsPartitioned            *bool      `gorm:"column:is_partitioned;default:false" json:"is_partitioned"`
 	PartitionKey             *string    `gorm:"column:partition_key;default:_synced_at" json:"partition_key"`
+	// TimestampField — Mongo field used for recon window filter ($gte/$lt).
+	// Migration 016. Default "updated_at"; override to "lastUpdatedAt",
+	// "createdAt", "updatedAt", "ts" for collections that use a different
+	// naming convention. Empty string + "_id" means fallback to ObjectID
+	// timestamp extraction (recon_source_agent handles the auto-detect).
+	TimestampField      *string    `gorm:"column:timestamp_field;default:updated_at" json:"timestamp_field"`
+	// Migration 017 — systematic auto-detect. `TimestampFieldCandidates`
+	// is the ordered candidate chain the detector probes against a
+	// sample of the source collection. Empty/NULL = fall back to the
+	// JSON default (`updated_at,updatedAt,created_at,createdAt`).
+	// `TimestampFieldSource='admin_override'` pins the value — detector
+	// must NOT overwrite. `TimestampFieldConfidence` is one of
+	// {high, medium, low} computed from sample coverage.
+	TimestampFieldCandidates json.RawMessage `gorm:"column:timestamp_field_candidates;type:jsonb" json:"timestamp_field_candidates"`
+	TimestampFieldDetectedAt *time.Time      `gorm:"column:timestamp_field_detected_at" json:"timestamp_field_detected_at"`
+	TimestampFieldSource     *string         `gorm:"column:timestamp_field_source;default:auto" json:"timestamp_field_source"`
+	TimestampFieldConfidence *string         `gorm:"column:timestamp_field_confidence" json:"timestamp_field_confidence"`
+	// Migration 017 §2.7 — daily full-count aggregator output. Used by
+	// FE Total Source / Total Dest columns and drift-truth decisions.
+	FullSourceCount *int64     `gorm:"column:full_source_count" json:"full_source_count"`
+	FullDestCount   *int64     `gorm:"column:full_dest_count" json:"full_dest_count"`
+	FullCountAt     *time.Time `gorm:"column:full_count_at" json:"full_count_at"`
 	CreatedAt           time.Time  `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt           time.Time  `gorm:"column:updated_at" json:"updated_at"`
 	Notes               *string    `gorm:"column:notes" json:"notes"`
@@ -43,6 +65,21 @@ type TableRegistry struct {
 	// / recon-heal paths when masking raw_json. JSON array of field
 	// names. Empty = no masking for this table.
 	SensitiveFields json.RawMessage `gorm:"column:sensitive_fields;type:jsonb" json:"sensitive_fields"`
+}
+
+// GetCandidates returns the candidate chain for TimestampDetector. Falls
+// back to the standard default chain when the JSON column is unset or
+// empty — keeps detector code free of null-handling sprawl.
+func (r *TableRegistry) GetCandidates() []string {
+	def := []string{"updated_at", "updatedAt", "created_at", "createdAt"}
+	if len(r.TimestampFieldCandidates) == 0 {
+		return def
+	}
+	var out []string
+	if err := json.Unmarshal(r.TimestampFieldCandidates, &out); err != nil || len(out) == 0 {
+		return def
+	}
+	return out
 }
 
 func (TableRegistry) TableName() string { return "cdc_table_registry" }

@@ -46,6 +46,8 @@ type WorkerServer struct {
 	schemaValidator  *service.SchemaValidator
 	dlqWorker        *service.DLQWorker
 	partitionDropper *service.PartitionDropper
+	tsDetector       *service.TimestampDetector     // Migration 017 — auto-detect
+	fullCountAgg     *service.FullCountAggregator   // Migration 017 — full-count daily
 	mongoClient      *mongo.Client
 	app              *fiber.App
 }
@@ -245,6 +247,8 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 
 	// 10d. Reconciliation handlers (recon-check, recon-heal, retry-failed, debezium signals)
 	var reconHealerShared *service.ReconHealer
+	var tsDetectorShared *service.TimestampDetector
+	var fullCountAggShared *service.FullCountAggregator
 	if reconCore != nil {
 		var mongoClientForRecon *mongo.Client
 		if cfg.MongoDB.URL != "" {
@@ -284,13 +288,29 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 		)
 		reconHandler = reconHandler.WithBackfill(backfillSvc, natsClient.Conn)
 
+		// Migration 017 — auto-detect timestamp field. Exposed via
+		// cdc.cmd.detect-timestamp-field NATS subject so admins (and
+		// the systematic bootstrap loop in this server) can re-run
+		// detection on demand without restarting worker.
+		tsDetectorShared = service.NewTimestampDetector(mongoClientShared, logger)
+		reconHandler = reconHandler.WithTimestampDetector(tsDetectorShared)
+
 		natsClient.Conn.Subscribe("cdc.cmd.recon-check", reconHandler.HandleReconCheck)
 		natsClient.Conn.Subscribe("cdc.cmd.recon-heal", reconHandler.HandleReconHeal)
 		natsClient.Conn.Subscribe("cdc.cmd.retry-failed", reconHandler.HandleRetryFailed)
 		natsClient.Conn.Subscribe("cdc.cmd.debezium-signal", reconHandler.HandleDebeziumSignal)
 		natsClient.Conn.Subscribe("cdc.cmd.debezium-snapshot", reconHandler.HandleDebeziumSignal)
 		natsClient.Conn.Subscribe("cdc.cmd.recon-backfill-source-ts", reconHandler.HandleBackfillSourceTs)
-		logger.Info("reconciliation handlers registered (6 commands)")
+		natsClient.Conn.Subscribe("cdc.cmd.detect-timestamp-field", reconHandler.HandleDetectTimestampField)
+		logger.Info("reconciliation handlers registered (7 commands)")
+
+		// Migration 017 §2.7 — daily full-count aggregator. Captures
+		// Mongo EstimatedDocumentCount + PG COUNT(*) (or reltuples for
+		// tables >10M rows) into cdc_table_registry.full_*_count.
+		fullCountAggShared = service.NewFullCountAggregator(
+			db, dbReplica, mongoClientShared, registryRepo,
+			service.FullCountAggregatorConfig{}, logger,
+		)
 	} else {
 		logger.Warn("reconciliation handlers NOT registered (MongoDB not configured)")
 	}
@@ -360,6 +380,8 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 		schemaValidator:  schemaValidator,
 		dlqWorker:        dlqWorker,
 		partitionDropper: partitionDropper,
+		tsDetector:       tsDetectorShared,
+		fullCountAgg:     fullCountAggShared,
 		mongoClient:      mongoClientShared,
 		app:              app,
 	}, nil
@@ -404,11 +426,17 @@ func (s *WorkerServer) Start() error {
 		go s.partitionDropper.Start(context.Background())
 	}
 
+	// Migration 017 §2.7 — daily full-count aggregator. Fires at the
+	// configured RunAt (default 03:00 UTC). Safe to run alongside
+	// recon because Mongo EstimatedDocumentCount is a metadata read.
+	if s.fullCountAgg != nil {
+		go s.fullCountAgg.Start(context.Background())
+	}
+
 	// Schedule-driven periodic executor — reads cdc_worker_schedule from DB
 	// Checks every 1 minute which operations are due
 	go func() {
 		time.Sleep(30 * time.Second) // Wait for services to initialize
-		s.logger.Info("schedule-driven executor started (checks every 60s)")
 
 		// Seed default schedules if empty
 		var count int64
@@ -436,6 +464,22 @@ func (s *WorkerServer) Start() error {
 			}
 		}
 
+		// Startup visibility — count enabled schedules so operators know
+		// the ticker is live and what it will do (Bug A diagnostic log).
+		var enabledSchedules []model.WorkerSchedule
+		s.db.Where("is_enabled = ?", true).Find(&enabledSchedules)
+		scheduleSummary := make([]string, 0, len(enabledSchedules))
+		for _, sc := range enabledSchedules {
+			scheduleSummary = append(scheduleSummary,
+				fmt.Sprintf("%s=%dm", sc.Operation, sc.IntervalMinutes))
+		}
+		s.logger.Info("schedule poller started",
+			zap.Int("enabled_count", len(enabledSchedules)),
+			zap.Strings("registered", scheduleSummary),
+			zap.Duration("tick_interval", 60*time.Second),
+			zap.Bool("recon_core_available", s.reconCore != nil),
+		)
+
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -444,15 +488,20 @@ func (s *WorkerServer) Start() error {
 
 			now := time.Now()
 			for _, sched := range schedules {
-				// Check if due
+				// Check if due. NULL last_run_at = first run since enable,
+				// fire immediately (no wait for interval cycle). This is
+				// intentional: user-visible "enable + expect run within 1
+				// minute" SLA.
 				intervalDur := time.Duration(sched.IntervalMinutes) * time.Minute
 				if sched.LastRunAt != nil && now.Sub(*sched.LastRunAt) < intervalDur {
 					continue // Not due yet
 				}
 
+				firstRun := sched.LastRunAt == nil
 				s.logger.Info("executing scheduled operation",
 					zap.String("operation", sched.Operation),
 					zap.Int("interval_min", sched.IntervalMinutes),
+					zap.Bool("first_run", firstRun),
 				)
 
 				// target_table: nil = all, specific = only that table
@@ -574,28 +623,46 @@ func (s *WorkerServer) runPartitionCheck(now time.Time) {
 	}, "")
 }
 
-// runReconcileCycle runs reconciliation CheckAll via reconCore
+// runReconcileCycle runs reconciliation CheckAll via reconCore.
+//
+// Bug A fix (2026-04-20): when reconCore is nil the previous code wrote
+// a single "skipped" row to activity_log and returned silently — operators
+// monitoring worker.log never saw why their enabled schedule was effectively
+// dead. We now WARN-log on every skipped tick so the condition is visible
+// in the log stream, and keep writing the activity row for the UI.
 func (s *WorkerServer) runReconcileCycle(now time.Time) {
 	if s.reconCore == nil {
+		s.logger.Warn("reconcile schedule tick SKIPPED — reconCore is nil",
+			zap.String("reason", "MongoDB not configured or Mongo connection failed at startup"),
+			zap.String("fix_hint", "set MONGODB_URL env + restart worker; check worker startup logs for 'MongoDB connection failed'"),
+		)
 		s.activityLogger.Quick("reconcile", "*", "scheduler", "skipped", 0, nil, "reconCore not initialized (MongoDB not configured)")
 		return
 	}
+	s.logger.Info("reconcile cycle started", zap.Time("started_at", now))
 	ctx := context.Background()
 	reports := s.reconCore.CheckAll(ctx)
 
 	driftCount := 0
+	errorCount := 0
 	for _, r := range reports {
-		if r.Status == "drift" {
+		switch r.Status {
+		case "drift":
 			driftCount++
+		case "error":
+			errorCount++
 		}
 	}
 	s.activityLogger.Quick("reconcile", "*", "scheduler", "success", int64(len(reports)), map[string]interface{}{
 		"tables_checked": len(reports),
 		"drift_count":    driftCount,
+		"error_count":    errorCount,
 	}, "")
-	s.logger.Info("reconciliation cycle completed",
+	s.logger.Info("reconcile cycle completed",
 		zap.Int("tables_checked", len(reports)),
 		zap.Int("drift_detected", driftCount),
+		zap.Int("error_count", errorCount),
+		zap.Duration("elapsed", time.Since(now)),
 	)
 }
 

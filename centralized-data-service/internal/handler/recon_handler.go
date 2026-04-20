@@ -24,6 +24,7 @@ type ReconHandler struct {
 	mongoClient *mongo.Client
 	schema      *service.SchemaAdapter
 	backfill    *service.BackfillSourceTsService
+	tsDetector  *service.TimestampDetector // Migration 017 — manual re-detect
 	natsPub     NatsPublisher
 	logger      *zap.Logger
 }
@@ -53,6 +54,14 @@ func (h *ReconHandler) WithBackfill(b *service.BackfillSourceTsService, pub Nats
 // legacy ReconCore.Heal path.
 func (h *ReconHandler) WithHealer(healer *service.ReconHealer) *ReconHandler {
 	h.healer = healer
+	return h
+}
+
+// WithTimestampDetector wires the Migration 017 auto-detect service so
+// HandleDetectTimestampField can sample Mongo and update registry rows.
+// Separated from the constructor so legacy call sites keep compiling.
+func (h *ReconHandler) WithTimestampDetector(td *service.TimestampDetector) *ReconHandler {
+	h.tsDetector = td
 	return h
 }
 
@@ -358,6 +367,124 @@ func (h *ReconHandler) HandleBackfillSourceTs(msg *nats.Msg) {
 			"results": results,
 		})
 		msg.Respond(result)
+	}
+}
+
+// HandleDetectTimestampField — subscribe "cdc.cmd.detect-timestamp-field".
+//
+// Payload:
+//
+//	{ "registry_id": <uint>, "target_table": "<optional>" }
+//
+// Behaviour:
+//   - Loads the registry row (by registry_id OR target_table fallback).
+//   - Runs TimestampDetector.DetectForCollection with the candidate chain
+//     from the registry (or the default chain if empty).
+//   - If registry.timestamp_field_source == 'admin_override', the detector
+//     still runs (so operators can see the result) but the registry row
+//     is NOT mutated — UI publishes for review only.
+//   - Otherwise: updates timestamp_field / _detected_at / _confidence.
+//   - Publishes result to msg.Reply when set so the caller gets the
+//     detection payload synchronously.
+//
+// Failure handling: any detection error is logged + sent to the reply
+// subject as `{error: "..."}` so callers can distinguish infra failure
+// from legitimate low-confidence detection.
+func (h *ReconHandler) HandleDetectTimestampField(msg *nats.Msg) {
+	var payload struct {
+		RegistryID  uint   `json:"registry_id"`
+		TargetTable string `json:"target_table"`
+	}
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		h.logger.Warn("detect-timestamp-field: bad payload", zap.Error(err))
+		return
+	}
+
+	if h.tsDetector == nil {
+		h.logger.Warn("detect-timestamp-field: detector not wired")
+		if msg.Reply != "" {
+			resp, _ := json.Marshal(map[string]interface{}{"error": "detector not configured"})
+			msg.Respond(resp)
+		}
+		return
+	}
+
+	ctx := context.Background()
+	var entry model.TableRegistry
+	q := h.db.WithContext(ctx)
+	if payload.RegistryID > 0 {
+		q = q.Where("id = ?", payload.RegistryID)
+	} else if payload.TargetTable != "" {
+		q = q.Where("target_table = ?", payload.TargetTable)
+	} else {
+		h.logger.Warn("detect-timestamp-field: missing registry_id and target_table")
+		if msg.Reply != "" {
+			resp, _ := json.Marshal(map[string]interface{}{"error": "registry_id or target_table required"})
+			msg.Respond(resp)
+		}
+		return
+	}
+	if err := q.First(&entry).Error; err != nil {
+		h.logger.Warn("detect-timestamp-field: registry lookup failed",
+			zap.Uint("registry_id", payload.RegistryID),
+			zap.String("target_table", payload.TargetTable),
+			zap.Error(err))
+		if msg.Reply != "" {
+			resp, _ := json.Marshal(map[string]interface{}{"error": "registry not found"})
+			msg.Respond(resp)
+		}
+		return
+	}
+
+	candidates := entry.GetCandidates()
+	result, err := h.tsDetector.DetectForCollection(ctx, entry.SourceDB, entry.SourceTable, candidates, 100)
+	if err != nil {
+		h.logger.Warn("detect-timestamp-field: detection failed",
+			zap.String("target_table", entry.TargetTable),
+			zap.Error(err))
+		h.logActivity("detect-timestamp-field", entry.TargetTable, "error", 0, err)
+		if msg.Reply != "" {
+			resp, _ := json.Marshal(map[string]interface{}{"error": err.Error()})
+			msg.Respond(resp)
+		}
+		return
+	}
+
+	source := "auto"
+	if entry.TimestampFieldSource != nil {
+		source = *entry.TimestampFieldSource
+	}
+	if source == "admin_override" {
+		h.logger.Info("detect-timestamp-field: admin_override — registry not mutated",
+			zap.String("target_table", entry.TargetTable),
+			zap.String("detected_field", result.Field),
+			zap.String("confidence", result.Confidence),
+		)
+	} else {
+		now := time.Now().UTC()
+		updates := map[string]interface{}{
+			"timestamp_field":             result.Field,
+			"timestamp_field_detected_at": now,
+			"timestamp_field_confidence":  result.Confidence,
+			"timestamp_field_source":      "auto",
+		}
+		if err := h.db.WithContext(ctx).Model(&model.TableRegistry{}).
+			Where("id = ?", entry.ID).Updates(updates).Error; err != nil {
+			h.logger.Warn("detect-timestamp-field: registry update failed",
+				zap.Uint("id", entry.ID), zap.Error(err))
+		}
+	}
+
+	h.logActivity("detect-timestamp-field", entry.TargetTable, "success", 0, nil)
+
+	if msg.Reply != "" {
+		resp, _ := json.Marshal(map[string]interface{}{
+			"registry_id":  entry.ID,
+			"target_table": entry.TargetTable,
+			"result":       result,
+			"source":       source,
+		})
+		msg.Respond(resp)
 	}
 }
 

@@ -13,6 +13,64 @@ import (
 	"gorm.io/gorm"
 )
 
+// ComputeDriftStatus derives (drift_pct, status, error_code) from the
+// stored (source_count, dest_count, error_code) triple. Done on the read
+// path so stored reports stay authoritative; the FE sees a single
+// self-consistent view without re-running math.
+//
+// Contract (matches workspace §2.2):
+//   - error path: any stored error_code or nil source_count => drift_pct=0,
+//     status="error", code preserved (or SRC_QUERY_FAILED when src is nil).
+//   - 0 vs 0: ok_empty (benign — no data either side).
+//   - equal counts: ok.
+//   - src>0 && dst==0: dest_missing (catastrophic — sync pipeline stalled).
+//   - src==0 && dst>0: source_missing_or_stale (src probably down).
+//   - otherwise drift_pct = |src-dst| / max(src,dst) * 100,
+//     thresholds: drift >= 5%, warning >= 0.5%, else ok.
+//
+// Percent is unsigned so "src grew, dst fell" and "dst grew, src fell"
+// both surface as the same magnitude.
+func ComputeDriftStatus(sourceCount *int64, destCount int64, errorCode string) (float64, string, string) {
+	if errorCode != "" {
+		return 0, "error", errorCode
+	}
+	if sourceCount == nil {
+		return 0, "error", "SRC_QUERY_FAILED"
+	}
+	src := *sourceCount
+	if src == 0 && destCount == 0 {
+		return 0, "ok_empty", ""
+	}
+	if src == destCount {
+		return 0, "ok", ""
+	}
+	absDiff := src - destCount
+	if absDiff < 0 {
+		absDiff = -absDiff
+	}
+	maxVal := src
+	if destCount > maxVal {
+		maxVal = destCount
+	}
+	if maxVal < 1 {
+		maxVal = 1
+	}
+	driftPct := float64(absDiff) / float64(maxVal) * 100
+
+	status := "ok"
+	switch {
+	case src > 0 && destCount == 0:
+		status = "dest_missing"
+	case src == 0 && destCount > 0:
+		status = "source_missing_or_stale"
+	case driftPct >= 5:
+		status = "drift"
+	case driftPct >= 0.5:
+		status = "warning"
+	}
+	return driftPct, status, ""
+}
+
 type ReconciliationHandler struct {
 	db   *gorm.DB
 	nats *natsconn.NatsClient
@@ -22,16 +80,138 @@ func NewReconciliationHandler(db *gorm.DB, nats *natsconn.NatsClient) *Reconcili
 	return &ReconciliationHandler{db: db, nats: nats}
 }
 
-// LatestReport returns the latest reconciliation report per table
+// LatestReport returns the latest reconciliation report per table, enriched
+// with registry metadata (sync_engine, source_type, timestamp_field) so the
+// FE can render a Sync Engine column + tooltip without a second round-trip.
+//
+// Bug C/D fix (2026-04-20): earlier version did `SELECT *` on just the
+// report table — FE had no way to distinguish debezium-driven vs
+// airbyte-driven vs both tables. We LEFT JOIN on cdc_table_registry so
+// rows for tables that have been removed from the registry still appear
+// (with NULL sync_engine) rather than disappearing.
 func (h *ReconciliationHandler) LatestReport(c *fiber.Ctx) error {
-	var reports []model.ReconciliationReport
-	h.db.Raw(`
-		SELECT DISTINCT ON (target_table) *
-		FROM cdc_reconciliation_report
-		ORDER BY target_table, checked_at DESC
-	`).Scan(&reports)
+	// Row shape includes fields produced by migrations that may not exist on
+	// older DBs (timestamp_field_source, full_source_count, error_code, …).
+	// We use to_regclass + has_column tricks via COALESCE on column-not-found
+	// level — here we just LEFT JOIN and allow NULLs to flow through. GORM's
+	// Scan tolerates missing output columns because we bind via `gorm:"column:"`.
+	//
+	// For forward-compat with worker migration 017 we pull:
+	//   - error_code               (per-check code — populated by worker, NULL on success)
+	//   - timestamp_field_source   (auto | manual | override — from registry)
+	//   - timestamp_field_confidence (high | medium | low)
+	//   - full_source_count / full_dest_count / full_count_at — daily aggregate
+	//
+	// The to_jsonb(r.*) ->> 'error_code' trick is unnecessary now that we own
+	// the SELECT list — we project the column names directly and COALESCE to
+	// empty string / zero when absent via LEFT JOIN (worker writes into
+	// cdc_reconciliation_report). If worker hasn't shipped migration 017 the
+	// SELECT will error — handled by fallback query below.
+	type reportRow struct {
+		model.ReconciliationReport
+		SyncEngine               *string    `gorm:"column:sync_engine" json:"sync_engine"`
+		SourceType               *string    `gorm:"column:source_type" json:"source_type"`
+		TimestampField           *string    `gorm:"column:timestamp_field" json:"timestamp_field"`
+		TimestampFieldSource     *string    `gorm:"column:timestamp_field_source" json:"timestamp_field_source,omitempty"`
+		TimestampFieldConfidence *string    `gorm:"column:timestamp_field_confidence" json:"timestamp_field_confidence,omitempty"`
+		FullSourceCount          *int64     `gorm:"column:full_source_count" json:"full_source_count,omitempty"`
+		FullDestCount            *int64     `gorm:"column:full_dest_count" json:"full_dest_count,omitempty"`
+		FullCountAt              *time.Time `gorm:"column:full_count_at" json:"full_count_at,omitempty"`
+		// NULLable source_count — when worker hits SRC_TIMEOUT/SRC_CONNECTION
+		// we don't want to conflate "no rows" with "query failed". The base
+		// model's SourceCount is int64 (non-null by default=0); we overlay
+		// NullableSourceCount by reading the same column into a pointer.
+		NullableSourceCount *int64  `gorm:"column:nullable_source_count" json:"nullable_source_count,omitempty"`
+		ErrorCode           *string `gorm:"column:error_code" json:"error_code,omitempty"`
+		ErrorMessageVI      string  `gorm:"-" json:"error_message_vi,omitempty"`
+		DriftPct            float64 `gorm:"-" json:"drift_pct"`
+		ComputedStatus      string  `gorm:"-" json:"computed_status"`
+		SourceQueryMethod   string  `gorm:"-" json:"source_query_method"`
+	}
 
-	return c.JSON(fiber.Map{"data": reports, "total": len(reports)})
+	var rows []reportRow
+	// Primary query — expects worker migration 017 (new fields). LEFT JOIN
+	// keeps tables present even if registry row is stale.
+	primary := `
+		SELECT r.*,
+		       r.source_count AS nullable_source_count,
+		       reg.sync_engine, reg.source_type, reg.timestamp_field,
+		       reg.timestamp_field_source, reg.timestamp_field_confidence,
+		       reg.full_source_count, reg.full_dest_count, reg.full_count_at,
+		       r.error_code
+		  FROM (
+			SELECT DISTINCT ON (target_table) *
+			  FROM cdc_reconciliation_report
+			 ORDER BY target_table, checked_at DESC
+		  ) r
+		  LEFT JOIN cdc_table_registry reg ON reg.target_table = r.target_table
+		 ORDER BY r.target_table
+	`
+	if err := h.db.Raw(primary).Scan(&rows).Error; err != nil {
+		// Migration 017 not applied yet — fall back to legacy SELECT. Keeps
+		// the endpoint up on older envs. New fields come out nil/0 which the
+		// FE already knows to render as "—".
+		rows = rows[:0]
+		legacy := `
+			SELECT r.*, r.source_count AS nullable_source_count,
+			       reg.sync_engine, reg.source_type, reg.timestamp_field
+			  FROM (
+				SELECT DISTINCT ON (target_table) *
+				  FROM cdc_reconciliation_report
+				 ORDER BY target_table, checked_at DESC
+			  ) r
+			  LEFT JOIN cdc_table_registry reg ON reg.target_table = r.target_table
+			 ORDER BY r.target_table
+		`
+		h.db.Raw(legacy).Scan(&rows)
+	}
+
+	// Enrich each row: drift computation (FIX 2) + VI error message (FIX 5)
+	// + source query method tooltip (legacy).
+	for i := range rows {
+		errCode := ""
+		if rows[i].ErrorCode != nil {
+			errCode = *rows[i].ErrorCode
+		}
+		driftPct, computed, finalCode := ComputeDriftStatus(rows[i].NullableSourceCount, rows[i].DestCount, errCode)
+		rows[i].DriftPct = driftPct
+		rows[i].ComputedStatus = computed
+		if finalCode != "" {
+			rows[i].ErrorMessageVI = ErrorMessagesVI[finalCode]
+			// Ensure ErrorCode surfaces even when derived (e.g. nil src →
+			// SRC_QUERY_FAILED). Keep existing pointer if worker set one.
+			if rows[i].ErrorCode == nil {
+				fc := finalCode
+				rows[i].ErrorCode = &fc
+			}
+		}
+		rows[i].SourceQueryMethod = deriveSourceQueryMethod(rows[i].TimestampField, rows[i].CheckType)
+	}
+
+	return c.JSON(fiber.Map{"data": rows, "total": len(rows)})
+}
+
+// deriveSourceQueryMethod explains — in one short label — how the source
+// count in the report was computed. Helps operators answer the question
+// "why is source=0 when Mongo clearly has rows?" without reading Go code.
+//
+// Values:
+//   - window_updated_at       — default path, Mongo filter on `updated_at`
+//   - window_custom_field     — registry override (e.g. `lastUpdatedAt`)
+//   - window_id_ts_fallback   — registry field missing AND collection
+//     lacks the default, fallback to ObjectID time
+//   - full_count              — legacy Tier-3-era `CountDocuments` path
+func deriveSourceQueryMethod(tsField *string, checkType string) string {
+	if checkType == "bucket_hash" {
+		return "full_count"
+	}
+	if tsField == nil || *tsField == "" || *tsField == "updated_at" {
+		return "window_updated_at"
+	}
+	if *tsField == "_id" {
+		return "window_id_ts_fallback"
+	}
+	return "window_custom_field"
 }
 
 // TableHistory returns reconciliation history for a specific table

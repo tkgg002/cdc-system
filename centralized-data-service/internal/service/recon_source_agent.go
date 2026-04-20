@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,9 +38,74 @@ type ChunkHash struct {
 
 // WindowResult is the fixed 16-byte streaming reconciliation unit.
 // 8 bytes count + 8 bytes XOR hash. No ID set retained.
+//
+// Migration 017 / ADR v4 §2.4: Err / ErrorCode are optional structured
+// error fields so callers can distinguish "query failed" from "0 results"
+// without an out-of-band error signal. Legacy callers that only read
+// Count/XorHash continue to work (zero-value Err = success).
 type WindowResult struct {
-	Count   int64  `json:"count"`
-	XorHash uint64 `json:"xor_hash"`
+	Count     int64  `json:"count"`
+	XorHash   uint64 `json:"xor_hash"`
+	Err       error  `json:"-"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// Recon error codes — ADR v4 §2.3. Kept as const strings so callers can
+// compare/switch without importing a separate enum package.
+const (
+	ErrCodeSrcTimeout      = "SRC_TIMEOUT"
+	ErrCodeSrcConnection   = "SRC_CONNECTION"
+	ErrCodeSrcFieldMissing = "SRC_FIELD_MISSING"
+	ErrCodeSrcEmpty        = "SRC_EMPTY"
+	ErrCodeDstTimeout      = "DST_TIMEOUT"
+	ErrCodeDstMissingCol   = "DST_MISSING_COLUMN"
+	ErrCodeCircuitOpen     = "CIRCUIT_OPEN"
+	ErrCodeAuthError       = "AUTH_ERROR"
+	ErrCodeUnknown         = "UNKNOWN"
+)
+
+// classifyMongoError maps a raw Mongo/driver error to a structured recon
+// error code. Order matters: check most-specific patterns first (timeout,
+// auth) before falling into the generic transient bucket.
+//
+// Returns "" when err is nil so callers can unconditionally stash the
+// result on WindowResult.ErrorCode.
+func classifyMongoError(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	lower := strings.ToLower(s)
+	switch {
+	case strings.Contains(lower, "circuit breaker is open") ||
+		strings.Contains(lower, "breaker") && strings.Contains(lower, "open"):
+		return ErrCodeCircuitOpen
+	case strings.Contains(lower, "timeout") ||
+		strings.Contains(lower, "deadline exceeded") ||
+		strings.Contains(lower, "i/o timeout"):
+		return ErrCodeSrcTimeout
+	case strings.Contains(lower, "unauthorized") ||
+		strings.Contains(lower, "authentication failed") ||
+		strings.Contains(lower, "auth fail"):
+		return ErrCodeAuthError
+	case strings.Contains(lower, "no field") ||
+		strings.Contains(lower, "field does not exist") ||
+		strings.Contains(lower, "missing field"):
+		return ErrCodeSrcFieldMissing
+	case isMongoTransient(err):
+		return ErrCodeSrcConnection
+	default:
+		var cmdErr mongo.CommandError
+		if errors.As(err, &cmdErr) {
+			switch cmdErr.Code {
+			case 13, 18:
+				return ErrCodeAuthError
+			case 50:
+				return ErrCodeSrcTimeout
+			}
+		}
+		return ErrCodeUnknown
+	}
 }
 
 // BucketHashResult is a fixed-size 256-bucket XOR fingerprint for
@@ -203,6 +270,36 @@ func (sa *ReconSourceAgent) secondaryColl(client *mongo.Client, database, collec
 	)
 }
 
+// resolveTimestampField validates a Mongo timestamp field name and
+// returns a safe default when the registry value is empty.
+//
+// Why a whitelist: the field name is interpolated into a BSON filter
+// via bson.M which IS safe against injection (no string interpolation),
+// BUT an operator accidentally passing `$where` or a dotted path could
+// rewrite the query semantics. We accept only [A-Za-z_][A-Za-z0-9_]*
+// up to 64 chars — the superset of every real Mongo field name we've
+// seen in audit (`updated_at`, `updatedAt`, `createdAt`, `lastUpdatedAt`,
+// `ts`, `_id`). Anything else falls back to the default.
+func resolveTimestampField(tsField string) string {
+	const def = "updated_at"
+	if tsField == "" {
+		return def
+	}
+	if len(tsField) > 64 {
+		return def
+	}
+	for i, r := range tsField {
+		if r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			continue
+		}
+		if i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return def
+	}
+	return tsField
+}
+
 // CountDocuments — Tier 1 legacy helper. Verifies the collection exists
 // before counting (Mongo silently returns 0 on missing coll which would
 // mask drift). Uses secondary read.
@@ -234,9 +331,14 @@ func (sa *ReconSourceAgent) CountDocuments(ctx context.Context, sourceURL, datab
 	return result.(int64), nil
 }
 
-// CountInWindow counts documents with updated_at ∈ [tLo, tHi). Used by
-// Tier 1 per-window comparison.
-func (sa *ReconSourceAgent) CountInWindow(ctx context.Context, sourceURL, database, collection string, tLo, tHi time.Time) (int64, error) {
+// CountInWindow counts documents with <timestampField> ∈ [tLo, tHi). Used by
+// Tier 1 per-window comparison. `timestampField` may be empty — in that case
+// the default `updated_at` is used. Added 2026-04-20 (Bug B) to support
+// collections that use `lastUpdatedAt` / `createdAt` / other non-snake-case
+// conventions. The field name is whitelist-validated in resolveTimestampField
+// so a bad value falls back to default rather than producing an injection
+// vector.
+func (sa *ReconSourceAgent) CountInWindow(ctx context.Context, sourceURL, database, collection, timestampField string, tLo, tHi time.Time) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, sa.cfg.QueryTimeout)
 	defer cancel()
 
@@ -246,14 +348,80 @@ func (sa *ReconSourceAgent) CountInWindow(ctx context.Context, sourceURL, databa
 	}
 	coll := sa.secondaryColl(client, database, collection)
 
-	filter := bson.M{"updated_at": bson.M{"$gte": tLo, "$lt": tHi}}
-	result, err := sa.getBreaker(sourceURL).Execute(func() (interface{}, error) {
-		return coll.CountDocuments(ctx, filter)
+	tsField := resolveTimestampField(timestampField)
+	filter := bson.M{tsField: bson.M{"$gte": tLo, "$lt": tHi}}
+	var out int64
+	err = sa.queryWithRetry(ctx, "CountInWindow", func() error {
+		result, innerErr := sa.getBreaker(sourceURL).Execute(func() (interface{}, error) {
+			return coll.CountDocuments(ctx, filter)
+		})
+		if innerErr != nil {
+			return innerErr
+		}
+		out = result.(int64)
+		return nil
 	})
 	if err != nil {
 		return 0, err
 	}
-	return result.(int64), nil
+	return out, nil
+}
+
+// CountInWindowWithFallback first queries with `primaryField`. When the
+// primary returns 0 AND no error, it probes each fallback candidate. The
+// first non-zero result wins. Falls back to the primary result (0) when
+// no candidate produces data — callers then decide whether to treat that
+// as drift or as a genuinely-empty window.
+//
+// Security: `fallbackFields` entries are validated through
+// resolveTimestampField (same whitelist as the primary) so a malicious
+// registry JSONB cannot reshape the query.
+//
+// Cross-cutting: used by recon_core Tier 1 via CountInWindow — the
+// fallback path is engaged only at runtime when primary=0, keeping the
+// happy-path cost identical to the old single-field query.
+func (sa *ReconSourceAgent) CountInWindowWithFallback(
+	ctx context.Context,
+	sourceURL, database, collection, primaryField string,
+	tLo, tHi time.Time,
+	fallbackFields []string,
+) (count int64, fieldUsed string, err error) {
+	primary := resolveTimestampField(primaryField)
+	count, err = sa.CountInWindow(ctx, sourceURL, database, collection, primary, tLo, tHi)
+	if err != nil || count > 0 {
+		return count, primary, err
+	}
+	// Primary returned 0 with no error. Try fallbacks in order, stop on
+	// the first candidate that yields data. We do NOT short-circuit on
+	// the first fallback error — transient Mongo blips on one candidate
+	// should not block the detector from checking the rest.
+	for _, cand := range fallbackFields {
+		if cand == "" {
+			continue
+		}
+		if !candidateNameRE.MatchString(cand) {
+			continue
+		}
+		if cand == primary {
+			continue
+		}
+		c, e := sa.CountInWindow(ctx, sourceURL, database, collection, cand, tLo, tHi)
+		if e != nil {
+			continue
+		}
+		if c > 0 {
+			if sa.logger != nil {
+				sa.logger.Warn("primary timestamp field returned 0, fallback used",
+					zap.String("collection", collection),
+					zap.String("primary", primary),
+					zap.String("fallback", cand),
+					zap.Int64("count", c),
+				)
+			}
+			return c, cand, nil
+		}
+	}
+	return count, primary, nil
 }
 
 // HashWindow streams docs whose updated_at ∈ [tLo, tHi) and builds a
@@ -270,7 +438,7 @@ func (sa *ReconSourceAgent) CountInWindow(ctx context.Context, sourceURL, databa
 // Memory: O(1) — count + xor accumulator + single decoded doc.
 // Network: projection `{_id, updated_at}` ≈ 30 bytes/doc → 30 MB / 1M docs.
 // Result: 16 bytes. Safe to ship over NATS or persist.
-func (sa *ReconSourceAgent) HashWindow(ctx context.Context, sourceURL, database, collection string, tLo, tHi time.Time) (*WindowResult, error) {
+func (sa *ReconSourceAgent) HashWindow(ctx context.Context, sourceURL, database, collection, timestampField string, tLo, tHi time.Time) (*WindowResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, sa.cfg.QueryTimeout)
 	defer cancel()
 
@@ -280,50 +448,61 @@ func (sa *ReconSourceAgent) HashWindow(ctx context.Context, sourceURL, database,
 	}
 	coll := sa.secondaryColl(client, database, collection)
 
-	filter := bson.M{"updated_at": bson.M{"$gte": tLo, "$lt": tHi}}
-	opts := sa.selectOpts(bson.M{"_id": 1, "updated_at": 1})
+	tsField := resolveTimestampField(timestampField)
+	filter := bson.M{tsField: bson.M{"$gte": tLo, "$lt": tHi}}
+	// Use BSON aliasing so the decoded doc always exposes UpdatedAt
+	// regardless of whether the underlying field is `updated_at`,
+	// `updatedAt`, `createdAt`, etc. We add a projection of the
+	// actual ts field so Mongo only returns what we need.
+	opts := sa.selectOpts(bson.M{"_id": 1, tsField: 1})
 
-	result, err := sa.getBreaker(sourceURL).Execute(func() (interface{}, error) {
-		cursor, err := coll.Find(ctx, filter, opts)
-		if err != nil {
-			return nil, err
-		}
-		defer cursor.Close(ctx)
+	var out *WindowResult
+	err = sa.queryWithRetry(ctx, "HashWindow", func() error {
+		result, innerErr := sa.getBreaker(sourceURL).Execute(func() (interface{}, error) {
+			cursor, err := coll.Find(ctx, filter, opts)
+			if err != nil {
+				return nil, err
+			}
+			defer cursor.Close(ctx)
 
-		var (
-			xorAcc uint64
-			count  int64
-		)
-		for cursor.Next(ctx) {
-			// Rate-limit per document read. Unbypassable: ctx cancellation
-			// is the only way out, and even that surfaces an error rather
-			// than returning partial results (critical for hash correctness).
-			if err := sa.limiter.Wait(ctx); err != nil {
-				return nil, fmt.Errorf("rate limiter: %w", err)
+			var (
+				xorAcc uint64
+				count  int64
+			)
+			for cursor.Next(ctx) {
+				// Rate-limit per document read. Unbypassable: ctx cancellation
+				// is the only way out, and even that surfaces an error rather
+				// than returning partial results (critical for hash correctness).
+				if err := sa.limiter.Wait(ctx); err != nil {
+					return nil, fmt.Errorf("rate limiter: %w", err)
+				}
+				var raw bson.M
+				if err := cursor.Decode(&raw); err != nil {
+					return nil, fmt.Errorf("decode: %w", err)
+				}
+				idStr := extractMongoID(raw["_id"])
+				ts := extractTimestampMs(raw, tsField, idStr)
+				// Identical byte layout to ReconDestAgent.HashWindow. Ms
+				// epoch avoids the RFC3339 precision trap that caused the
+				// old false-positive drift (fix 2026-04-17).
+				xorAcc ^= hashIDPlusTsMs(idStr, ts)
+				count++
 			}
-			var doc struct {
-				ID        interface{} `bson:"_id"`
-				UpdatedAt time.Time   `bson:"updated_at"`
+			if err := cursor.Err(); err != nil {
+				return nil, err
 			}
-			if err := cursor.Decode(&doc); err != nil {
-				return nil, fmt.Errorf("decode: %w", err)
-			}
-			idStr := extractMongoID(doc.ID)
-			// Identical byte layout to ReconDestAgent.HashWindow. Ms
-			// epoch avoids the RFC3339 precision trap that caused the
-			// old false-positive drift (fix 2026-04-17).
-			xorAcc ^= hashIDPlusTsMs(idStr, doc.UpdatedAt.UnixMilli())
-			count++
+			return &WindowResult{Count: count, XorHash: xorAcc}, nil
+		})
+		if innerErr != nil {
+			return innerErr
 		}
-		if err := cursor.Err(); err != nil {
-			return nil, err
-		}
-		return &WindowResult{Count: count, XorHash: xorAcc}, nil
+		out = result.(*WindowResult)
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return result.(*WindowResult), nil
+	return out, nil
 }
 
 // BucketHash streams the entire collection once and distributes docs
@@ -334,7 +513,7 @@ func (sa *ReconSourceAgent) HashWindow(ctx context.Context, sourceURL, database,
 //
 // Cost: O(N) read with rate limiter → ~200s for 1M @ 5K/s. Result is
 // [256]uint64 = 2 KiB fixed memory, independent of N.
-func (sa *ReconSourceAgent) BucketHash(ctx context.Context, sourceURL, database, collection string) (*BucketHashResult, error) {
+func (sa *ReconSourceAgent) BucketHash(ctx context.Context, sourceURL, database, collection, timestampField string) (*BucketHashResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, sa.cfg.QueryTimeout)
 	defer cancel()
 
@@ -344,40 +523,47 @@ func (sa *ReconSourceAgent) BucketHash(ctx context.Context, sourceURL, database,
 	}
 	coll := sa.secondaryColl(client, database, collection)
 
-	opts := sa.selectOpts(bson.M{"_id": 1, "updated_at": 1})
-	result, err := sa.getBreaker(sourceURL).Execute(func() (interface{}, error) {
-		cursor, err := coll.Find(ctx, bson.M{}, opts)
-		if err != nil {
-			return nil, err
-		}
-		defer cursor.Close(ctx)
+	tsField := resolveTimestampField(timestampField)
+	opts := sa.selectOpts(bson.M{"_id": 1, tsField: 1})
+	var out *BucketHashResult
+	err = sa.queryWithRetry(ctx, "BucketHash", func() error {
+		result, innerErr := sa.getBreaker(sourceURL).Execute(func() (interface{}, error) {
+			cursor, err := coll.Find(ctx, bson.M{}, opts)
+			if err != nil {
+				return nil, err
+			}
+			defer cursor.Close(ctx)
 
-		var bh BucketHashResult
-		for cursor.Next(ctx) {
-			if err := sa.limiter.Wait(ctx); err != nil {
-				return nil, fmt.Errorf("rate limiter: %w", err)
+			var bh BucketHashResult
+			for cursor.Next(ctx) {
+				if err := sa.limiter.Wait(ctx); err != nil {
+					return nil, fmt.Errorf("rate limiter: %w", err)
+				}
+				var raw bson.M
+				if err := cursor.Decode(&raw); err != nil {
+					return nil, fmt.Errorf("decode: %w", err)
+				}
+				idStr := extractMongoID(raw["_id"])
+				ts := extractTimestampMs(raw, tsField, idStr)
+				bucket := bucketIndex(idStr)
+				bh.Buckets[bucket] ^= hashIDPlusTs(idStr, time.UnixMilli(ts))
+				bh.Total++
 			}
-			var doc struct {
-				ID        interface{} `bson:"_id"`
-				UpdatedAt time.Time   `bson:"updated_at"`
+			if err := cursor.Err(); err != nil {
+				return nil, err
 			}
-			if err := cursor.Decode(&doc); err != nil {
-				return nil, fmt.Errorf("decode: %w", err)
-			}
-			idStr := extractMongoID(doc.ID)
-			bucket := bucketIndex(idStr)
-			bh.Buckets[bucket] ^= hashIDPlusTs(idStr, doc.UpdatedAt)
-			bh.Total++
+			return &bh, nil
+		})
+		if innerErr != nil {
+			return innerErr
 		}
-		if err := cursor.Err(); err != nil {
-			return nil, err
-		}
-		return &bh, nil
+		out = result.(*BucketHashResult)
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return result.(*BucketHashResult), nil
+	return out, nil
 }
 
 // ListIDsInWindow returns the concrete IDs inside a drifted window.
@@ -389,7 +575,7 @@ func (sa *ReconSourceAgent) BucketHash(ctx context.Context, sourceURL, database,
 //
 // Still rate-limited per document — if a caller hands us a mega-window
 // (millions of docs) we bound the Mongo load rather than crash.
-func (sa *ReconSourceAgent) ListIDsInWindow(ctx context.Context, sourceURL, database, collection string, tLo, tHi time.Time) ([]string, error) {
+func (sa *ReconSourceAgent) ListIDsInWindow(ctx context.Context, sourceURL, database, collection, timestampField string, tLo, tHi time.Time) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, sa.cfg.QueryTimeout)
 	defer cancel()
 
@@ -399,7 +585,8 @@ func (sa *ReconSourceAgent) ListIDsInWindow(ctx context.Context, sourceURL, data
 	}
 	coll := sa.secondaryColl(client, database, collection)
 
-	filter := bson.M{"updated_at": bson.M{"$gte": tLo, "$lt": tHi}}
+	tsField := resolveTimestampField(timestampField)
+	filter := bson.M{tsField: bson.M{"$gte": tLo, "$lt": tHi}}
 	opts := sa.selectOpts(bson.M{"_id": 1})
 
 	result, err := sa.getBreaker(sourceURL).Execute(func() (interface{}, error) {
@@ -436,7 +623,7 @@ func (sa *ReconSourceAgent) ListIDsInWindow(ctx context.Context, sourceURL, data
 // MaxWindowTs returns the highest updated_at on the source, used by the
 // Core to pick the upper watermark for Tier 1 / Tier 2 window scan.
 // Returns zero time if the collection is empty.
-func (sa *ReconSourceAgent) MaxWindowTs(ctx context.Context, sourceURL, database, collection string) (time.Time, error) {
+func (sa *ReconSourceAgent) MaxWindowTs(ctx context.Context, sourceURL, database, collection, timestampField string) (time.Time, error) {
 	ctx, cancel := context.WithTimeout(ctx, sa.cfg.QueryTimeout)
 	defer cancel()
 
@@ -446,27 +633,42 @@ func (sa *ReconSourceAgent) MaxWindowTs(ctx context.Context, sourceURL, database
 	}
 	coll := sa.secondaryColl(client, database, collection)
 
+	tsField := resolveTimestampField(timestampField)
 	opts := options.FindOne().
-		SetProjection(bson.M{"updated_at": 1}).
-		SetSort(bson.M{"updated_at": -1})
+		SetProjection(bson.M{tsField: 1}).
+		SetSort(bson.M{tsField: -1})
 
-	result, err := sa.getBreaker(sourceURL).Execute(func() (interface{}, error) {
-		var doc struct {
-			UpdatedAt time.Time `bson:"updated_at"`
+	var out time.Time
+	err = sa.queryWithRetry(ctx, "MaxWindowTs", func() error {
+		result, innerErr := sa.getBreaker(sourceURL).Execute(func() (interface{}, error) {
+			var raw bson.M
+			err := coll.FindOne(ctx, bson.M{}, opts).Decode(&raw)
+			if err == mongo.ErrNoDocuments {
+				return time.Time{}, nil
+			}
+			if err != nil {
+				return time.Time{}, err
+			}
+			// extractTimestampMs returns 0 if field is absent; treat that
+			// as "collection empty / has no ts field" — caller falls back
+			// to dst.max or now-freezeMargin.
+			idStr := extractMongoID(raw["_id"])
+			ms := extractTimestampMs(raw, tsField, idStr)
+			if ms == 0 {
+				return time.Time{}, nil
+			}
+			return time.UnixMilli(ms), nil
+		})
+		if innerErr != nil {
+			return innerErr
 		}
-		err := coll.FindOne(ctx, bson.M{}, opts).Decode(&doc)
-		if err == mongo.ErrNoDocuments {
-			return time.Time{}, nil
-		}
-		if err != nil {
-			return time.Time{}, err
-		}
-		return doc.UpdatedAt, nil
+		out = result.(time.Time)
+		return nil
 	})
 	if err != nil {
 		return time.Time{}, err
 	}
-	return result.(time.Time), nil
+	return out, nil
 }
 
 // ============================================================
@@ -481,7 +683,10 @@ func (sa *ReconSourceAgent) MaxWindowTs(ctx context.Context, sourceURL, database
 // surface the 256 buckets as ChunkHash entries. chunkSize is accepted
 // for API compat but ignored; bucketing is fixed at 256.
 func (sa *ReconSourceAgent) GetChunkHashes(ctx context.Context, sourceURL, database, collection string, chunkSize int) ([]ChunkHash, error) {
-	bh, err := sa.BucketHash(ctx, sourceURL, database, collection)
+	// Legacy callers didn't pass a timestamp field. Default "" resolves to
+	// "updated_at" inside BucketHash via resolveTimestampField — preserves
+	// prior behaviour for legacy Merkle-style callers.
+	bh, err := sa.BucketHash(ctx, sourceURL, database, collection, "")
 	if err != nil {
 		return nil, err
 	}
@@ -555,6 +760,45 @@ func extractMongoID(v interface{}) string {
 	return fmt.Sprintf("%v", v)
 }
 
+// extractTimestampMs reads the timestamp in ms from a decoded BSON document.
+// Priority:
+//  1. Try the configured field (tsField) — handles updated_at, updatedAt,
+//     createdAt, lastUpdatedAt, etc. Supports primitive.DateTime, time.Time,
+//     int32/int64 (ms epoch), and float64.
+//  2. Fallback to ObjectID timestamp when the field is missing or zero —
+//     preserves correctness for collections with inconsistent schema where
+//     some documents lack the timestamp field. The fallback is explicit so
+//     hash inputs remain deterministic across source/dest comparisons.
+//
+// Returns UnixMilli. Zero return means unresolvable — caller MUST treat
+// as "no timestamp data" (skip from hash/filter).
+func extractTimestampMs(raw bson.M, tsField, idHex string) int64 {
+	if v, ok := raw[tsField]; ok && v != nil {
+		switch t := v.(type) {
+		case primitive.DateTime:
+			return int64(t)
+		case time.Time:
+			if !t.IsZero() {
+				return t.UnixMilli()
+			}
+		case int64:
+			return t
+		case int32:
+			return int64(t)
+		case float64:
+			return int64(t)
+		}
+	}
+	// Fallback: ObjectID timestamp. Every Mongo doc has _id; when _id is
+	// an ObjectID the top 4 bytes encode the insertion unix-sec. Gives a
+	// sensible approximate timestamp for collections that don't track
+	// updated_at (e.g. export-jobs created-once, never mutated).
+	if oid, err := primitive.ObjectIDFromHex(idHex); err == nil {
+		return oid.Timestamp().UnixMilli()
+	}
+	return 0
+}
+
 // redactURL drops the userinfo/hostport from a Mongo URL so we don't
 // leak credentials into logs or breaker names.
 func redactURL(u string) string {
@@ -568,6 +812,82 @@ func redactURL(u string) string {
 		}
 	}
 	return "<redacted>"
+}
+
+// queryWithRetry wraps a Mongo-facing call in a small retry loop. Only
+// errors that look like transient network blips (incomplete reads, EOF,
+// connection resets) or specific driver CommandError codes (6, 7, 89, 91,
+// 189 — host/network/timeout/shutdown) are retried. All other errors fail
+// fast so the breaker still trips on genuinely bad sources.
+//
+// Max 3 attempts, linear backoff (0, 500ms, 1s). The caller's context
+// bounds total wait time.
+func (sa *ReconSourceAgent) queryWithRetry(ctx context.Context, op string, fn func() error) error {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * 500 * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			if sa.logger != nil {
+				sa.logger.Warn("recon mongo transient error, retrying",
+					zap.String("op", op),
+					zap.Int("attempt", attempt+1),
+					zap.Error(lastErr),
+				)
+			}
+		}
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+		if !isMongoTransient(lastErr) {
+			return lastErr
+		}
+	}
+	return fmt.Errorf("%s: after %d attempts: %w", op, maxAttempts, lastErr)
+}
+
+// isMongoTransient returns true if the error looks like a network blip or
+// a transient driver-level failure that warrants retry. False for logical
+// errors (bad filter, missing collection) so retry never masks real bugs.
+func isMongoTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	s := err.Error()
+	if strings.Contains(s, "incomplete read of message header") ||
+		strings.Contains(s, "incomplete read") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "unexpected EOF") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "i/o timeout") {
+		return true
+	}
+	var cmdErr mongo.CommandError
+	if errors.As(err, &cmdErr) {
+		switch cmdErr.Code {
+		case 6, 7, 89, 91, 189, 262, 318, 9001:
+			// 6 HostUnreachable, 7 HostNotFound, 89 NetworkTimeout,
+			// 91 ShutdownInProgress, 189 PrimarySteppedDown,
+			// 262 ExceededTimeLimit, 318 NoProgressMade, 9001 SocketException.
+			return true
+		}
+	}
+	// Driver-specific network error markers not all exposed via errors.Is.
+	if strings.Contains(s, "server selection error") ||
+		strings.Contains(s, "no reachable servers") {
+		return true
+	}
+	return false
 }
 
 // buildLegacyChunkHash — unused now, kept for tests / callers that

@@ -553,6 +553,14 @@ export default function TableRegistry() {
           </Form.Item>
           <Form.Item name="primary_key_field" label="PK Field"><Input /></Form.Item>
           <Form.Item name="primary_key_type" label="PK Type"><Input /></Form.Item>
+          <Form.Item
+            name="timestamp_field"
+            label="Timestamp Field"
+            tooltip="Mongo field used by reconciliation to filter window ($gte/$lt). Default: updated_at. Common overrides: updatedAt, createdAt, lastUpdatedAt. Fallback: _id (extract ObjectID time)."
+            initialValue="updated_at"
+          >
+            <Input placeholder="updated_at" />
+          </Form.Item>
         </Form>
       </Modal>
     </div>

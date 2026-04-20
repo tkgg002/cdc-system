@@ -33,6 +33,7 @@ import {
 import {
   CheckCircleOutlined,
   ClockCircleOutlined,
+  InfoCircleOutlined,
   MedicineBoxOutlined,
   ReloadOutlined,
   SyncOutlined,
@@ -54,9 +55,42 @@ import {
   type BackfillStatusRow,
   type FailedLog,
   type ReconReport,
+  type ReconStatus,
 } from '../hooks/useReconStatus';
+import { ReDetectButton } from '../components/ReDetectButton';
+import { lookupReconError } from '../constants/reconErrorMessages';
+
+const { Text } = Typography;
 
 const { Title } = Typography;
+
+// Status colour + VI label lookup (ADR §2.8). `error` is handled separately
+// so it can surface the structured `error_code`.
+const STATUS_COLOR: Record<ReconStatus, string> = {
+  ok: 'green',
+  ok_empty: 'default',
+  warning: 'gold',
+  drift: 'red',
+  dest_missing: 'red',
+  source_missing_or_stale: 'orange',
+  error: 'red',
+};
+
+const STATUS_LABEL_VI: Record<ReconStatus, string> = {
+  ok: 'Khớp',
+  ok_empty: 'Khớp (trống)',
+  warning: 'Cảnh báo',
+  drift: 'Lệch',
+  dest_missing: 'Thiếu dest',
+  source_missing_or_stale: 'Source stale',
+  error: 'Lỗi',
+};
+
+const SYNC_ENGINE_COLOR: Record<string, string> = {
+  debezium: 'blue',
+  airbyte: 'green',
+  both: 'purple',
+};
 
 // ---- Modal plan types ---------------------------------------------------
 
@@ -222,74 +256,154 @@ export default function DataIntegrity() {
 
   // ---- Columns ---------------------------------------------------------
 
+  // v4 columns (ADR §2.2, §2.3, §2.7, §2.8). Full-count columns surface
+  // the daily aggregate; window columns surface the 7-day recon sample;
+  // drift% uses the unsigned formula; errors translate to VI via
+  // `lookupReconError`.
   const reportColumns: ColumnsType<ReconReport> = [
+    { title: 'Bảng', dataIndex: 'target_table', key: 'target_table' },
     {
-      title: 'Bảng',
-      dataIndex: 'target_table',
-      width: 180,
-      render: (v) => <strong>{v}</strong>,
+      title: (
+        <Space size={4}>
+          Sync Engine
+          <Tooltip title="Airbyte hoặc Debezium quản lý sync bảng này">
+            <InfoCircleOutlined tabIndex={0} aria-label="Giải thích Sync Engine" />
+          </Tooltip>
+        </Space>
+      ),
+      dataIndex: 'sync_engine',
+      key: 'sync_engine',
+      render: (v: string | null | undefined) => (
+        <Tag color={v ? (SYNC_ENGINE_COLOR[v] ?? 'default') : 'default'}>{v ?? '-'}</Tag>
+      ),
     },
-    { title: 'Source DB', dataIndex: 'source_db', width: 150 },
     {
-      title: 'Source',
+      title: (
+        <Space size={4}>
+          Total Source
+          <Tooltip title="Full count của Mongo collection (cập nhật hằng ngày 03:00 UTC)">
+            <InfoCircleOutlined tabIndex={0} aria-label="Giải thích Total Source" />
+          </Tooltip>
+        </Space>
+      ),
+      dataIndex: 'full_source_count',
+      key: 'full_source_count',
+      render: (v: number | null | undefined) =>
+        v == null ? <Text type="secondary">—</Text> : v.toLocaleString(),
+    },
+    {
+      title: (
+        <Space size={4}>
+          Total Dest
+          <Tooltip title="Full count của Postgres table">
+            <InfoCircleOutlined tabIndex={0} aria-label="Giải thích Total Dest" />
+          </Tooltip>
+        </Space>
+      ),
+      dataIndex: 'full_dest_count',
+      key: 'full_dest_count',
+      render: (v: number | null | undefined) =>
+        v == null ? <Text type="secondary">—</Text> : v.toLocaleString(),
+    },
+    {
+      title: (
+        <Space size={4}>
+          Source (7d window)
+          <Tooltip title="Số document trong Mongo filter theo timestamp_field trong 7 ngày gần nhất. Dùng để detect DRIFT RECENT, không phải full table.">
+            <InfoCircleOutlined tabIndex={0} aria-label="Giải thích Source 7d window" />
+          </Tooltip>
+        </Space>
+      ),
       dataIndex: 'source_count',
-      width: 90,
-      render: (v) => v?.toLocaleString() || '-',
+      key: 'source_count',
+      render: (v: number | null | undefined) =>
+        v == null ? <Tag color="error">Query fail</Tag> : v.toLocaleString(),
     },
     {
-      title: 'Dest',
+      title: 'Dest (7d window)',
       dataIndex: 'dest_count',
-      width: 90,
-      render: (v) => v?.toLocaleString() || '-',
+      key: 'dest_count',
+      render: (v: number | null | undefined) => v?.toLocaleString() ?? '-',
     },
     {
-      title: 'Chênh lệch',
-      dataIndex: 'diff',
-      width: 100,
-      render: (v) =>
-        v !== 0 ? <Tag color="red">{v > 0 ? `+${v}` : v}</Tag> : <Tag color="green">0</Tag>,
-    },
-    {
-      title: 'Thiếu',
-      dataIndex: 'missing_count',
-      width: 70,
-      render: (v) => (v > 0 ? <Tag color="orange">{v}</Tag> : '-'),
+      title: (
+        <Space size={4}>
+          Drift %
+          <Tooltip title="|Source - Dest| / max(Source, Dest) × 100. Unsigned, bounded 0-100%.">
+            <InfoCircleOutlined tabIndex={0} aria-label="Giải thích công thức Drift" />
+          </Tooltip>
+        </Space>
+      ),
+      dataIndex: 'drift_pct',
+      key: 'drift_pct',
+      render: (v: number | null | undefined) => {
+        if (v == null) return '-';
+        const color = v < 0.5 ? 'default' : v < 5 ? 'gold' : 'red';
+        return <Tag color={color}>{v.toFixed(2)}%</Tag>;
+      },
     },
     {
       title: 'Trạng thái',
       dataIndex: 'status',
-      width: 100,
-      render: (v) =>
-        v === 'ok' ? (
-          <Tag color="green">Khớp</Tag>
-        ) : v === 'drift' ? (
-          <Tag color="red">Lệch</Tag>
-        ) : (
-          <Tag color="default">{v}</Tag>
-        ),
+      key: 'status',
+      render: (status: ReconStatus, row: ReconReport) => {
+        if (status === 'error') {
+          const { message: msg, severity } = lookupReconError(row.error_code);
+          return (
+            <Tooltip title={msg}>
+              <Tag color={severity === 'critical' ? 'red' : 'orange'}>
+                {row.error_code || 'Lỗi'}
+              </Tag>
+            </Tooltip>
+          );
+        }
+        return (
+          <Tag color={STATUS_COLOR[status] ?? 'default'}>
+            {STATUS_LABEL_VI[status] ?? status}
+          </Tag>
+        );
+      },
     },
-    { title: 'Tier', dataIndex: 'tier', width: 50 },
+    {
+      title: 'Timestamp field',
+      dataIndex: 'timestamp_field',
+      key: 'timestamp_field',
+      render: (v: string | null | undefined, row: ReconReport) => (
+        <Tooltip
+          title={`Confidence: ${row.timestamp_field_confidence ?? '-'} | Source: ${row.timestamp_field_source ?? '-'}`}
+        >
+          <Space size={4}>
+            <Text code>{v || '-'}</Text>
+            {row.timestamp_field_source === 'admin_override' && (
+              <Tag color="purple">Manual</Tag>
+            )}
+          </Space>
+        </Tooltip>
+      ),
+    },
     {
       title: 'Kiểm tra lúc',
       dataIndex: 'checked_at',
-      width: 150,
-      render: (v) => (v ? new Date(v).toLocaleString('vi-VN', { hour12: false }) : '-'),
-    },
-    {
-      title: 'Đã chữa',
-      dataIndex: 'healed_count',
-      width: 70,
-      render: (v) => (v > 0 ? <Tag color="blue">{v}</Tag> : '-'),
+      key: 'checked_at',
+      render: (v: string | null | undefined) =>
+        v ? new Date(v).toLocaleString('vi-VN', { hour12: false }) : '-',
     },
     {
       title: 'Thao tác',
-      width: 260,
-      render: (_, record) => (
+      key: 'actions',
+      render: (_: unknown, record: ReconReport) => (
         <Space>
-          <Button size="small" icon={<SyncOutlined />} onClick={() => openCheckTable(record)}>
-            Kiểm tra ID
+          {record.registry_id != null && (
+            <ReDetectButton targetTable={record.target_table} registryId={record.registry_id} />
+          )}
+          <Button
+            size="small"
+            icon={<SyncOutlined />}
+            onClick={() => openCheckTable(record)}
+          >
+            Kiểm tra
           </Button>
-          {record.status === 'drift' && (
+          {(record.status === 'drift' || record.status === 'dest_missing') && (
             <Button
               size="small"
               type="primary"

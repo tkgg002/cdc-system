@@ -203,6 +203,7 @@ func SetupRoutes(
 	admin.Post("/registry/:id/transform", registryHandler.Transform)
 	admin.Post("/registry/:id/drop-gin-index", registryHandler.DropGINIndex)
 	admin.Post("/registry/:id/create-default-columns", registryHandler.CreateDefaultColumns)
+	admin.Post("/registry/:id/detect-timestamp-field", registryHandler.DetectTimestampField)
 	shared.Get("/registry/:id/transform-status", registryHandler.TransformStatus)
 	admin.Post("/mapping-rules", mappingHandler.Create)
 	admin.Patch("/mapping-rules/batch", mappingHandler.BatchUpdate)
