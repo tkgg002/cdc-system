@@ -1,0 +1,30 @@
+{
+  "name": "goopay-mongodb-cdc",
+  "config": {
+    "connector.class": "io.debezium.connector.mongodb.MongoDbConnector",
+    "mongodb.connection.string": "mongodb://gpay-mongo:27017/?replicaSet=rs0",
+    "mongodb.name": "goopay",
+    "database.include.list": "payment-bill-service,centralized-export-service",
+    "collection.include.list": "payment-bill-service.payment-bills,payment-bill-service.refund-requests,payment-bill-service.payment-bill-histories,payment-bill-service.payment-bill-codes,payment-bill-service.payment-bill-events,payment-bill-service.payment-bill-holdings,payment-bill-service.identitycounters,payment-bill-service.refund-requests-histories,centralized-export-service.export-jobs",
+    "capture.mode": "change_streams_update_full",
+    "topic.prefix": "cdc.goopay",
+    "schema.history.internal.kafka.bootstrap.servers": "gpay-kafka:9092",
+    "signal.data.collection": "goopay.debezium_signals",
+
+    "schema.name.adjustment.mode": "avro",
+    "field.name.adjustment.mode": "avro",
+    "sanitize.field.names": "true",
+
+    "key.converter": "io.confluent.connect.avro.AvroConverter",
+    "key.converter.schema.registry.url": "http://gpay-schema-registry:8081",
+    "key.converter.scrub.invalid.names": "true",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://gpay-schema-registry:8081",
+    "value.converter.scrub.invalid.names": "true",
+
+    "snapshot.mode": "initial",
+    "mongodb.poll.interval.ms": 1000,
+    "max.batch.size": 2048,
+    "max.queue.size": 8192
+  }
+}

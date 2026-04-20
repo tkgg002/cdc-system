@@ -1,0 +1,182 @@
+basePath: /
+definitions:
+  cdc-auth-service_internal_service.LoginRequest:
+    properties:
+      password:
+        example: admin123
+        type: string
+      username:
+        example: admin
+        type: string
+    type: object
+  cdc-auth-service_internal_service.RegisterRequest:
+    properties:
+      email:
+        example: op1@goopay.vn
+        type: string
+      full_name:
+        example: Nguyen Van A
+        type: string
+      password:
+        example: securepass
+        type: string
+      role:
+        example: operator
+        type: string
+      username:
+        example: operator1
+        type: string
+    type: object
+  cdc-auth-service_internal_service.TokenResponse:
+    properties:
+      access_token:
+        type: string
+      expires_in:
+        description: seconds
+        type: integer
+      refresh_token:
+        type: string
+      token_type:
+        type: string
+      user:
+        $ref: '#/definitions/cdc-auth-service_internal_service.UserInfo'
+    type: object
+  cdc-auth-service_internal_service.UserInfo:
+    properties:
+      email:
+        type: string
+      full_name:
+        type: string
+      id:
+        type: integer
+      role:
+        type: string
+      username:
+        type: string
+    type: object
+host: localhost:8081
+info:
+  contact: {}
+  description: Authentication service for CDC Integration — Login, Register, JWT token
+    management.
+  title: CDC Auth Service API
+  version: "1.0"
+paths:
+  /api/auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate user and return JWT access + refresh tokens
+      parameters:
+      - description: Login credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/cdc-auth-service_internal_service.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cdc-auth-service_internal_service.TokenResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: User login
+      tags:
+      - Auth
+  /api/auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: Exchange a valid refresh token for new access + refresh tokens
+      parameters:
+      - description: Refresh token
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cdc-auth-service_internal_service.TokenResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Refresh access token
+      tags:
+      - Auth
+  /api/auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Create a new user account (admin only in production)
+      parameters:
+      - description: Registration details
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/cdc-auth-service_internal_service.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Register a new user
+      tags:
+      - Auth
+  /health:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Health check
+      tags:
+      - Health
+swagger: "2.0"

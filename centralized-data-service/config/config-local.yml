@@ -1,0 +1,78 @@
+server:
+  name: centralized-data-service
+  port: ":8082"
+  mode: worker
+
+db:
+  host: localhost
+  port: 5432
+  username: user
+  password: password
+  database: goopay_dw
+  sslMode: disable
+  maxOpenConn: 50
+  maxIdleConn: 25
+  connMaxLifetime: 5m
+
+nats:
+  url: nats://cdc_worker:worker_secret_2026@localhost:14222
+  name: cdc-worker
+  maxReconnect: -1
+  reconnectWait: 2s
+
+kafka:
+  enabled: true
+  brokers:
+    - localhost:19092
+  groupId: cdc-worker-group
+  topicPrefix: cdc.goopay
+  schemaRegistryUrl: http://localhost:18081
+
+otel:
+  enabled: true
+  serviceName: cdc-worker
+  endpoint: http://localhost:4318
+  sampleRatio: 1.0
+  logs:
+    # Per-severity sample ratios applied to the OTel log branch. The
+    # console branch is always full fidelity. 0.0 = drop, 1.0 = keep.
+    sampleBySeverity:
+      debug: 0.0
+      info: 0.1
+      warn: 1.0
+      error: 1.0
+      fatal: 1.0
+    # Approximate memory ceiling for the in-flight log queue.
+    # Translated into MaxQueueSize assuming ~1 KiB / record.
+    memoryLimitMib: 256
+    fallback:
+      # When the exporter hits this many errors within a rolling
+      # 1-minute window, the OTel log sink is muted (console-only)
+      # until recoverAfter elapses.
+      degradedAfterErrors: 10
+      recoverAfter: 5m
+
+mongodb:
+  url: mongodb://localhost:17017/?directConnection=true
+
+redis:
+  url: redis://localhost:16379
+  password: ""
+  db: 0
+
+worker:
+  poolSize: 10
+  batchSize: 500
+  batchTimeout: 2s
+  fetchSize: 1000
+  transformInterval: 5m
+  scanInterval: 1h
+
+airbyte:
+  apiUrl: http://localhost:18000
+  clientId: ""
+  clientSecret: ""
+
+jwt:
+  secret: change-me-in-production
+  expiration: 24h

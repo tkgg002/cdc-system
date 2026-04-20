@@ -1,0 +1,53 @@
+server:
+  name: cdc-cms-service
+  port: ":8083"
+
+db:
+  host: localhost
+  port: 5432
+  username: user
+  password: password
+  database: goopay_dw
+  sslMode: disable
+  maxOpenConn: 25
+  maxIdleConn: 10
+  connMaxLifetime: 5m
+
+nats:
+  url: nats://cms_service:cms_secret_2026@localhost:14222
+  name: cdc-cms
+  maxReconnect: -1
+  reconnectWait: 2s
+
+redis:
+  url: redis://localhost:16379
+  password: ""
+  db: 0
+
+airbyte:
+  apiUrl: http://localhost:18000/api
+  apiKey: "trai.nguyen@goopay.vn:knF1jhaPIShkduykN301X1rPbqOzhfe4"
+  workspaceId: "ece70fcd-015f-419a-883c-e411e9fbd439"
+  syncInterval: 5m
+
+system:
+  workerUrl: http://localhost:8082
+  kafkaConnectUrl: http://localhost:18083
+  natsMonitorUrl: http://localhost:18222
+  # Prometheus server (empty => fallback to scraping worker /metrics on :9090)
+  prometheusUrl: ""
+  # kafka-exporter sidecar text-format metrics endpoint.
+  # Populates cdc_pipeline.consumer_lag.total_lag for the HighConsumerLag alert.
+  kafkaExporterUrl: "http://localhost:9308/metrics"
+  debeziumConnector: goopay-mongodb-cdc
+  healthCacheKey: system_health:snapshot
+
+jwt:
+  secret: change-me-in-production
+  expiration: 24h
+
+otel:
+  enabled: true
+  serviceName: cdc-cms
+  endpoint: http://localhost:4318
+  sampleRatio: 1.0

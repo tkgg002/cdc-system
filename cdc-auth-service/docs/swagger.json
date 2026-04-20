@@ -1,0 +1,273 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Authentication service for CDC Integration — Login, Register, JWT token management.",
+        "title": "CDC Auth Service API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "localhost:8081",
+    "basePath": "/",
+    "paths": {
+        "/api/auth/login": {
+            "post": {
+                "description": "Authenticate user and return JWT access + refresh tokens",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "User login",
+                "parameters": [
+                    {
+                        "description": "Login credentials",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/cdc-auth-service_internal_service.LoginRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/cdc-auth-service_internal_service.TokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/refresh": {
+            "post": {
+                "description": "Exchange a valid refresh token for new access + refresh tokens",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Refresh access token",
+                "parameters": [
+                    {
+                        "description": "Refresh token",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/cdc-auth-service_internal_service.TokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/register": {
+            "post": {
+                "description": "Create a new user account (admin only in production)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Register a new user",
+                "parameters": [
+                    {
+                        "description": "Registration details",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/cdc-auth-service_internal_service.RegisterRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Health"
+                ],
+                "summary": "Health check",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "cdc-auth-service_internal_service.LoginRequest": {
+            "type": "object",
+            "properties": {
+                "password": {
+                    "type": "string",
+                    "example": "admin123"
+                },
+                "username": {
+                    "type": "string",
+                    "example": "admin"
+                }
+            }
+        },
+        "cdc-auth-service_internal_service.RegisterRequest": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "example": "op1@goopay.vn"
+                },
+                "full_name": {
+                    "type": "string",
+                    "example": "Nguyen Van A"
+                },
+                "password": {
+                    "type": "string",
+                    "example": "securepass"
+                },
+                "role": {
+                    "type": "string",
+                    "example": "operator"
+                },
+                "username": {
+                    "type": "string",
+                    "example": "operator1"
+                }
+            }
+        },
+        "cdc-auth-service_internal_service.TokenResponse": {
+            "type": "object",
+            "properties": {
+                "access_token": {
+                    "type": "string"
+                },
+                "expires_in": {
+                    "description": "seconds",
+                    "type": "integer"
+                },
+                "refresh_token": {
+                    "type": "string"
+                },
+                "token_type": {
+                    "type": "string"
+                },
+                "user": {
+                    "$ref": "#/definitions/cdc-auth-service_internal_service.UserInfo"
+                }
+            }
+        },
+        "cdc-auth-service_internal_service.UserInfo": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "full_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

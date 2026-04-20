@@ -1,0 +1,19 @@
+server:
+  name: cdc-auth-service
+  port: ":8081"
+
+db:
+  host: localhost
+  port: 5432
+  username: user
+  password: password
+  database: goopay_dw
+  sslMode: disable
+  maxOpenConn: 10
+  maxIdleConn: 5
+  connMaxLifetime: 5m
+
+jwt:
+  secret: change-me-in-production
+  accessExpiration: 24h
+  refreshExpiration: 168h

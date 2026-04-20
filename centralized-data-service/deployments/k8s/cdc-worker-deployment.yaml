@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cdc-worker
+  labels:
+    app: cdc-worker
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: cdc-worker
+  template:
+    metadata:
+      labels:
+        app: cdc-worker
+    spec:
+      containers:
+      - name: cdc-worker
+        image: cdc-worker:latest
+        ports:
+        - containerPort: 8082
+        env:
+        - name: NATS_URL
+          valueFrom:
+            secretKeyRef:
+              name: cdc-secrets
+              key: nats-url
+        - name: DB_SINK_URL
+          valueFrom:
+            secretKeyRef:
+              name: cdc-secrets
+              key: db-url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: cdc-secrets
+              key: redis-url
+        - name: WORKER_POOL_SIZE
+          value: "10"
+        - name: BATCH_SIZE
+          value: "500"
+        - name: BATCH_TIMEOUT
+          value: "2s"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8082
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8082
+          initialDelaySeconds: 10
+          periodSeconds: 5
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cdc-worker-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cdc-worker
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

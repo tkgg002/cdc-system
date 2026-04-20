@@ -1,0 +1,19 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"cdc-cms-service/pkgs/airbyte"
+	"go.uber.org/zap"
+)
+
+func main() {
+	logger, _ := zap.NewDevelopment()
+	client := airbyte.NewClient("http://localhost:18000/api", "trai.nguyen@goopay.vn:knF1jhaPIShkduykN301X1rPbqOzhfe4", "ece70fcd-015f-419a-883c-e411e9fbd439", logger)
+	sources, err := client.ListSources(context.Background())
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+	} else {
+		fmt.Printf("Sources: %+v\n", sources)
+	}
+}
