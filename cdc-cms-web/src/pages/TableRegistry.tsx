@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Table, Tag, Select, Switch, Button, Space, Modal, Form, Input, message, Upload, Badge, Collapse, Typography, Progress, Tooltip } from 'antd';
-import { PlusOutlined, UploadOutlined, SyncOutlined, DatabaseOutlined, SearchOutlined, ToolOutlined, BranchesOutlined, ThunderboltOutlined, SwapOutlined } from '@ant-design/icons';
+import { PlusOutlined, UploadOutlined, SyncOutlined, DatabaseOutlined, SearchOutlined, ToolOutlined, ThunderboltOutlined, SwapOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { cmsApi } from '../services/api';
 import type { TableRegistry as TRegistry } from '../types';
-import { useScanFields, useSyncAirbyte, useRefreshCatalog } from '../hooks/useRegistry';
+import { useScanFields } from '../hooks/useRegistry';
 import DispatchStatusBadge from '../components/DispatchStatusBadge';
 import ConfirmDestructiveModal from '../components/ConfirmDestructiveModal';
 
@@ -13,19 +13,14 @@ const { Panel } = Collapse;
 const { Title } = Typography;
 
 const SyncStatusIndicator = ({ id, engine }: { id: number, engine: string }) => {
-  const [status, setStatus] = useState<string>('loading');
+  const [status, setStatus] = useState<string>('n/a');
 
   const fetchStatus = useCallback(async () => {
-    if (engine === 'airbyte' || engine === 'both') {
-      try {
-        const { data: res } = await cmsApi.get(`/api/registry/${id}/status`);
-        setStatus(res.status);
-      } catch {
-        setStatus('error');
-      }
-    } else {
-      setStatus('n/a');
-    }
+    // Legacy per-entry status endpoint retired in Sprint 4. Debezium
+    // connector status is exposed at /api/v1/system/connectors.
+    void id;
+    void engine;
+    setStatus('n/a');
   }, [id, engine]);
 
   useEffect(() => {
@@ -80,7 +75,7 @@ const TransformProgress = ({ id }: { id: number }) => {
 // Async-dispatch actions (202 + polling) — one component per row so hooks stay
 // top-level. Wires scan-fields / sync / refresh-catalog to `useAsyncDispatch`.
 // -----------------------------------------------------------------------------
-type AsyncActionKind = 'scan-fields' | 'sync' | 'refresh-catalog';
+type AsyncActionKind = 'scan-fields';
 
 interface AsyncActionsProps {
   record: TRegistry;
@@ -89,15 +84,12 @@ interface AsyncActionsProps {
 
 function AsyncRowActions({ record, onChange }: AsyncActionsProps) {
   const scan = useScanFields(record.id, record.target_table);
-  const sync = useSyncAirbyte(record.id, record.target_table);
-  const refresh = useRefreshCatalog(record.id, record.target_table);
 
   const [confirm, setConfirm] = useState<{ open: boolean; kind: AsyncActionKind | null }>({
     open: false,
     kind: null,
   });
 
-  // Surface terminal status via Ant Design notifications.
   useEffect(() => {
     if (scan.state.status === 'success') {
       message.success(`Quét field: ${scan.state.message || 'hoàn tất'}`);
@@ -109,24 +101,6 @@ function AsyncRowActions({ record, onChange }: AsyncActionsProps) {
     }
   }, [scan.state.status, scan.state.message, scan.state.error, onChange]);
 
-  useEffect(() => {
-    if (sync.state.status === 'success') {
-      message.success(`Airbyte sync: ${sync.state.message || 'đã dispatch'}`);
-      onChange?.();
-    } else if (sync.state.status === 'error') {
-      message.error(`Airbyte sync: ${sync.state.error}`);
-    }
-  }, [sync.state.status, sync.state.message, sync.state.error, onChange]);
-
-  useEffect(() => {
-    if (refresh.state.status === 'success') {
-      message.success(`Refresh catalog: ${refresh.state.message || 'hoàn tất'}`);
-      onChange?.();
-    } else if (refresh.state.status === 'error') {
-      message.error(`Refresh catalog: ${refresh.state.error}`);
-    }
-  }, [refresh.state.status, refresh.state.message, refresh.state.error, onChange]);
-
   const openConfirm = (kind: AsyncActionKind) => setConfirm({ open: true, kind });
   const closeConfirm = () => setConfirm({ open: false, kind: null });
 
@@ -134,8 +108,6 @@ function AsyncRowActions({ record, onChange }: AsyncActionsProps) {
     if (!confirm.kind) return;
     try {
       if (confirm.kind === 'scan-fields') await scan.dispatchAsync({ reason });
-      else if (confirm.kind === 'sync') await sync.dispatchAsync({ reason });
-      else if (confirm.kind === 'refresh-catalog') await refresh.dispatchAsync({ reason });
       closeConfirm();
     } catch {
       // hook already surfaced the error via message.error
@@ -143,8 +115,6 @@ function AsyncRowActions({ record, onChange }: AsyncActionsProps) {
   };
 
   const scanBusy = scan.isPending;
-  const syncBusy = sync.isPending;
-  const refreshBusy = refresh.isPending;
 
   const confirmMeta: Record<
     AsyncActionKind,
@@ -156,20 +126,6 @@ function AsyncRowActions({ record, onChange }: AsyncActionsProps) {
       actionLabel: 'Gửi scan-fields',
       danger: false,
       loading: scanBusy,
-    },
-    sync: {
-      title: 'Airbyte Sync',
-      description: 'Kích hoạt full Airbyte sync cho table này. Có thể tốn nhiều phút và ảnh hưởng connector quota.',
-      actionLabel: 'Gửi Airbyte sync',
-      danger: true,
-      loading: syncBusy,
-    },
-    'refresh-catalog': {
-      title: 'Refresh catalog',
-      description: 'Re-discover schema connection trên Airbyte. Không destructive nhưng sẽ trigger schema-change review.',
-      actionLabel: 'Refresh catalog',
-      danger: false,
-      loading: refreshBusy,
     },
   };
 
@@ -188,35 +144,9 @@ function AsyncRowActions({ record, onChange }: AsyncActionsProps) {
             Quét field
           </Button>
         </Tooltip>
-        {(record.sync_engine === 'airbyte' || record.sync_engine === 'both') && (
-          <>
-            <Tooltip title="Trigger Airbyte full sync (async, 202)">
-              <Button
-                size="small"
-                icon={<SyncOutlined />}
-                loading={syncBusy}
-                onClick={(e) => { e.stopPropagation(); openConfirm('sync'); }}
-              >
-                Sync
-              </Button>
-            </Tooltip>
-            <Tooltip title="Refresh Airbyte catalog (async, 202)">
-              <Button
-                size="small"
-                icon={<BranchesOutlined />}
-                loading={refreshBusy}
-                onClick={(e) => { e.stopPropagation(); openConfirm('refresh-catalog'); }}
-              >
-                Refresh catalog
-              </Button>
-            </Tooltip>
-          </>
-        )}
       </Space>
       <Space wrap>
         {scan.state.status !== 'idle' && <DispatchStatusBadge state={scan.state} />}
-        {sync.state.status !== 'idle' && <DispatchStatusBadge state={sync.state} />}
-        {refresh.state.status !== 'idle' && <DispatchStatusBadge state={refresh.state} />}
       </Space>
       {active && (
         <ConfirmDestructiveModal
@@ -242,7 +172,6 @@ export default function TableRegistry() {
   const [page, setPage] = useState(1);
   const [sourceDBFilter, setSourceDBFilter] = useState<string>('');
   const [registerVisible, setRegisterVisible] = useState(false);
-  const [airbyteSources, setAirbyteSources] = useState<Array<{ sourceId: string; sourceName: string; database?: string; name?: string }>>([]);
   const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
   const [activeLoadingId, setActiveLoadingId] = useState<number | null>(null);
   const [form] = Form.useForm();
@@ -269,16 +198,8 @@ export default function TableRegistry() {
     finally { setLoading(false); }
   }, [page, sourceDBFilter]);
 
-  const fetchAirbyteSources = async () => {
-    try {
-      const { data: sources } = await cmsApi.get('/api/airbyte/sources');
-      setAirbyteSources(sources);
-    } catch { /* error handled by interceptor */ }
-  };
-
   useEffect(() => {
     fetchData();
-    fetchAirbyteSources();
   }, [fetchData]);
 
   const updateEntry = async (id: number, updates: Record<string, unknown>) => {
@@ -374,28 +295,18 @@ export default function TableRegistry() {
     return false; // prevent default upload
   };
 
-  const uniqueSourceDBs = [...new Set([
-    ...data.map(d => d.source_db),
-    ...airbyteSources.map((s) => s.name || (s as { sourceName?: string }).sourceName).filter(Boolean),
-  ])];
+  const uniqueSourceDBs = [...new Set(data.map(d => d.source_db))];
 
   const columns: ColumnsType<TRegistry> = [
     { title: 'Type', dataIndex: 'source_type', width: 80, render: (t: string) => <Tag color={t === 'mongodb' ? 'green' : 'blue'}>{t}</Tag> },
     { title: 'Source DB', dataIndex: 'source_db', width: 120 },
     { title: 'Source Table', dataIndex: 'source_table', width: 180, render: (t) => <strong style={{color: '#1890ff'}}>{t}</strong> },
     { title: 'Target Table', dataIndex: 'target_table', width: 180 },
-    { title: 'Destination', dataIndex: 'airbyte_destination_name', width: 120, render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-' },
-    { title: 'Connection ID', dataIndex: 'airbyte_connection_id', width: 150, render: (v) => v ? <code style={{ fontSize: '11px' }}>{v.substring(0, 8)}...</code> : '-' },
     {
       title: 'Sync Engine', dataIndex: 'sync_engine', width: 120,
       render: (v: string, record) => (
         <Space direction="vertical" size={0} onClick={e => e.stopPropagation()}>
-          <Select value={v} size="small" style={{ width: 110 }}
-            onChange={(val) => updateEntry(record.id, { sync_engine: val })}>
-            <Select.Option value="airbyte">Airbyte</Select.Option>
-            <Select.Option value="debezium">Debezium</Select.Option>
-            <Select.Option value="both">Both</Select.Option>
-          </Select>
+          <Tag color="blue">{v || 'debezium'}</Tag>
           <SyncStatusIndicator id={record.id} engine={v} />
         </Space>
       ),
@@ -515,26 +426,9 @@ export default function TableRegistry() {
       <Modal title="Register New Table" open={registerVisible} onOk={() => form.submit()}
         onCancel={() => setRegisterVisible(false)} width={500}>
         <Form form={form} layout="vertical" onFinish={handleRegister}
-          initialValues={{ sync_engine: 'airbyte', priority: 'normal', primary_key_field: '_id', primary_key_type: 'VARCHAR(24)', source_type: 'mongodb' }}>
+          initialValues={{ sync_engine: 'debezium', priority: 'normal', primary_key_field: '_id', primary_key_type: 'VARCHAR(24)', source_type: 'mongodb' }}>
           <Form.Item name="source_db" label="Source DB" rules={[{ required: true }]}>
-            <Select showSearch placeholder="Select source database"
-              onChange={(val) => {
-                const source = airbyteSources.find(s => s.database === val);
-                if (source) {
-                  let type = 'postgres';
-                  const sourceName = source.sourceName.toLowerCase();
-                  if (sourceName.includes('mongodb')) type = 'mongodb';
-                  else if (sourceName.includes('mysql')) type = 'mysql';
-
-                  form.setFieldsValue({ source_type: type });
-                }
-              }}>
-              {airbyteSources.map(s => (
-                <Select.Option key={s.sourceId} value={s.database}>
-                   {s.database} (Type: {s.sourceName})
-                </Select.Option>
-              ))}
-            </Select>
+            <Input placeholder="e.g. payment-bill-service" />
           </Form.Item>
           <Form.Item name="source_type" label="Source Type" rules={[{ required: true }]}>
             <Select disabled>

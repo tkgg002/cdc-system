@@ -9,14 +9,13 @@ import (
 )
 
 type AppConfig struct {
-	Server  ServerConfig  `mapstructure:"server"`
-	DB      DBConfig      `mapstructure:"db"`
-	Nats    NatsConfig    `mapstructure:"nats"`
-	Redis   RedisConfig   `mapstructure:"redis"`
-	Airbyte AirbyteConfig `mapstructure:"airbyte"`
-	JWT     JWTConfig     `mapstructure:"jwt"`
-	System  SystemConfig  `mapstructure:"system"`
-	Otel    OtelConfig    `mapstructure:"otel"`
+	Server ServerConfig `mapstructure:"server"`
+	DB     DBConfig     `mapstructure:"db"`
+	Nats   NatsConfig   `mapstructure:"nats"`
+	Redis  RedisConfig  `mapstructure:"redis"`
+	JWT    JWTConfig    `mapstructure:"jwt"`
+	System SystemConfig `mapstructure:"system"`
+	Otel   OtelConfig   `mapstructure:"otel"`
 }
 
 type OtelConfig struct {
@@ -76,13 +75,6 @@ type RedisConfig struct {
 	DB       int    `mapstructure:"db"`
 }
 
-type AirbyteConfig struct {
-	APIURL       string        `mapstructure:"apiUrl"`
-	APIKey       string        `mapstructure:"apiKey"`
-	WorkspaceID  string        `mapstructure:"workspaceId"`
-	SyncInterval time.Duration `mapstructure:"syncInterval"`
-}
-
 type JWTConfig struct {
 	Secret     string        `mapstructure:"secret"`
 	Expiration time.Duration `mapstructure:"expiration"`
@@ -120,15 +112,5 @@ func NewConfig() (*AppConfig, error) {
 	if v := os.Getenv("JWT_SECRET"); v != "" {
 		cfg.JWT.Secret = v
 	}
-	if v := os.Getenv("AIRBYTE_API_URL"); v != "" {
-		cfg.Airbyte.APIURL = v
-	}
-	if v := os.Getenv("AIRBYTE_API_KEY"); v != "" {
-		cfg.Airbyte.APIKey = v
-	}
-	if v := os.Getenv("AIRBYTE_WORKSPACE_ID"); v != "" {
-		cfg.Airbyte.WorkspaceID = v
-	}
-
 	return cfg, nil
 }

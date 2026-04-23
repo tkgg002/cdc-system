@@ -2,7 +2,6 @@
 //
 // Helpers shared by the Worker-side command handlers introduced during the
 // "CDC worker boundary refactor" (workspace feature-cdc-integration). The
-// CMS API layer used to touch Airbyte directly, which broke multi-source
 // tables (Debezium-only) and violated the NATS async boundary — see
 // 10_gap_analysis_scan_fields_boundary_violation.md for the audit. These
 // helpers centralise sync-engine routing so each handler ships with the
@@ -16,21 +15,6 @@ import (
 
 	"centralized-data-service/internal/model"
 )
-
-// ShouldUseAirbyte returns true when the registry row opts into Airbyte
-// (sync_engine = "airbyte" or "both"). A nil entry is treated as "no" so
-// callers can pass the result of a best-effort lookup safely.
-func ShouldUseAirbyte(entry *model.TableRegistry) bool {
-	if entry == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(entry.SyncEngine)) {
-	case "airbyte", "both":
-		return true
-	default:
-		return false
-	}
-}
 
 // ShouldUseDebezium returns true for Debezium-only or dual-engine rows.
 func ShouldUseDebezium(entry *model.TableRegistry) bool {
@@ -85,7 +69,6 @@ func isRFC3339Like(s string) bool {
 	if len(s) < 10 || len(s) > 35 {
 		return false
 	}
-	// Try the two most common layouts emitted by Debezium / Airbyte.
 	for _, layout := range []string{time.RFC3339, time.RFC3339Nano, "2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
 		if _, err := time.Parse(layout, s); err == nil {
 			return true

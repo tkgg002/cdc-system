@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Table, Tag, Button, Space, Switch, message, Spin, Typography, Card, Row, Col, Descriptions, Tooltip, Alert } from 'antd';
-import { ArrowLeftOutlined, PlusOutlined, SearchOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, SyncOutlined } from '@ant-design/icons';
+import { Table, Tag, Button, Space, Switch, message, Spin, Typography, Card, Row, Col, Descriptions, Tooltip, Alert, Modal, Input } from 'antd';
+import { ArrowLeftOutlined, PlusOutlined, SearchOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, SyncOutlined, EyeOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { cmsApi } from '../services/api';
 import type { MappingRule, TableRegistry } from '../types';
@@ -33,6 +33,36 @@ export default function MappingFieldsPage() {
   const [togglingId, setTogglingId] = useState<number | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [batchLoading, setBatchLoading] = useState(false);
+  const [previewRule, setPreviewRule] = useState<MappingRule | null>(null);
+  const [previewPath, setPreviewPath] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewResult, setPreviewResult] = useState<Array<{ source_id: string; extracted?: unknown; violation?: string }>>([]);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const openPreview = (rule: MappingRule) => {
+    setPreviewRule(rule);
+    setPreviewPath(`after.${rule.source_field}`);
+    setPreviewResult([]);
+    setPreviewError(null);
+  };
+
+  const runPreview = async () => {
+    if (!registry || !previewRule) return;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      const { data: res } = await cmsApi.post('/api/v1/mapping-rules/preview', {
+        shadow_table: registry.target_table,
+        jsonpath: previewPath,
+        sample_limit: 3,
+      });
+      setPreviewResult(res.data || []);
+    } catch (err: any) {
+      setPreviewError(err.response?.data?.detail || err.response?.data?.error || 'Preview failed');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
 
   const handleBatchUpdate = async (status: string) => {
     if (selectedRowKeys.length === 0) {
@@ -116,7 +146,7 @@ export default function MappingFieldsPage() {
     if (!registry) return;
     setScanning(true);
     try {
-      // Primary: scan _raw_data JSONB directly (no Airbyte API dependency)
+
       const { data: res } = await cmsApi.get(`/api/introspection/scan-raw/${registry.target_table}`);
       setNewFields(res.new_fields || []);
       if ((res.new_fields || []).length === 0) {
@@ -125,7 +155,7 @@ export default function MappingFieldsPage() {
         message.success(`Found ${res.new_fields.length} unmapped fields in _raw_data!`);
       }
     } catch (err: any) {
-      // Fallback: try Airbyte-based introspection
+
       try {
         const { data: res } = await cmsApi.get(`/api/introspection/scan/${registry.target_table}`);
         setNewFields(res.new_fields || []);
@@ -223,9 +253,14 @@ export default function MappingFieldsPage() {
       title: 'Action',
       key: 'action',
       render: (_, record) => (
-        <Button size="small" type="link" onClick={() => handleBackfill(record.id)}>
-          Backfill
-        </Button>
+        <Space size={4}>
+          <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => openPreview(record)}>
+            Preview
+          </Button>
+          <Button size="small" type="link" onClick={() => handleBackfill(record.id)}>
+            Backfill
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -342,6 +377,44 @@ export default function MappingFieldsPage() {
         }}
         initialValues={modalInitial}
       />
+
+      <Modal
+        open={!!previewRule}
+        title={previewRule ? `Preview JsonPath — ${previewRule.source_field} → ${previewRule.target_column}` : ''}
+        onCancel={() => { setPreviewRule(null); setPreviewResult([]); setPreviewError(null); }}
+        onOk={runPreview}
+        okText="Run Preview"
+        confirmLoading={previewLoading}
+        cancelText="Close"
+        width={720}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <div>
+            <Text type="secondary">Shadow table: </Text>
+            <Text code>{registry.target_table}</Text>
+          </div>
+          <Input
+            placeholder="JsonPath (gjson syntax) — e.g. after.amount, after.user._id"
+            value={previewPath}
+            onChange={(e) => setPreviewPath(e.target.value)}
+            prefix={<EyeOutlined />}
+          />
+          {previewError && <Alert type="error" message={previewError} showIcon />}
+          {previewResult.length > 0 && (
+            <div>
+              <Text strong>3 sample rows:</Text>
+              <pre style={{ background: '#fafafa', padding: 12, marginTop: 8, maxHeight: 360, overflow: 'auto', fontSize: 12 }}>
+                {JSON.stringify(previewResult, null, 2)}
+              </pre>
+            </div>
+          )}
+          {!previewLoading && previewResult.length === 0 && !previewError && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              Nhấn "Run Preview" để gọi <code>POST /api/v1/mapping-rules/preview</code> với gjson engine lấy 3 sample từ shadow table.
+            </Text>
+          )}
+        </Space>
+      </Modal>
     </div>
   );
 }

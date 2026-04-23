@@ -12,23 +12,15 @@ type TableRegistry struct {
 	SourceTable         string    `gorm:"column:source_table;not null" json:"source_table"`
 	SourceURL           string    `gorm:"column:source_url" json:"source_url"`
 	TargetTable         string    `gorm:"column:target_table;not null" json:"target_table"`
-	SyncEngine          string    `gorm:"column:sync_engine;default:airbyte" json:"sync_engine"`
-	SyncInterval        string    `gorm:"column:sync_interval;default:1h" json:"sync_interval"`
-	Priority            string    `gorm:"column:priority;default:normal" json:"priority"`
-	PrimaryKeyField     string    `gorm:"column:primary_key_field;default:id" json:"primary_key_field"`
-	PrimaryKeyType      string    `gorm:"column:primary_key_type" json:"primary_key_type"`
-	IsActive            bool      `gorm:"column:is_active;default:true" json:"is_active"`
-	IsTableCreated      bool      `gorm:"column:is_table_created;default:false" json:"is_table_created"`
-	AirbyteConnectionID      *string    `gorm:"column:airbyte_connection_id" json:"airbyte_connection_id"`
-	AirbyteSourceID          *string    `gorm:"column:airbyte_source_id" json:"airbyte_source_id"`
-	AirbyteDestinationID     *string    `gorm:"column:airbyte_destination_id" json:"airbyte_destination_id"`
-	AirbyteDestinationName   *string    `gorm:"column:airbyte_destination_name" json:"airbyte_destination_name"`
-	AirbyteRawTable          *string    `gorm:"column:airbyte_raw_table" json:"airbyte_raw_table"`
-	AirbyteSyncMode          *string    `gorm:"column:airbyte_sync_mode" json:"airbyte_sync_mode"`
-	AirbyteDestinationSync   *string    `gorm:"column:airbyte_destination_sync_mode" json:"airbyte_destination_sync_mode"`
-	AirbyteCursorField       *string    `gorm:"column:airbyte_cursor_field" json:"airbyte_cursor_field"`
-	AirbyteNamespace         *string    `gorm:"column:airbyte_namespace" json:"airbyte_namespace"`
-	SyncStatus               string     `gorm:"column:sync_status;default:unknown" json:"sync_status"`
+	SyncEngine      string `gorm:"column:sync_engine;default:debezium" json:"sync_engine"`
+	SyncInterval    string `gorm:"column:sync_interval;default:1h" json:"sync_interval"`
+	Priority        string `gorm:"column:priority;default:normal" json:"priority"`
+	PrimaryKeyField string `gorm:"column:primary_key_field;default:id" json:"primary_key_field"`
+	PrimaryKeyType  string `gorm:"column:primary_key_type" json:"primary_key_type"`
+	IsActive        bool   `gorm:"column:is_active;default:true" json:"is_active"`
+	IsTableCreated  bool   `gorm:"column:is_table_created;default:false" json:"is_table_created"`
+	// directive). Go struct fields dropped — consumers migrate to Debezium.
+	SyncStatus      string `gorm:"column:sync_status;default:unknown" json:"sync_status"`
 	LastReconAt              *time.Time `gorm:"column:last_recon_at" json:"last_recon_at"`
 	ReconDrift               int64      `gorm:"column:recon_drift;default:0" json:"recon_drift"`
 	LastBridgeAt             *time.Time `gorm:"column:last_bridge_at" json:"last_bridge_at"`

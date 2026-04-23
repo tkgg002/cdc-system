@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Row, Col, Card, Statistic, Progress, Spin, Typography, Space, Tag, List, Alert } from 'antd';
 import { SyncOutlined, CheckCircleOutlined, ExclamationCircleOutlined, DashboardOutlined, DatabaseOutlined, TeamOutlined } from '@ant-design/icons';
-import { cmsApi, workerApi } from '../services/api';
+import { workerApi } from '../services/api';
 
 const { Title, Text } = Typography;
 
@@ -23,13 +23,6 @@ interface WorkerStats {
   };
 }
 
-interface AirbyteJob {
-  jobId: number;
-  status: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
 // Safe accessors to prevent crashes on unexpected data shapes
 function safeNum(val: any): number {
   return typeof val === 'number' ? val : 0;
@@ -43,8 +36,6 @@ export default function QueueMonitoring() {
   const [stats, setStats] = useState<WorkerStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [airbyteJobs, setAirbyteJobs] = useState<AirbyteJob[]>([]);
-
   const fetchStats = async () => {
     try {
       const { data } = await workerApi.get('/api/v1/internal/stats');
@@ -59,22 +50,9 @@ export default function QueueMonitoring() {
     }
   };
 
-  const fetchAirbyteJobs = async () => {
-    try {
-      const { data } = await cmsApi.get('/api/airbyte/jobs');
-      if (Array.isArray(data)) {
-        setAirbyteJobs(data);
-      }
-    } catch { /* Silent fail for monitoring */ }
-  };
-
   useEffect(() => {
     fetchStats();
-    fetchAirbyteJobs();
-    const timer = setInterval(() => {
-      fetchStats();
-      fetchAirbyteJobs();
-    }, 5000);
+    const timer = setInterval(fetchStats, 5000);
     return () => clearInterval(timer);
   }, []);
 
@@ -181,41 +159,6 @@ export default function QueueMonitoring() {
               </Col>
             </Row>
           </Card>
-        </Col>
-      </Row>
-
-      <Row style={{ marginTop: 16 }}>
-        <Col span={24}>
-           <Card title={<Space><SyncOutlined /> Airbyte Raw Data Sync Status (Extraction Layer)</Space>}>
-             {airbyteJobs.length === 0 ? (
-               <Text type="secondary">No sync jobs found</Text>
-             ) : (
-               <List
-                  grid={{ gutter: 16, column: 4 }}
-                  dataSource={airbyteJobs}
-                  renderItem={(job) => (
-                    <List.Item>
-                      <Card size="small">
-                         <Space direction="vertical" style={{ width: '100%' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                               <Text strong>Job #{job.jobId}</Text>
-                               <Tag color={
-                                 job.status === 'succeeded' ? 'success' :
-                                 (job.status === 'running' ? 'processing' : 'error')
-                               }>
-                                 {(job.status || 'unknown').toUpperCase()}
-                               </Tag>
-                            </div>
-                            <Text type="secondary" style={{ fontSize: '12px' }}>
-                               Last Update: {job.updatedAt ? new Date(job.updatedAt).toLocaleTimeString() : 'N/A'}
-                            </Text>
-                         </Space>
-                      </Card>
-                    </List.Item>
-                  )}
-               />
-             )}
-           </Card>
         </Col>
       </Row>
 

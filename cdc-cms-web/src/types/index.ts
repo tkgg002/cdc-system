@@ -21,17 +21,13 @@ export interface TableRegistry {
   source_type: 'mongodb' | 'mysql' | 'postgresql';
   source_table: string;
   target_table: string;
-  sync_engine: 'airbyte' | 'debezium' | 'both';
+  sync_engine: 'debezium';
   sync_interval: string;
   priority: 'critical' | 'high' | 'normal' | 'low';
   primary_key_field: string;
   primary_key_type: string;
   is_active: boolean;
   is_table_created: boolean;
-  airbyte_connection_id: string | null;
-  airbyte_source_id: string | null;
-  airbyte_destination_id: string | null;
-  airbyte_destination_name: string | null;
   created_at: string;
   updated_at: string;
   notes: string | null;

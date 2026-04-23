@@ -1,0 +1,74 @@
+table: payment_bills
+sample_size: 10213          # 1% TABLESAMPLE BERNOULLI
+total_rows: 1000002
+generated_at: "2026-04-21T02:05:00Z"
+source: manual_sql_profile
+scan_status: "no_raw_data_column"
+note: |
+  payment_bills DOES NOT have _raw_data JSONB column. Airbyte destreamer has
+  FLATTENED the source payload into native columns (amount NUMERIC, paidAmount
+  NUMERIC, currency VARCHAR, etc). Go profile_table tool is NOT applicable for
+  this table because it expects `_raw_data` (JSONB).
+  Profile below is derived from information_schema + TABLESAMPLE BERNOULLI(1)
+  over native columns.
+fields:
+  - field: _id
+    detected_type: number           # NUMERIC column type
+    confidence: 1.0
+    null_rate: 0.0                  # inferred from sample
+    is_financial: false
+    note: "primary key-like but stored as numeric (casted from Mongo ObjectId)"
+  - field: __v
+    detected_type: number
+    confidence: 1.0
+    null_rate: 0.0
+    is_financial: false
+    note: "Mongoose version counter — candidate for garbage-strip"
+  - field: amount
+    detected_type: number
+    confidence: 1.0
+    null_rate: 0.0                  # 10213/10213 non-null
+    is_financial: true              # matches ^amount regex
+    value_range_sample: "50095..499971"
+  - field: paidAmount
+    detected_type: number
+    confidence: 1.0
+    null_rate: 0.026                # 9944/10213
+    is_financial: true              # suffix _amount rule
+  - field: refundedAmount
+    detected_type: number
+    confidence: 1.0
+    null_rate: 0.019
+    is_financial: true              # suffix _amount rule
+  - field: currency
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.042
+    is_financial: true              # currency* prefix rule
+    distinct_values_in_sample: 1
+  - field: extensionTime
+    detected_type: number
+    confidence: 1.0
+    null_rate: 0.025
+    is_financial: false
+  - field: createdAt
+    detected_type: string           # column type VARCHAR — stored as ISO-like string
+    confidence: 1.0
+    null_rate: 0.022
+    is_financial: false
+    note: "stored as VARCHAR not TIMESTAMPTZ — format ambiguity possible"
+  - field: completedAt
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.020
+    is_financial: false
+  - field: extraInfo
+    detected_type: object           # JSONB
+    confidence: 1.0
+    null_rate: 0.039
+    is_financial: false
+  - field: merchantInfo
+    detected_type: object
+    confidence: 1.0
+    null_rate: 0.019
+    is_financial: false

@@ -3,7 +3,6 @@
 // Purpose: Run health probes asynchronously in the background, cache a
 // snapshot JSON in Redis (`system_health:snapshot`, TTL 60s), and let the
 // HTTP handler simply read from cache. This replaces a 5-way synchronous
-// aggregate (kafka-connect, worker, nats, postgres, redis, airbyte,
 // percentile SQL) that drove the handler p99 to 2-5s and made it
 // cascade-failure-prone.
 //
@@ -29,7 +28,6 @@ import (
 	"time"
 
 	"cdc-cms-service/internal/model"
-	"cdc-cms-service/pkgs/airbyte"
 	"cdc-cms-service/pkgs/rediscache"
 
 	"github.com/prometheus/common/expfmt"
@@ -95,13 +93,12 @@ type CollectorConfig struct {
 
 // Collector aggregates external probes and writes a cached snapshot to Redis.
 type Collector struct {
-	cfg           CollectorConfig
-	db            *gorm.DB
-	redis         *rediscache.RedisCache
-	airbyteClient *airbyte.Client
-	prom          *PromClient
-	httpClient    *http.Client
-	logger        *zap.Logger
+	cfg        CollectorConfig
+	db         *gorm.DB
+	redis      *rediscache.RedisCache
+	prom       *PromClient
+	httpClient *http.Client
+	logger     *zap.Logger
 
 	// alerts is optional — when nil the collector simply skips alert ingest,
 	// preserving the original Phase 0 behaviour. When set, each tick calls
@@ -114,7 +111,6 @@ func NewCollector(
 	cfg CollectorConfig,
 	db *gorm.DB,
 	redis *rediscache.RedisCache,
-	airbyteClient *airbyte.Client,
 	prom *PromClient,
 	logger *zap.Logger,
 ) *Collector {
@@ -140,11 +136,10 @@ func NewCollector(
 		cfg.LagTopicPrefix = "cdc.goopay."
 	}
 	return &Collector{
-		cfg:           cfg,
-		db:            db,
-		redis:         redis,
-		airbyteClient: airbyteClient,
-		prom:          prom,
+		cfg:   cfg,
+		db:    db,
+		redis: redis,
+		prom:  prom,
 		// Shared HTTP client with a small pool; per-request timeout via context.
 		httpClient: &http.Client{Timeout: cfg.ProbeTimeout + 500*time.Millisecond},
 		logger:     logger,
@@ -206,7 +201,6 @@ func (c *Collector) collectAndCache(parent context.Context) error {
 	g.Go(func() error { set("infra", "nats", c.probeNATS(gCtx)); return nil })
 	g.Go(func() error { set("infra", "postgres", c.probePostgres(gCtx)); return nil })
 	g.Go(func() error { set("infra", "redis", c.probeRedis(gCtx)); return nil })
-	g.Go(func() error { set("infra", "airbyte", c.probeAirbyte(gCtx)); return nil })
 
 	// ----- CDC pipeline probes -----
 	g.Go(func() error { set("pipeline", "worker", c.probeWorker(gCtx)); return nil })
@@ -541,21 +535,6 @@ func (c *Collector) probeRedis(ctx context.Context) map[string]any {
 	return map[string]any{"status": StatusUp, "latency_ms": time.Since(start).Milliseconds()}
 }
 
-func (c *Collector) probeAirbyte(ctx context.Context) map[string]any {
-	if c.airbyteClient == nil {
-		return map[string]any{"status": StatusUnknown}
-	}
-	base := strings.TrimRight(c.airbyteClient.GetBaseURL(), "/")
-	start := time.Now()
-	_, code, err := c.httpGet(ctx, base+"/v1/health")
-	if err != nil {
-		return map[string]any{"status": StatusDown, "error": sanitizeErr(err), "latency_ms": time.Since(start).Milliseconds()}
-	}
-	if code >= 300 {
-		return map[string]any{"status": StatusDown, "http_status": code, "latency_ms": time.Since(start).Milliseconds()}
-	}
-	return map[string]any{"status": StatusUp, "latency_ms": time.Since(start).Milliseconds()}
-}
 
 // ----- DB-derived sections -----
 

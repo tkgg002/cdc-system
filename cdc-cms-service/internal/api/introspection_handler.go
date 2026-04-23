@@ -33,7 +33,6 @@ func NewIntrospectionHandler(natsClient *natsconn.NatsClient) *IntrospectionHand
 func (h *IntrospectionHandler) Scan(c *fiber.Ctx) error {
 	targetTable := c.Params("table")
 
-	// Primary: scan _raw_data JSONB directly (no Airbyte dependency)
 	msg, err := h.natsClient.Conn.Request("cdc.cmd.scan-raw-data", []byte(targetTable), 10*time.Second)
 	if err == nil {
 		var res map[string]interface{}
@@ -44,7 +43,6 @@ func (h *IntrospectionHandler) Scan(c *fiber.Ctx) error {
 		}
 	}
 
-	// Fallback: Airbyte-based introspection
 	payload, _ := json.Marshal(map[string]interface{}{
 		"target_table": targetTable,
 	})
@@ -70,7 +68,6 @@ func (h *IntrospectionHandler) Scan(c *fiber.Ctx) error {
 
 // ScanRawData godoc
 // @Summary      Scan _raw_data JSONB for unmapped fields
-// @Description  Directly scans the _raw_data column in the DW table to find fields not yet mapped. Works without Airbyte API.
 // @Tags         Introspection
 // @Produce      json
 // @Param        table   path string true "Target table name (e.g. cdc_merchants)"

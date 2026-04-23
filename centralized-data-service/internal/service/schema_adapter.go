@@ -85,7 +85,6 @@ func (sa *SchemaAdapter) loadSchema(tableName string) *TableSchema {
 
 // PrepareForCDCInsert makes target table ready for CDC upserts:
 // 1. Add CDC columns if missing
-// 2. Drop NOT NULL on _airbyte_* columns (Debezium inserts don't have them)
 // 3. Add UNIQUE constraint on PK if missing
 func (sa *SchemaAdapter) PrepareForCDCInsert(tableName, pkColumn string) error {
 	schema := sa.GetSchema(tableName)
@@ -114,7 +113,6 @@ func (sa *SchemaAdapter) PrepareForCDCInsert(tableName, pkColumn string) error {
 		}
 	}
 
-	// 2. Drop NOT NULL on columns that pattern match _airbyte_* (dynamic, no hardcode)
 	for colName, info := range schema.Columns {
 		if strings.HasPrefix(colName, "_airbyte_") && !info.IsNullable {
 			sa.db.Exec(fmt.Sprintf(`ALTER TABLE "%s" ALTER COLUMN "%s" DROP NOT NULL`, tableName, colName))
@@ -306,7 +304,6 @@ func (sa *SchemaAdapter) BuildUpsertSQL(schema *TableSchema, tableName string, p
 
 	// OCC guard: plan v3 §6 — UPDATE only when the stored _source_ts
 	// is strictly older than the incoming one, OR the row has never
-	// carried a source ts (legacy airbyte / bridge imports). We do NOT
 	// add a hash guard in this branch — under ts-based OCC, a row
 	// arriving with a newer ts always wins even if the business hash
 	// happens to match, so `_source_ts` gets refreshed.

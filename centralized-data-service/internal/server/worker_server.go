@@ -11,7 +11,6 @@ import (
 	"centralized-data-service/internal/model"
 	"centralized-data-service/internal/repository"
 	"centralized-data-service/internal/service"
-	"centralized-data-service/pkgs/airbyte"
 	"centralized-data-service/pkgs/database"
 	"centralized-data-service/pkgs/mongodb"
 	"centralized-data-service/pkgs/natsconn"
@@ -206,9 +205,8 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 		logger.Warn("pgx pool init failed, batch bridge disabled", zap.Error(err))
 	}
 
-	// 10b. Command handler — handles DW operations relayed via NATS from the API
-	airbyteClient := airbyte.NewClient(cfg.Airbyte.APIURL, cfg.Airbyte.ClientID, cfg.Airbyte.ClientSecret, logger)
-	cmdHandler := handler.NewCommandHandler(db, mappingRepo, registryRepo, pendingRepo, airbyteClient, logger)
+	// 10b. Command handler — handles DW operations relayed via NATS from the API.
+	cmdHandler := handler.NewCommandHandler(db, mappingRepo, registryRepo, pendingRepo, logger)
 	// Inject Kafka Connect URL so boundary-refactor handlers (restart,
 	// sync-state) can call the Connect REST API without leaking through
 	// the CMS. Empty string keeps those handlers idle.
@@ -217,33 +215,47 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	natsClient.Conn.Subscribe("cdc.cmd.standardize", cmdHandler.HandleStandardize)
 	natsClient.Conn.Subscribe("cdc.cmd.discover", cmdHandler.HandleDiscover)
 	natsClient.Conn.Subscribe("cdc.cmd.backfill", cmdHandler.HandleBackfill)
-	natsClient.Conn.Subscribe("cdc.cmd.introspect", cmdHandler.HandleIntrospect)
 	natsClient.Conn.Subscribe("cdc.cmd.scan-raw-data", cmdHandler.HandleScanRawData)
-	natsClient.Conn.Subscribe("cdc.cmd.bridge-airbyte", cmdHandler.HandleAirbyteBridge)
 	natsClient.Conn.Subscribe("cdc.cmd.batch-transform", cmdHandler.HandleBatchTransform)
 	natsClient.Conn.Subscribe("cdc.cmd.periodic-scan", cmdHandler.HandlePeriodicScan)
 	natsClient.Conn.Subscribe("cdc.cmd.drop-gin-index", cmdHandler.HandleDropGINIndex)
 	natsClient.Conn.Subscribe("cdc.cmd.create-default-columns", cmdHandler.HandleCreateDefaultColumns)
-	// Boundary-refactor handlers — 10 new subjects that move ex-CMS
-	// operations into the Worker. See gap-analysis workspace doc
-	// 10_gap_analysis_scan_fields_boundary_violation.md for the audit.
+	// Boundary-refactor handlers — kept for Debezium-native flows.
 	natsClient.Conn.Subscribe("cdc.cmd.scan-fields", cmdHandler.HandleScanFields)
-	natsClient.Conn.Subscribe("cdc.cmd.scan-source", cmdHandler.HandleScanSource)
-	natsClient.Conn.Subscribe("cdc.cmd.refresh-catalog", cmdHandler.HandleRefreshCatalog)
-	natsClient.Conn.Subscribe("cdc.cmd.airbyte-sync", cmdHandler.HandleAirbyteSync)
 	natsClient.Conn.Subscribe("cdc.cmd.sync-register", cmdHandler.HandleSyncRegister)
 	natsClient.Conn.Subscribe("cdc.cmd.sync-state", cmdHandler.HandleSyncState)
 	natsClient.Conn.Subscribe("cdc.cmd.restart-debezium", cmdHandler.HandleRestartDebezium)
 	natsClient.Conn.Subscribe("cdc.cmd.alter-column", cmdHandler.HandleAlterColumn)
-	natsClient.Conn.Subscribe("cdc.cmd.import-streams", cmdHandler.HandleImportStreams)
-	natsClient.Conn.Subscribe("cdc.cmd.bulk-sync-from-airbyte", cmdHandler.HandleBulkSyncFromAirbyte)
 
-	// 10c. High-throughput batch bridge (pgx + Sonyflake + gjson)
-	if pgxPool != nil {
-		bridgeBatch := handler.NewBridgeBatchHandler(pgxPool, logger)
-		natsClient.Conn.Subscribe("cdc.cmd.bridge-airbyte-batch", bridgeBatch.HandleAirbyteBridgeBatch)
-		logger.Info("batch bridge handler registered (pgx pool)")
-	}
+	// Transmuter wiring (plan v2 §R6). TypeResolver + TransmuterModule +
+	// NATS handler. Subject cdc.cmd.transmute materialises 1 master;
+	// cdc.cmd.transmute-shadow fans out from post-ingest hook.
+	typeResolver := service.NewTypeResolver(db)
+	transmuter := service.NewTransmuterModule(db, typeResolver, logger)
+	transmuteHandler := handler.NewTransmuteHandler(transmuter, db, natsClient.Conn, logger)
+	natsClient.Conn.Subscribe("cdc.cmd.transmute", transmuteHandler.HandleTransmute)
+	natsClient.Conn.Subscribe("cdc.cmd.transmute-shadow", transmuteHandler.HandleTransmuteShadow)
+	logger.Info("transmute handler registered",
+		zap.String("subject_run", "cdc.cmd.transmute"),
+		zap.String("subject_shadow", "cdc.cmd.transmute-shadow"))
+
+	// Transmute scheduler (plan v2 §R7). Cron-driven + fencing-guarded.
+	// machineID/fencingToken shared with sinkworker not strictly required
+	// here — worker binary claims its own pair via worker_registry. For
+	// local dev we reuse a 0/0 pair; production should wire distinct claim.
+	transmuteScheduler := service.NewTransmuteScheduler(db, natsClient.Conn, logger, 0, 0)
+	go transmuteScheduler.Start(context.Background())
+	logger.Info("transmute scheduler started (60s poll, cron + FOR UPDATE SKIP LOCKED + fencing)")
+
+	// Master DDL generator (Sprint 5 R8) — consumes cdc.cmd.master-create.
+	masterDDLGen := service.NewMasterDDLGenerator(db, logger)
+	masterDDLHandler := handler.NewMasterDDLHandler(masterDDLGen, natsClient.Conn, logger)
+	natsClient.Conn.Subscribe("cdc.cmd.master-create", masterDDLHandler.HandleMasterCreate)
+	logger.Info("master DDL handler registered", zap.String("subject", "cdc.cmd.master-create"))
+
+	// Sprint 4 4A.1. pgxPool remains available for future high-throughput
+	// Debezium-only consumers.
+	_ = pgxPool
 
 	// 10d. Reconciliation handlers (recon-check, recon-heal, retry-failed, debezium signals)
 	var reconHealerShared *service.ReconHealer
@@ -317,14 +329,13 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 
 	logger.Info("command listeners registered", zap.Strings("subjects", []string{
 		"cdc.cmd.standardize", "cdc.cmd.discover", "cdc.cmd.backfill",
-		"cdc.cmd.scan-raw-data", "cdc.cmd.bridge-airbyte", "cdc.cmd.batch-transform",
-		"cdc.cmd.bridge-airbyte-batch", "cdc.cmd.recon-check", "cdc.cmd.recon-heal",
+		"cdc.cmd.scan-raw-data", "cdc.cmd.batch-transform",
+		"cdc.cmd.recon-check", "cdc.cmd.recon-heal",
 		"cdc.cmd.retry-failed", "cdc.cmd.debezium-signal", "cdc.cmd.debezium-snapshot",
-		// Boundary-refactor additions — 10 new subjects.
-		"cdc.cmd.scan-fields", "cdc.cmd.scan-source", "cdc.cmd.refresh-catalog",
-		"cdc.cmd.airbyte-sync", "cdc.cmd.sync-register", "cdc.cmd.sync-state",
-		"cdc.cmd.restart-debezium", "cdc.cmd.alter-column", "cdc.cmd.import-streams",
-		"cdc.cmd.bulk-sync-from-airbyte",
+		"cdc.cmd.scan-fields", "cdc.cmd.sync-register", "cdc.cmd.sync-state",
+		"cdc.cmd.restart-debezium", "cdc.cmd.alter-column",
+		"cdc.cmd.master-create",
+		"cdc.cmd.transmute", "cdc.cmd.transmute-shadow",
 	}))
 
 	// 11. HTTP server (health + metrics)
@@ -443,11 +454,9 @@ func (s *WorkerServer) Start() error {
 		s.db.Model(&model.WorkerSchedule{}).Count(&count)
 		if count == 0 {
 			defaults := []model.WorkerSchedule{
-				{Operation: "bridge", IntervalMinutes: 5, IsEnabled: true},
 				{Operation: "transform", IntervalMinutes: 5, IsEnabled: true},
 				{Operation: "field-scan", IntervalMinutes: 60, IsEnabled: true},
 				{Operation: "partition-check", IntervalMinutes: 1440, IsEnabled: true},
-				{Operation: "airbyte-sync", IntervalMinutes: 5, IsEnabled: true},
 				{Operation: "reconcile", IntervalMinutes: 30, IsEnabled: true},
 			}
 			for _, d := range defaults {
@@ -527,8 +536,6 @@ func (s *WorkerServer) Start() error {
 					s.runPartitionCheck(now)
 				case "reconcile":
 					s.runReconcileCycle(now)
-				case "airbyte-sync":
-					s.activityLogger.Quick("airbyte-sync", "*", "scheduler", "success", 0, nil, "")
 				}
 
 				// Update last_run_at + run_count
@@ -545,38 +552,17 @@ func (s *WorkerServer) Start() error {
 	return s.app.Listen(s.cfg.Server.Port)
 }
 
-// runBridgeCycle dispatches bridge. targetTable="" = all active, specific = only that table.
-func (s *WorkerServer) runBridgeCycle(now time.Time, targetTable string) {
-	entries, err := s.registryRepo.GetAllActive(context.Background())
-	if err != nil {
-		s.activityLogger.Quick("bridge", targetTable, "scheduler", "error", 0, nil, err.Error())
-		return
-	}
-	dispatched := 0
-	for _, entry := range entries {
-		if targetTable != "" && entry.TargetTable != targetTable {
-			continue
-		}
-		rawTable := entry.SourceTable
-		if entry.AirbyteRawTable != nil && *entry.AirbyteRawTable != "" {
-			rawTable = *entry.AirbyteRawTable
-		}
-		bridgePayload, _ := json.Marshal(map[string]string{
-			"target_table":      entry.TargetTable,
-			"airbyte_raw_table": rawTable,
-			"primary_key_field": entry.PrimaryKeyField,
-			"source_type":       entry.SourceType,
-		})
-		s.nats.Conn.Publish("cdc.cmd.bridge-airbyte", bridgePayload)
-		dispatched++
-	}
+// runBridgeCycle is a no-op after Sprint 4 4A.1 retired the legacy bridge
+// pipeline. Kept so WorkerSchedule rows with operation="bridge" don't error
+// until an admin deletes them from cdc_worker_schedule. Future work: replace
+// with Transmuter trigger dispatch.
+func (s *WorkerServer) runBridgeCycle(_ time.Time, targetTable string) {
 	logTarget := targetTable
 	if logTarget == "" {
 		logTarget = "*"
 	}
-	s.activityLogger.Quick("bridge", logTarget, "scheduler", "success", int64(dispatched), map[string]interface{}{
-		"tables": dispatched,
-	}, "")
+	s.activityLogger.Quick("bridge", logTarget, "scheduler", "skipped", 0,
+		map[string]interface{}{"reason": "legacy bridge retired"}, "")
 }
 
 // runTransformCycle dispatches transform. targetTable="" = all, specific = only that table.

@@ -1,0 +1,8 @@
+table: payment_bill_codes
+sample_size: 0
+total_rows: 0
+generated_at: "2026-04-21T02:05:00Z"
+scan_status: "table_empty"
+note: |
+  0 rows. Schema: 5 Airbyte meta columns only. No business data to profile.
+fields: []

@@ -34,10 +34,3 @@ func (r *SchemaLogRepo) GetByTable(ctx context.Context, tableName *string, sourc
 	return logs, err
 }
 
-func (r *SchemaLogRepo) UpdateAirbyteStatus(ctx context.Context, id uint, status string) error {
-	return r.db.WithContext(ctx).Model(&model.SchemaChangeLog{}).Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"airbyte_refresh_triggered": true,
-			"airbyte_refresh_status":    status,
-		}).Error
-}

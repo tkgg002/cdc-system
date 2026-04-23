@@ -10,7 +10,6 @@ import (
 	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/internal/router"
 	"cdc-cms-service/internal/service"
-	"cdc-cms-service/pkgs/airbyte"
 	"cdc-cms-service/pkgs/database"
 	"cdc-cms-service/pkgs/natsconn"
 	"cdc-cms-service/pkgs/rediscache"
@@ -77,20 +76,24 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	pendingRepo := repository.NewPendingFieldRepo(db)
 	schemaLogRepo := repository.NewSchemaLogRepo(db)
 
-	// External clients
-	airbyteClient := airbyte.NewClient(cfg.Airbyte.APIURL, cfg.Airbyte.APIKey, cfg.Airbyte.WorkspaceID, logger)
+	// No external client wiring required.
 
 	// Services
-	approvalSvc := service.NewApprovalService(db, pendingRepo, mappingRepo, schemaLogRepo, registryRepo, natsClient, airbyteClient, logger)
-	reconSvc := service.NewReconciliationService(registryRepo, mappingRepo, airbyteClient, db, logger, cfg.Airbyte.SyncInterval)
+	approvalSvc := service.NewApprovalService(db, pendingRepo, mappingRepo, schemaLogRepo, registryRepo, natsClient, logger)
+	reconSvc := service.NewReconciliationService(registryRepo, mappingRepo, db, logger)
 
 	// Handlers
 	healthHandler := api.NewHealthHandler(db)
 	schemaHandler := api.NewSchemaChangeHandler(pendingRepo, schemaLogRepo, approvalSvc)
-	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, airbyteClient, logger)
+	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, logger)
+	cdcInternalRegistryHandler := api.NewCDCInternalRegistryHandler(db, logger)
+	systemConnectorsHandler := api.NewSystemConnectorsHandler(cfg.System.KafkaConnectURL, logger)
+	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, logger)
+	schemaProposalHandler := api.NewSchemaProposalHandler(db, logger)
+	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, logger)
+	mappingPreviewHandler := api.NewMappingPreviewHandler(db, logger)
 	mappingHandler := api.NewMappingRuleHandler(mappingRepo, registryRepo, natsClient, db)
 	introspectionHandler := api.NewIntrospectionHandler(natsClient)
-	airbyteHandler := api.NewAirbyteHandler(airbyteClient, registryRepo, mappingRepo, natsClient, db, logger)
 	activityLogHandler := api.NewActivityLogHandler(db)
 	scheduleHandler := api.NewScheduleHandler(db)
 	reconHandler := api.NewReconciliationHandler(db, natsClient)
@@ -114,7 +117,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 			CacheKey:         cfg.System.HealthCacheKey,
 			DebeziumName:     cfg.System.DebeziumConnector,
 		},
-		db, redisCache, airbyteClient, promClient, logger,
+		db, redisCache, promClient, logger,
 	)
 	systemHealthHandler := api.NewSystemHealthHandler(
 		redisCache,
@@ -150,7 +153,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	app.Get("/swagger/*", swagger.HandlerDefault)
 
 	// Routes
-	router.SetupRoutes(app, cfg, healthHandler, schemaHandler, registryHandler, mappingHandler, introspectionHandler, airbyteHandler, activityLogHandler, scheduleHandler, reconHandler, systemHealthHandler, alertsHandler, destructiveMW)
+	router.SetupRoutes(app, cfg, healthHandler, schemaHandler, registryHandler, cdcInternalRegistryHandler, systemConnectorsHandler, masterRegistryHandler, schemaProposalHandler, scheduleHandler2, mappingPreviewHandler, mappingHandler, introspectionHandler, activityLogHandler, scheduleHandler, reconHandler, systemHealthHandler, alertsHandler, destructiveMW)
 
 	return &Server{
 		cfg: cfg, logger: logger, db: db,

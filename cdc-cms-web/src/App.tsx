@@ -15,6 +15,10 @@ const Login = lazy(() => import('./pages/Login'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const SchemaChanges = lazy(() => import('./pages/SchemaChanges'));
 const TableRegistry = lazy(() => import('./pages/TableRegistry'));
+const CDCInternalRegistry = lazy(() => import('./pages/CDCInternalRegistry'));
+const MasterRegistry = lazy(() => import('./pages/MasterRegistry'));
+const SchemaProposals = lazy(() => import('./pages/SchemaProposals'));
+const TransmuteSchedules = lazy(() => import('./pages/TransmuteSchedules'));
 const MappingFieldsPage = lazy(() => import('./pages/MappingFieldsPage'));
 const SourceConnectors = lazy(() => import('./pages/SourceConnectors'));
 const QueueMonitoring = lazy(() => import('./pages/QueueMonitoring'));
@@ -75,8 +79,20 @@ function AppLayout() {
           <Menu.Item key="registry" icon={<DatabaseOutlined />}>
             <Link to="/registry">Table Registry</Link>
           </Menu.Item>
+          <Menu.Item key="cdc-internal" icon={<DatabaseOutlined />}>
+            <Link to="/cdc-internal">Shadow Registry (v1.25)</Link>
+          </Menu.Item>
+          <Menu.Item key="masters" icon={<DatabaseOutlined />}>
+            <Link to="/masters">Master Registry</Link>
+          </Menu.Item>
+          <Menu.Item key="proposals" icon={<BranchesOutlined />}>
+            <Link to="/schema-proposals">Schema Proposals</Link>
+          </Menu.Item>
+          <Menu.Item key="schedules" icon={<SettingOutlined />}>
+            <Link to="/schedules">Transmute Schedules</Link>
+          </Menu.Item>
           <Menu.Item key="sources" icon={<SettingOutlined />}>
-            <Link to="/sources">Source Connectors</Link>
+            <Link to="/sources">Debezium Command Center</Link>
           </Menu.Item>
           <Menu.Item key="queue" icon={<DashboardOutlined />}>
             <Link to="/queue">Queue Monitor</Link>
@@ -107,6 +123,10 @@ function AppLayout() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/schema-changes" element={<SchemaChanges />} />
                 <Route path="/registry" element={<TableRegistry />} />
+                <Route path="/cdc-internal" element={<CDCInternalRegistry />} />
+                <Route path="/masters" element={<MasterRegistry />} />
+                <Route path="/schema-proposals" element={<SchemaProposals />} />
+                <Route path="/schedules" element={<TransmuteSchedules />} />
                 <Route path="/registry/:id/mappings" element={<MappingFieldsPage />} />
                 <Route path="/sources" element={<SourceConnectors />} />
                 <Route path="/queue" element={<QueueMonitoring />} />

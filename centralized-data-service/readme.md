@@ -1,23 +1,30 @@
 # Centralized Data Service (CDC Integration)
 
-GooPay CDC Hybrid system: Airbyte (batch) + Debezium (real-time) → PostgreSQL.
+GooPay CDC system: Debezium (real-time MongoDB change stream) → Kafka → SinkWorker → cdc_internal shadow tables → Transmuter → public master tables.
 
 ## Architecture
 
 ```
-MySQL (Binlog) ──┐
-                  ├──→ Airbyte (batch sync) ──→ PostgreSQL (Data Warehouse)
-MongoDB (Oplog) ─┘                                    │
-                                                       ├── CDC Worker (Go) ← NATS
-                                                       ├── CMS Service (approve schema changes)
-                                                       └── Redis (cache)
+MongoDB (Oplog) ──► Debezium ──► Kafka ──► SinkWorker ──► cdc_internal.<shadow> (JSONB)
+                                                                │
+                                                                │ Transmuter (plan v2 §R6)
+                                                                ▼
+                                                          public.<master> (typed columns)
+                                                                ▲
+                                                                │
+                                                CMS API (admin plane) ← NATS cdc.cmd.*
+                                                                ▲
+                                                                │
+                                                    CMS FE (React + AntD)
 ```
+
+Post-Sprint 4: legacy batch-sync pipeline retired; sole CDC engine is the Debezium → cdc_internal → Transmuter chain. Plan: `agent/memory/workspaces/feature-cdc-integration/02_plan_airbyte_removal_v2_command_center.md`.
 
 ## Prerequisites
 
 - Docker Desktop (Docker Engine 24+, Compose V2)
-- 8GB+ RAM free (Airbyte alone needs ~4GB)
-- Ports free: 5432, 18000, 18006, 8080, 13306, 14222, 16379, 17017, 18222
+- 4GB+ RAM free
+- Ports free: 5432, 8080, 13306, 14222, 16379, 17017, 18083, 18222, 19092
   > Ports prefix `1xxxx` de tranh conflict voi existing containers (some-mongo, some-nats, some-redis)
 
 ## Quick Start
@@ -98,46 +105,6 @@ docker exec -i gpay-postgres psql -U user -d goopay_dw < migrations/001_init_sch
 
 > Chua co file migration? Tao tables theo `03_implementation.md` Section 2.
 
-### Step 8: Install Airbyte (cai rieng, khong trong docker-compose)
-
-Airbyte la multi-container platform, khong co single Docker image. Cai bang `abctl`:
-
-```bash
-# Install abctl (macOS)
-brew install airbytehq/tap/abctl
-
-# Deploy Airbyte local on port 18000
-abctl local install --port 18000
-```
-
-Sau khi cai xong:
-- **Airbyte UI**: http://localhost:18000
-- **Airbyte API**: http://localhost:18006
-- **Credentials (User/Pass)**: Chạy lệnh `abctl local credentials` để lấy thông tin đăng nhập mặc định.
-
-> Airbyte can ~4GB RAM. Neu may yeu, skip buoc nay va config sau.
-
-#### Configure Airbyte connections
-
-1. Mo http://localhost:18000
-2. Tao **Source - MongoDB**:
-   - Host: `host.docker.internal`
-   - Port: `17017`
-   - Replica Set: `rs0`
-3. Tao **Source - MySQL**:
-   - Host: `host.docker.internal`
-   - Port: `13306`
-   - User: `root`, Password: `root`
-   - Database: `goopay_db`
-4. Tao **Destination - PostgreSQL**:
-   - Host: `host.docker.internal`
-   - Port: `5432`
-   - User: `user`, Password: `password`
-   - Database: `goopay_dw`
-5. Tao **Connections** (Source → Destination):
-   - Sync mode: Incremental + Dedup
-   - Schedule: 15 min (critical tables), 1 hr (non-critical)
-
 ### Step 9: Start application services (khi da co code)
 
 ```bash
@@ -210,7 +177,6 @@ ports:
   - "15432:5432"  # Doi host port
 ```
 
-### Airbyte khong connect duoc toi MySQL/MongoDB/PostgreSQL
 
 Airbyte chay ngoai docker-compose network. Dung `host.docker.internal` thay vi container name:
 - MySQL: `host.docker.internal:13306`

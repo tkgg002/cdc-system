@@ -86,7 +86,6 @@ func NewReconciliationHandler(db *gorm.DB, nats *natsconn.NatsClient) *Reconcili
 //
 // Bug C/D fix (2026-04-20): earlier version did `SELECT *` on just the
 // report table — FE had no way to distinguish debezium-driven vs
-// airbyte-driven vs both tables. We LEFT JOIN on cdc_table_registry so
 // rows for tables that have been removed from the registry still appear
 // (with NULL sync_engine) rather than disappearing.
 func (h *ReconciliationHandler) LatestReport(c *fiber.Ctx) error {

@@ -45,7 +45,6 @@ func (dm *DynamicMapper) GetRulesForTable(targetTable string) []model.MappingRul
 }
 
 // MapData applies mapping rules to transform raw CDC event data into structured columns.
-// rawData = full document from source (MongoDB change event fullDocument, or Airbyte JSON)
 // Returns: mapped typed columns + raw JSON for _raw_data
 func (dm *DynamicMapper) MapData(ctx context.Context, targetTable string, rawData map[string]interface{}) (*MappedData, error) {
 	rules := dm.registry.GetMappingRules(targetTable)

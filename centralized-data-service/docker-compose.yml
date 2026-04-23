@@ -72,9 +72,6 @@ services:
     networks:
       - cdc-network
 
-  # 6. Airbyte: Cài riêng bằng abctl (xem README.md)
-  #    Không chạy trong docker-compose vì Airbyte là multi-container platform.
-  #    Sau khi cài, Airbyte UI: http://localhost:18000, API: http://localhost:18006
 
   # 7. CDC Worker Service (Go)
   cdc-worker:

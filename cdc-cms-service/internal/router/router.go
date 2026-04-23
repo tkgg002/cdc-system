@@ -58,9 +58,14 @@ func SetupRoutes(
 	healthHandler *api.HealthHandler,
 	schemaHandler *api.SchemaChangeHandler,
 	registryHandler *api.RegistryHandler,
+	cdcInternalRegistryHandler *api.CDCInternalRegistryHandler,
+	systemConnectorsHandler *api.SystemConnectorsHandler,
+	masterRegistryHandler *api.MasterRegistryHandler,
+	schemaProposalHandler *api.SchemaProposalHandler,
+	scheduleV1Handler *api.TransmuteScheduleHandler,
+	mappingPreviewHandler *api.MappingPreviewHandler,
 	mappingHandler *api.MappingRuleHandler,
 	introspectionHandler *api.IntrospectionHandler,
-	airbyteHandler *api.AirbyteHandler,
 	activityLogHandler *api.ActivityLogHandler,
 	scheduleHandler *api.ScheduleHandler,
 	reconHandler *api.ReconciliationHandler,
@@ -75,17 +80,7 @@ func SetupRoutes(
 	// API Group
 	apiGroup := app.Group("/api")
 
-	// Airbyte routes
-	airbyteGroup := apiGroup.Group("/airbyte")
-	airbyteGroup.Get("/sources", airbyteHandler.ListSources)
-	airbyteGroup.Get("/destinations", airbyteHandler.ListDestinations)
-	airbyteGroup.Get("/connections", airbyteHandler.ListConnectionDetails)
-	airbyteGroup.Get("/connections/:id/streams", airbyteHandler.GetConnectionStreams)
-	airbyteGroup.Get("/jobs", airbyteHandler.ListJobs)
-	airbyteGroup.Get("/sync-audit", airbyteHandler.GetSyncAudit)
-	airbyteGroup.Get("/import/list", airbyteHandler.ListImportableStreams)
-	airbyteGroup.Post("/import/execute", airbyteHandler.ExecuteImport)
-	apiGroup.Post("/registry/:id/refresh-catalog-unauth", registryHandler.RefreshCatalog)
+	// Debezium Command Center at /api/v1/system/connectors/*.
 
 	// All API routes require JWT auth
 	apiGroup.Use(middleware.JWTAuth(cfg))
@@ -151,6 +146,51 @@ func SetupRoutes(
 	// attributable. Runs as a background job; returns 202 immediately.
 	registerDestructive("/recon/backfill-source-ts", reconHandler.TriggerBackfillSourceTs)
 
+	// cdc_internal registry admin toggle — flips is_financial / profile_status
+	// on a single cdc_internal.table_registry row. The worker SchemaManager
+	// polls the flag with a 60s TTL so the toggle lands without a restart.
+	// PATCH instead of POST so REST semantics match "partial update".
+	{
+		handlers := append([]fiber.Handler{}, destructiveChain...)
+		handlers = append(handlers, cdcInternalRegistryHandler.Patch)
+		apiGroup.Patch("/v1/tables/:name", handlers...)
+	}
+
+	// Debezium Command Center — Kafka Connect REST proxy. Replaces the
+	registerDestructive("/v1/system/connectors/:name/restart", systemConnectorsHandler.Restart)
+	registerDestructive("/v1/system/connectors/:name/tasks/:taskId/restart", systemConnectorsHandler.RestartTask)
+	registerDestructive("/v1/system/connectors/:name/pause", systemConnectorsHandler.Pause)
+	registerDestructive("/v1/system/connectors/:name/resume", systemConnectorsHandler.Resume)
+
+	// Master Table Registry (Sprint 5 §R8) — admin plane for warehouse
+	// masters. Approve dispatches cdc.cmd.master-create → worker runs DDL.
+	registerDestructive("/v1/masters", masterRegistryHandler.Create)
+	registerDestructive("/v1/masters/:name/approve", masterRegistryHandler.Approve)
+	registerDestructive("/v1/masters/:name/reject", masterRegistryHandler.Reject)
+	registerDestructive("/v1/masters/:name/toggle-active", masterRegistryHandler.ToggleActive)
+
+	// Schema Proposal Workflow (Sprint 5 §R9) — approve applies ALTER +
+	// inserts mapping_rule in a single transaction.
+	registerDestructive("/v1/schema-proposals/:id/approve", schemaProposalHandler.Approve)
+	registerDestructive("/v1/schema-proposals/:id/reject", schemaProposalHandler.Reject)
+
+	// Transmute Schedules (Sprint 5 Dashboard.2)
+	registerDestructive("/v1/schedules", scheduleV1Handler.Create)
+	registerDestructive("/v1/schedules/:id/run-now", scheduleV1Handler.RunNow)
+	{
+		handlers := append([]fiber.Handler{}, destructiveChain...)
+		handlers = append(handlers, scheduleV1Handler.Toggle)
+		apiGroup.Patch("/v1/schedules/:id", handlers...)
+	}
+
+	// Mapping-rule JsonPath preview (Sprint 5 Dashboard.1). Read-only
+	// eval against live shadow rows — admin convenience before saving.
+	{
+		handlers := append([]fiber.Handler{}, destructiveChain...)
+		handlers = append(handlers, mappingPreviewHandler.Preview)
+		apiGroup.Post("/v1/mapping-rules/preview", handlers...)
+	}
+
 	// Phase 6 — alert write operations piggyback on the destructive
 	// chain so audit+idempotency are automatic.
 	if alertsHandler != nil {
@@ -183,6 +223,14 @@ func SetupRoutes(
 	shared.Get("/mapping-rules", mappingHandler.List)
 	shared.Get("/introspection/scan/:table", introspectionHandler.Scan)
 	shared.Get("/introspection/scan-raw/:table", introspectionHandler.ScanRawData)
+	shared.Get("/v1/tables", cdcInternalRegistryHandler.List)
+	shared.Get("/v1/system/connectors", systemConnectorsHandler.List)
+	shared.Get("/v1/system/connectors/:name", systemConnectorsHandler.Get)
+	shared.Get("/v1/system/connector-plugins", systemConnectorsHandler.Plugins)
+	shared.Get("/v1/masters", masterRegistryHandler.List)
+	shared.Get("/v1/schema-proposals", schemaProposalHandler.List)
+	shared.Get("/v1/schema-proposals/:id", schemaProposalHandler.Get)
+	shared.Get("/v1/schedules", scheduleV1Handler.List)
 
 	// --- Admin only routes ---
 	admin := apiGroup.Group("", middleware.RequireRole("admin"))
@@ -192,12 +240,11 @@ func SetupRoutes(
 	admin.Patch("/registry/:id", registryHandler.Update)
 	admin.Post("/registry/batch", registryHandler.BulkRegister)
 	admin.Post("/registry/scan-source", registryHandler.ScanSource)
-	admin.Post("/registry/sync-from-airbyte", registryHandler.SyncFromAirbyte)
 	admin.Post("/registry/:id/sync", registryHandler.Sync)
 	admin.Get("/registry/:id/jobs", registryHandler.GetJobs)
 	admin.Post("/registry/:id/standardize", registryHandler.Standardize)
 	admin.Post("/registry/:id/discover", registryHandler.Discover)
-	admin.Post("/registry/:id/refresh-catalog", registryHandler.RefreshCatalog)
+	// /registry/:id/refresh-catalog removed — Debezium config via Connect REST.
 	admin.Post("/registry/:id/scan-fields", registryHandler.ScanFields)
 	admin.Post("/registry/:id/bridge", registryHandler.Bridge)
 	admin.Post("/registry/:id/transform", registryHandler.Transform)

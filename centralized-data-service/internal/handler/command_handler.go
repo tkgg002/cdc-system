@@ -14,7 +14,6 @@ import (
 	"centralized-data-service/internal/repository"
 	"centralized-data-service/internal/service"
 
-	"centralized-data-service/pkgs/airbyte"
 	"github.com/nats-io/nats.go"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -23,12 +22,11 @@ import (
 // CommandHandler handles async CDC commands published from the API service via NATS.
 // These commands operate on the DW (Data Warehouse) database, which only the worker can access.
 type CommandHandler struct {
-	db          *gorm.DB
-	mappingRepo *repository.MappingRuleRepo
+	db           *gorm.DB
+	mappingRepo  *repository.MappingRuleRepo
 	registryRepo *repository.RegistryRepo
 	pendingRepo  *repository.PendingFieldRepo
-	airbyte      *airbyte.Client
-	logger      *zap.Logger
+	logger       *zap.Logger
 	// kafkaConnectURL — base URL for Kafka Connect REST (boundary
 	// refactor). Empty disables the Debezium-specific handlers.
 	kafkaConnectURL string
@@ -63,18 +61,16 @@ type CommandResult struct {
 	Error        string `json:"error,omitempty"`
 }
 
-func NewCommandHandler(db *gorm.DB, mappingRepo *repository.MappingRuleRepo, registryRepo *repository.RegistryRepo, pendingRepo *repository.PendingFieldRepo, abClient *airbyte.Client, logger *zap.Logger) *CommandHandler {
+func NewCommandHandler(db *gorm.DB, mappingRepo *repository.MappingRuleRepo, registryRepo *repository.RegistryRepo, pendingRepo *repository.PendingFieldRepo, logger *zap.Logger) *CommandHandler {
 	return &CommandHandler{
 		db:           db,
 		mappingRepo:  mappingRepo,
 		registryRepo: registryRepo,
 		pendingRepo:  pendingRepo,
-		airbyte:      abClient,
 		logger:       logger,
 	}
 }
 
-// ensureCDCColumns adds CDC columns to an existing table (Airbyte tables don't have them).
 // Returns error if table doesn't exist. Safe to call multiple times (ADD COLUMN IF NOT EXISTS).
 func (h *CommandHandler) ensureCDCColumns(tableName string) error {
 	var exists bool
@@ -85,7 +81,7 @@ func (h *CommandHandler) ensureCDCColumns(tableName string) error {
 
 	cdcColumns := []struct{ name, def string }{
 		{"_raw_data", "JSONB"},
-		{"_source", "VARCHAR(20) DEFAULT 'airbyte'"},
+		{"_source", "VARCHAR(20) DEFAULT 'cdc-legacy'"},
 		{"_synced_at", "TIMESTAMP DEFAULT NOW()"},
 		{"_version", "BIGINT DEFAULT 1"},
 		{"_hash", "VARCHAR(64)"},
@@ -208,7 +204,6 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 			zap.Int("approved_fields", columnsAdded),
 		)
 	} else {
-		// Table đã tồn tại (Airbyte tạo) → chỉ thêm CDC system columns
 		if err := h.ensureCDCColumns(payload.TargetTable); err != nil {
 			h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: err.Error()})
 			return
@@ -218,7 +213,7 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 		// Update registry
 		h.db.Model(&model.TableRegistry{}).Where("target_table = ?", payload.TargetTable).Update("is_table_created", true)
 
-		h.logger.Info("CDC system columns added to existing Airbyte table",
+		h.logger.Info("CDC system columns added to existing legacy table",
 			zap.String("table", payload.TargetTable),
 		)
 	}
@@ -379,324 +374,10 @@ func (h *CommandHandler) HandleBackfill(msg *nats.Msg) {
 
 // HandleIntrospect subscribes to "cdc.cmd.introspect" and scans a sample of _raw_data 
 // from the DW table to find unmapped fields. It replies via NATS Request-Reply.
-func (h *CommandHandler) HandleIntrospect(msg *nats.Msg) {
-	var payload struct {
-		TargetTable string `json:"target_table"`
-	}
-	if err := json.Unmarshal(msg.Data, &payload); err != nil {
-		h.logger.Error("cdc.cmd.introspect: invalid payload", zap.Error(err))
-		if msg.Reply != "" {
-			_ = msg.Respond([]byte(`{"status":"error","error":"invalid payload"}`))
-		}
-		return
-	}
 
-	h.logger.Info("introspecting table via Airbyte", zap.String("table", payload.TargetTable))
 
-	// 1. Verify table is registered
-	reg, err := h.registryRepo.GetByTargetTable(context.Background(), payload.TargetTable)
-	if err != nil {
-		if msg.Reply != "" {
-			_ = msg.Respond([]byte(`{"status":"error","error":"table not registered"}`))
-		}
-		return
-	}
+// Debezium path is the sole CDC engine. Shadow→Master via TransmuterModule (R6).
 
-	if reg.AirbyteSourceID == nil || *reg.AirbyteSourceID == "" {
-		if msg.Reply != "" {
-			_ = msg.Respond([]byte(`{"status":"error","error":"table does not have airbyte_source_id configuring"}`))
-		}
-		return
-	}
-
-	// 2. Discover schema from Airbyte (Source schema)
-	catalog, err := h.airbyte.DiscoverSourceSchema(context.Background(), *reg.AirbyteSourceID)
-	if err != nil {
-		h.logger.Error("failed to discover airbyte schema", zap.Error(err))
-		if msg.Reply != "" {
-			_ = msg.Respond([]byte(`{"status":"error","error":"failed to discover airbyte schema: ` + err.Error() + `"}`))
-		}
-		return
-	}
-
-	// Find the matching stream for this source table
-	var streamFields []string
-	found := false
-	for _, streamCfg := range catalog.Streams {
-		if streamCfg.Stream.Name == reg.SourceTable {
-			found = true
-			if streamCfg.Stream.JSONSchema != nil {
-				if props, ok := streamCfg.Stream.JSONSchema["properties"].(map[string]interface{}); ok {
-					for fieldName := range props {
-						streamFields = append(streamFields, fieldName)
-					}
-				}
-			}
-			break
-		}
-	}
-
-	if !found {
-		if msg.Reply != "" {
-			_ = msg.Respond([]byte(`{"status":"error","error":"stream not found in airbyte catalog"}`))
-		}
-		return
-	}
-
-	// 3. Get existing mappings
-	rules, err := h.mappingRepo.GetByTable(context.Background(), reg.SourceTable)
-	if err != nil {
-		if msg.Reply != "" {
-			_ = msg.Respond([]byte(`{"status":"error","error":"failed to fetch current rules"}`))
-		}
-		return
-	}
-
-	mappedFields := make(map[string]bool)
-	for _, r := range rules {
-		mappedFields[r.SourceField] = true
-	}
-
-	// 4. Compare and find unmapped/new fields
-	var newFields []string
-	for _, field := range streamFields {
-		// Ignore standard Airbyte fields or MongoDB internal fields if needed
-		// Though Airbyte usually provides clean fields
-		if !mappedFields[field] {
-			newFields = append(newFields, field)
-			
-			// Save to pending_fields
-			if err := h.pendingRepo.UpsertPendingField(context.Background(), payload.TargetTable, reg.SourceDB, field, "", "VARCHAR(255)"); err != nil {
-				h.logger.Error("failed to save pending field", zap.Error(err), zap.String("field", field))
-			}
-		}
-	}
-
-	if newFields == nil {
-		newFields = []string{} // ensure it serializes to [] instead of null if empty
-	}
-
-	res := map[string]interface{}{
-		"status":         "success",
-		"table":          payload.TargetTable,
-		"total_raw_keys": len(streamFields),
-		"new_fields":     newFields,
-		"mapped_count":   len(mappedFields),
-	}
-
-	resBytes, _ := json.Marshal(res)
-	if msg.Reply != "" {
-		_ = msg.Respond(resBytes)
-	}
-}
-
-// HandleAirbyteBridge copies data from Airbyte raw tables (_airbyte_raw_*) into CDC tables (_raw_data).
-// Subject: "cdc.cmd.bridge-airbyte" (pub/sub pattern)
-func (h *CommandHandler) HandleAirbyteBridge(msg *nats.Msg) {
-	var payload struct {
-		TargetTable     string `json:"target_table"`
-		AirbyteRawTable string `json:"airbyte_raw_table"`
-		PrimaryKeyField string `json:"primary_key_field"`
-		SourceType      string `json:"source_type"`
-	}
-	if err := json.Unmarshal(msg.Data, &payload); err != nil {
-		h.publishResult(msg, CommandResult{Command: "bridge-airbyte", Status: "error", Error: "invalid payload: " + err.Error()})
-		return
-	}
-
-	// Airbyte uses typed denormalized tables (same name as stream, with underscores)
-	// e.g., source_table "payment-bills" → Airbyte table "payment_bills"
-	airbyteTable := payload.AirbyteRawTable
-	if airbyteTable == "" || strings.HasPrefix(airbyteTable, "_airbyte_raw_") {
-		// Auto-detect: normalize source table name (replace - with _)
-		airbyteTable = strings.ReplaceAll(payload.TargetTable, "-", "_")
-	}
-
-	h.logger.Info("bridging Airbyte typed table → CDC table",
-		zap.String("airbyte_table", airbyteTable),
-		zap.String("cdc_table", payload.TargetTable),
-	)
-
-	// 1. Verify Airbyte typed table exists
-	var tableExists bool
-	h.db.Raw("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = 'public')", airbyteTable).Scan(&tableExists)
-	if !tableExists {
-		h.publishResult(msg, CommandResult{
-			Command:     "bridge-airbyte",
-			TargetTable: payload.TargetTable,
-			Status:      "error",
-			Error:       fmt.Sprintf("Airbyte table '%s' not found in database", airbyteTable),
-		})
-		return
-	}
-
-	// 2. Ensure CDC columns exist on target table (Airbyte tables don't have them)
-	if err := h.ensureCDCColumns(payload.TargetTable); err != nil {
-		h.publishResult(msg, CommandResult{
-			Command:     "bridge-airbyte",
-			TargetTable: payload.TargetTable,
-			Status:      "skipped",
-			Error:       "target table not ready: " + err.Error(),
-		})
-		return
-	}
-
-	// 3. If source and target are the same table, populate _raw_data from existing columns
-	if airbyteTable == payload.TargetTable {
-		h.bridgeInPlace(msg, payload.TargetTable, payload.PrimaryKeyField)
-		return
-	}
-
-	// 3. Get last_bridge_at for incremental sync
-	reg, _ := h.registryRepo.GetByTargetTable(context.Background(), payload.TargetTable)
-	var whereClause string
-	if reg != nil && reg.LastBridgeAt != nil {
-		whereClause = fmt.Sprintf("AND src._airbyte_extracted_at > '%s'", reg.LastBridgeAt.Format("2006-01-02 15:04:05"))
-	}
-
-	// 4. Bridge: pack all non-_airbyte columns into JSONB → INSERT into CDC table
-	pkField := payload.PrimaryKeyField
-	if pkField == "" {
-		pkField = "_id"
-	}
-
-	// Verify PK column exists in Airbyte table; fallback to _airbyte_raw_id
-	var pkExists bool
-	h.db.Raw(`SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?)`, airbyteTable, pkField).Scan(&pkExists)
-	if !pkExists {
-		h.logger.Warn("PK field not found in Airbyte table, using _airbyte_raw_id",
-			zap.String("table", airbyteTable), zap.String("pk", pkField))
-		pkField = "_airbyte_raw_id"
-	}
-
-	// Detect Sonyflake schema: CDC table has source_id column
-	var hasSonyflakeSchema bool
-	h.db.Raw(`SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = 'source_id')`,
-		payload.TargetTable).Scan(&hasSonyflakeSchema)
-
-	var bridgeSQL string
-	if hasSonyflakeSchema {
-		// v1.12 schema: id BIGINT DEFAULT nextval(seq), source_id VARCHAR (dedup)
-		// id auto-generated from sequence; Sonyflake replaces sequence when using pgx.Batch
-		bridgeSQL = fmt.Sprintf(`
-			INSERT INTO "%s" (source_id, _raw_data, _source, _synced_at, _hash, _version, _created_at, _updated_at)
-			SELECT
-				src."%s"::VARCHAR,
-				to_jsonb(src) - '_airbyte_raw_id' - '_airbyte_extracted_at' - '_airbyte_meta' - '_airbyte_generation_id',
-				'airbyte',
-				COALESCE(src._airbyte_extracted_at, NOW()),
-				md5((to_jsonb(src))::text),
-				1,
-				NOW(),
-				NOW()
-			FROM "%s" src
-			WHERE src."%s" IS NOT NULL %s
-			ON CONFLICT (source_id) DO UPDATE SET
-				_raw_data = EXCLUDED._raw_data,
-				_synced_at = EXCLUDED._synced_at,
-				_hash = EXCLUDED._hash,
-				_version = "%s"._version + 1,
-				_updated_at = NOW()
-			WHERE "%s"._hash IS DISTINCT FROM EXCLUDED._hash`,
-			payload.TargetTable,
-			pkField,
-			airbyteTable,
-			pkField, whereClause,
-			payload.TargetTable,
-			payload.TargetTable,
-		)
-		h.logger.Info("using v1.12 schema (source_id dedup) for bridge", zap.String("table", payload.TargetTable))
-	} else {
-		// Legacy schema: id VARCHAR PK (source PK directly)
-		cdcPKColumn := "id"
-		if pkField != "_id" && pkField != "_airbyte_raw_id" {
-			cdcPKColumn = pkField
-		}
-		bridgeSQL = fmt.Sprintf(`
-			INSERT INTO "%s" ("%s", _raw_data, _source, _synced_at, _hash, _version, _created_at, _updated_at)
-			SELECT
-				src."%s"::VARCHAR,
-				to_jsonb(src) - '_airbyte_raw_id' - '_airbyte_extracted_at' - '_airbyte_meta' - '_airbyte_generation_id',
-				'airbyte',
-				COALESCE(src._airbyte_extracted_at, NOW()),
-				md5((to_jsonb(src))::text),
-				1,
-				NOW(),
-				NOW()
-			FROM "%s" src
-			WHERE src."%s" IS NOT NULL %s
-			ON CONFLICT ("%s") DO UPDATE SET
-				_raw_data = EXCLUDED._raw_data,
-				_synced_at = EXCLUDED._synced_at,
-				_hash = EXCLUDED._hash,
-				_version = "%s"._version + 1,
-				_updated_at = NOW()
-			WHERE "%s"._hash IS DISTINCT FROM EXCLUDED._hash`,
-			payload.TargetTable, cdcPKColumn,
-			pkField,
-			airbyteTable,
-			pkField, whereClause,
-			cdcPKColumn,
-			payload.TargetTable,
-			payload.TargetTable,
-		)
-	}
-
-	result := h.db.Exec(bridgeSQL)
-	if result.Error != nil {
-		h.publishResult(msg, CommandResult{
-			Command:     "bridge-airbyte",
-			TargetTable: payload.TargetTable,
-			Status:      "error",
-			Error:       result.Error.Error(),
-		})
-		return
-	}
-
-	// 5. Update last_bridge_at
-	if reg != nil {
-		h.db.Model(&model.TableRegistry{}).Where("id = ?", reg.ID).Update("last_bridge_at", "NOW()")
-	}
-
-	h.logger.Info("bridge completed",
-		zap.String("airbyte_table", airbyteTable),
-		zap.String("cdc_table", payload.TargetTable),
-		zap.Int64("rows_affected", result.RowsAffected),
-	)
-	h.publishResult(msg, CommandResult{
-		Command:      "bridge-airbyte",
-		TargetTable:  payload.TargetTable,
-		RowsAffected: int(result.RowsAffected),
-		Status:       "success",
-	})
-}
-
-// bridgeInPlace handles the case where Airbyte table IS the CDC table.
-// Populates _raw_data JSONB from existing typed columns for rows where _raw_data is NULL.
-func (h *CommandHandler) bridgeInPlace(msg *nats.Msg, tableName, pkField string) {
-	h.logger.Info("bridge in-place: populating _raw_data from typed columns", zap.String("table", tableName))
-
-	sql := fmt.Sprintf(`
-		UPDATE "%s" SET
-			_raw_data = to_jsonb("%s".*) - '_raw_data' - '_source' - '_synced_at' - '_version' - '_hash' - '_deleted' - '_created_at' - '_updated_at' - '_airbyte_raw_id' - '_airbyte_extracted_at' - '_airbyte_meta' - '_airbyte_generation_id',
-			_source = COALESCE(_source, 'airbyte'),
-			_synced_at = COALESCE(_synced_at, NOW()),
-			_hash = md5((to_jsonb("%s".*))::text),
-			_version = COALESCE(_version, 1),
-			_updated_at = NOW()
-		WHERE _raw_data IS NULL OR _raw_data = '{}'::jsonb`,
-		tableName, tableName, tableName,
-	)
-
-	result := h.db.Exec(sql)
-	if result.Error != nil {
-		h.publishResult(msg, CommandResult{Command: "bridge-airbyte", TargetTable: tableName, Status: "error", Error: result.Error.Error()})
-		return
-	}
-
-	h.logger.Info("bridge in-place completed", zap.String("table", tableName), zap.Int64("rows", result.RowsAffected))
-	h.publishResult(msg, CommandResult{Command: "bridge-airbyte", TargetTable: tableName, RowsAffected: int(result.RowsAffected), Status: "success"})
-}
 
 // HandleBatchTransform applies mapping rules to populate typed columns from _raw_data.
 // Subject: "cdc.cmd.batch-transform" (pub/sub pattern)
@@ -790,7 +471,6 @@ func (h *CommandHandler) HandleBatchTransform(msg *nats.Msg) {
 }
 
 // HandleScanRawData scans _raw_data JSONB column to find fields not yet mapped.
-// This is a fallback mechanism that works without Airbyte API — directly queries the DW table.
 // Subject: "cdc.cmd.scan-raw-data" (request-reply pattern)
 func (h *CommandHandler) HandleScanRawData(msg *nats.Msg) {
 	targetTable := string(msg.Data)
@@ -1055,13 +735,11 @@ func (h *CommandHandler) HandleDropGINIndex(msg *nats.Msg) {
 //   1. cdc.cmd.scan-fields             -> HandleScanFields
 //   2. cdc.cmd.scan-source             -> HandleScanSource
 //   3. cdc.cmd.refresh-catalog         -> HandleRefreshCatalog
-//   4. cdc.cmd.airbyte-sync            -> HandleAirbyteSync
 //   5. cdc.cmd.sync-register           -> HandleSyncRegister
 //   6. cdc.cmd.sync-state              -> HandleSyncState
 //   7. cdc.cmd.restart-debezium        -> HandleRestartDebezium
 //   8. cdc.cmd.alter-column            -> HandleAlterColumn
 //   9. cdc.cmd.import-streams          -> HandleImportStreams
-//  10. cdc.cmd.bulk-sync-from-airbyte  -> HandleBulkSyncFromAirbyte
 // Result subjects mirror cdc.result.<subject-tail>.
 // ============================================================================
 
@@ -1076,23 +754,22 @@ func systemFieldSet() map[string]bool {
 	}
 }
 
-// inferSQLTypeFromAirbyteProp mirrors the CMS inferSQLType helper so the
 // migrated logic stays byte-identical (Rule #4 no-improvement port).
-func inferSQLTypeFromAirbyteProp(prop interface{}) string {
+func inferSQLTypeFromLegacyCatalogProp(prop interface{}) string {
 	propMap, ok := prop.(map[string]interface{})
 	if !ok {
 		return "TEXT"
 	}
-	airbyteType, _ := propMap["type"].(string)
+	legacyType, _ := propMap["type"].(string)
 	if types, ok := propMap["type"].([]interface{}); ok && len(types) > 0 {
 		for _, t := range types {
 			if tStr, ok := t.(string); ok && tStr != "null" {
-				airbyteType = tStr
+				legacyType = tStr
 				break
 			}
 		}
 	}
-	switch airbyteType {
+	switch legacyType {
 	case "integer":
 		return "BIGINT"
 	case "number":
@@ -1109,65 +786,6 @@ func inferSQLTypeFromAirbyteProp(prop interface{}) string {
 	}
 }
 
-// scanFieldsAirbyte handles the Airbyte branch of ScanFields (shared by
-// `airbyte` and `both` sync engines with Debezium fallback).
-func (h *CommandHandler) scanFieldsAirbyte(ctx context.Context, sourceTable, sourceID string) (int, int, error) {
-	if sourceID == "" {
-		return 0, 0, fmt.Errorf("airbyte_source_id missing")
-	}
-	catalog, err := h.airbyte.DiscoverSchema(ctx, sourceID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("discover: %w", err)
-	}
-	var targetStream *airbyte.StreamConfig
-	for i := range catalog.Streams {
-		if catalog.Streams[i].Stream.Name == sourceTable {
-			targetStream = &catalog.Streams[i]
-			break
-		}
-	}
-	if targetStream == nil {
-		return 0, 0, fmt.Errorf("stream %s not found in airbyte catalog", sourceTable)
-	}
-	props, ok := targetStream.Stream.JSONSchema["properties"].(map[string]interface{})
-	if !ok {
-		return 0, 0, nil
-	}
-	existing, _ := h.mappingRepo.GetByTable(ctx, sourceTable)
-	seen := make(map[string]bool, len(existing))
-	for _, r := range existing {
-		seen[r.SourceField] = true
-	}
-	sysFields := systemFieldSet()
-	added, total := 0, 0
-	for field, prop := range props {
-		total++
-		if seen[field] {
-			continue
-		}
-		status := "pending"
-		ruleType := "discovered"
-		if sysFields[field] {
-			status = "approved"
-			ruleType = "system"
-		}
-		rule := &model.MappingRule{
-			SourceTable:  sourceTable,
-			SourceField:  field,
-			TargetColumn: field,
-			DataType:     inferSQLTypeFromAirbyteProp(prop),
-			Status:       status,
-			RuleType:     ruleType,
-			IsActive:     true,
-		}
-		if err := h.mappingRepo.Create(ctx, rule); err != nil {
-			h.logger.Warn("scan-fields airbyte: create rule failed", zap.String("field", field), zap.Error(err))
-			continue
-		}
-		added++
-	}
-	return added, total, nil
-}
 
 // scanFieldsDebezium samples _raw_data JSONB (last 100 rows) to infer
 // new fields for Debezium-backed tables.
@@ -1233,16 +851,15 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, targetTable, so
 }
 
 // HandleScanFields implements boundary-refactor #1 (subject
-// cdc.cmd.scan-fields). Routes between Airbyte DiscoverSchema and
 // Debezium _raw_data sampling based on sync_engine.
 func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 	var payload struct {
 		RegistryID      uint   `json:"registry_id"`
-		TargetTable     string `json:"target_table"`
-		SourceTable     string `json:"source_table"`
-		SyncEngine      string `json:"sync_engine"`
-		SourceType      string `json:"source_type"`
-		AirbyteSourceID string `json:"airbyte_source_id"`
+		TargetTable    string `json:"target_table"`
+		SourceTable    string `json:"source_table"`
+		SyncEngine     string `json:"sync_engine"`
+		SourceType     string `json:"source_type"`
+		LegacySourceID string `json:"legacy_source_id"`
 	}
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		h.logger.Error("cdc.cmd.scan-fields: invalid payload", zap.Error(err))
@@ -1258,28 +875,10 @@ func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 	)
 
 	var added, total int
-	var sourceUsed string
+	var sourceUsed string = "debezium"
 	var err error
-	switch engine {
-	case "airbyte":
-		added, total, err = h.scanFieldsAirbyte(ctx, payload.SourceTable, payload.AirbyteSourceID)
-		sourceUsed = "airbyte"
-	case "debezium":
-		added, total, err = h.scanFieldsDebezium(ctx, payload.TargetTable, payload.SourceTable)
-		sourceUsed = "debezium"
-	case "both", "":
-		added, total, err = h.scanFieldsDebezium(ctx, payload.TargetTable, payload.SourceTable)
-		sourceUsed = "debezium"
-		if err != nil || total == 0 {
-			a, t, aerr := h.scanFieldsAirbyte(ctx, payload.SourceTable, payload.AirbyteSourceID)
-			if aerr == nil {
-				added, total, err = a, t, nil
-				sourceUsed = "airbyte"
-			}
-		}
-	default:
-		err = fmt.Errorf("unknown sync_engine %q", engine)
-	}
+	_ = engine
+	added, total, err = h.scanFieldsDebezium(ctx, payload.TargetTable, payload.SourceTable)
 
 	if err != nil {
 		h.publishResultWithSubject(msg, "cdc.result.scan-fields", CommandResult{
@@ -1305,240 +904,55 @@ func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 }
 
 // HandleScanSource implements boundary-refactor #2 (subject
-// cdc.cmd.scan-source). Walks an Airbyte source catalogue and inserts
 // missing registry rows (is_active=false, matching legacy CMS logic).
-func (h *CommandHandler) HandleScanSource(msg *nats.Msg) {
-	var payload struct {
-		SourceID   string `json:"source_id"`
-		SourceType string `json:"source_type"`
-	}
-	if err := json.Unmarshal(msg.Data, &payload); err != nil {
-		h.publishResultWithSubject(msg, "cdc.result.scan-source", CommandResult{Command: "scan-source", Status: "error", Error: "invalid payload"})
-		return
-	}
-	if payload.SourceID == "" {
-		h.publishResultWithSubject(msg, "cdc.result.scan-source", CommandResult{Command: "scan-source", Status: "error", Error: "source_id required"})
-		return
-	}
-	ctx := context.Background()
-	catalog, err := h.airbyte.DiscoverSchema(ctx, payload.SourceID)
-	if err != nil {
-		h.publishResultWithSubject(msg, "cdc.result.scan-source", CommandResult{Command: "scan-source", Status: "error", Error: err.Error()})
-		return
-	}
-	added, skipped := 0, 0
-	for _, s := range catalog.Streams {
-		dbName := s.Stream.Namespace
-		table := s.Stream.Name
-		var existing model.TableRegistry
-		if err := h.db.WithContext(ctx).Where("source_db = ? AND source_table = ?", dbName, table).First(&existing).Error; err == nil {
-			skipped++
-			continue
-		}
-		sid := payload.SourceID
-		entry := model.TableRegistry{
-			SourceDB:        dbName,
-			SourceType:      payload.SourceType,
-			SourceTable:     table,
-			TargetTable:     table,
-			SyncEngine:      "airbyte",
-			Priority:        "normal",
-			SyncInterval:    "15m",
-			IsActive:        false,
-			AirbyteSourceID: &sid,
-		}
-		if err := h.registryRepo.Create(ctx, &entry); err != nil {
-			h.logger.Warn("scan-source: create registry failed", zap.String("table", table), zap.Error(err))
-			continue
-		}
-		added++
-	}
-	result := map[string]interface{}{
-		"command":   "scan-source",
-		"source_id": payload.SourceID,
-		"added":     added,
-		"skipped":   skipped,
-		"total":     len(catalog.Streams),
-		"status":    "success",
-	}
-	data, _ := json.Marshal(result)
-	h.nats_publish(msg, "cdc.result.scan-source", data)
-	h.writeActivity("scan-source", "*", "success", int64(added), result, "")
-}
 
 // HandleRefreshCatalog implements boundary-refactor #3 (subject
-// cdc.cmd.refresh-catalog). Re-runs Airbyte DiscoverSchema and records
 // drift into schema_changes_log when the catalogue changes.
-func (h *CommandHandler) HandleRefreshCatalog(msg *nats.Msg) {
-	var payload struct {
-		RegistryID      uint   `json:"registry_id"`
-		AirbyteSourceID string `json:"airbyte_source_id"`
-	}
-	if err := json.Unmarshal(msg.Data, &payload); err != nil {
-		h.publishResultWithSubject(msg, "cdc.result.refresh-catalog", CommandResult{Command: "refresh-catalog", Status: "error", Error: "invalid payload"})
-		return
-	}
-	if payload.AirbyteSourceID == "" {
-		h.publishResultWithSubject(msg, "cdc.result.refresh-catalog", CommandResult{Command: "refresh-catalog", Status: "error", Error: "airbyte_source_id required"})
-		return
-	}
-	ctx := context.Background()
-	catalog, err := h.airbyte.DiscoverSchema(ctx, payload.AirbyteSourceID)
-	if err != nil {
-		h.publishResultWithSubject(msg, "cdc.result.refresh-catalog", CommandResult{
-			Command: "refresh-catalog", RegistryID: payload.RegistryID,
-			Status: "error", Error: err.Error(),
-		})
-		return
-	}
 
-	// Record drift entry (best-effort, non-fatal).
-	streamNames := make([]string, 0, len(catalog.Streams))
-	for _, s := range catalog.Streams {
-		streamNames = append(streamNames, s.Stream.Name)
-	}
-	summary := strings.Join(streamNames, ",")
-	sid := payload.AirbyteSourceID
-	drift := model.SchemaChangeLog{
-		TblName:         "*",
-		ChangeType:      "airbyte_catalog_refresh",
-		SQLExecuted:     "discover_schema",
-		Status:          "applied",
-		ExecutedBy:      "worker-refresh-catalog",
-		ExecutedAt:      time.Now(),
-		AirbyteSourceID: &sid,
-		AirbyteRefreshTriggered: true,
-	}
-	newDef := summary
-	drift.NewDefinition = &newDef
-	h.db.Create(&drift)
-
-	result := map[string]interface{}{
-		"command":     "refresh-catalog",
-		"registry_id": payload.RegistryID,
-		"source_id":   payload.AirbyteSourceID,
-		"streams":     len(catalog.Streams),
-		"status":      "success",
-	}
-	data, _ := json.Marshal(result)
-	h.nats_publish(msg, "cdc.result.refresh-catalog", data)
-	h.writeActivity("refresh-catalog", payload.AirbyteSourceID, "success", int64(len(catalog.Streams)), result, "")
-}
-
-// HandleAirbyteSync implements boundary-refactor #4 (subject
-// cdc.cmd.airbyte-sync). Triggers a manual sync job.
-func (h *CommandHandler) HandleAirbyteSync(msg *nats.Msg) {
-	var payload struct {
-		RegistryID   uint   `json:"registry_id"`
-		ConnectionID string `json:"connection_id"`
-	}
-	if err := json.Unmarshal(msg.Data, &payload); err != nil {
-		h.publishResultWithSubject(msg, "cdc.result.airbyte-sync", CommandResult{Command: "airbyte-sync", Status: "error", Error: "invalid payload"})
-		return
-	}
-	if payload.ConnectionID == "" {
-		h.publishResultWithSubject(msg, "cdc.result.airbyte-sync", CommandResult{Command: "airbyte-sync", Status: "error", Error: "connection_id required"})
-		return
-	}
-	jobID, err := h.airbyte.TriggerSync(context.Background(), payload.ConnectionID)
-	if err != nil {
-		h.publishResultWithSubject(msg, "cdc.result.airbyte-sync", CommandResult{
-			Command: "airbyte-sync", RegistryID: payload.RegistryID,
-			Status: "error", Error: err.Error(),
-		})
-		return
-	}
-	result := map[string]interface{}{
-		"command":       "airbyte-sync",
-		"registry_id":   payload.RegistryID,
-		"connection_id": payload.ConnectionID,
-		"job_id":        jobID,
-		"status":        "success",
-	}
-	data, _ := json.Marshal(result)
-	h.nats_publish(msg, "cdc.result.airbyte-sync", data)
-	h.writeActivity("airbyte-sync", payload.ConnectionID, "success", 1, result, "")
-}
 
 // HandleSyncRegister implements boundary-refactor #5 (subject
 // cdc.cmd.sync-register). Routes the "sync registry entry with sync
-// engine" call across Airbyte, Debezium or both.
 func (h *CommandHandler) HandleSyncRegister(msg *nats.Msg) {
 	var payload struct {
-		RegistryID            uint   `json:"registry_id"`
-		TargetTable           string `json:"target_table"`
-		SourceTable           string `json:"source_table"`
-		SourceType            string `json:"source_type"`
-		SyncEngine            string `json:"sync_engine"`
-		AirbyteConnectionID   string `json:"airbyte_connection_id"`
-		AirbyteSourceID       string `json:"airbyte_source_id"`
+		RegistryID  uint   `json:"registry_id"`
+		TargetTable string `json:"target_table"`
+		SourceTable string `json:"source_table"`
+		SourceType  string `json:"source_type"`
+		SyncEngine  string `json:"sync_engine"`
 	}
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		h.publishResultWithSubject(msg, "cdc.result.sync-register", CommandResult{Command: "sync-register", Status: "error", Error: "invalid payload"})
 		return
 	}
 	ctx := context.Background()
-	engine := strings.ToLower(strings.TrimSpace(payload.SyncEngine))
-	airbyteOK, debeziumOK := false, false
-	var airbyteErr, debeziumErr string
-
-	if engine == "airbyte" || engine == "both" {
-		if payload.AirbyteSourceID != "" && payload.AirbyteConnectionID != "" {
-			if err := h.syncWithAirbyte(ctx, payload.AirbyteSourceID, payload.AirbyteConnectionID, payload.SourceTable); err != nil {
-				airbyteErr = err.Error()
-			} else {
-				airbyteOK = true
-			}
-		} else {
-			airbyteErr = "airbyte ids missing"
-		}
-	}
-	if engine == "debezium" || engine == "both" {
-		if err := h.verifyDebeziumConnector(ctx); err != nil {
-			debeziumErr = err.Error()
-		} else {
-			debeziumOK = true
-		}
+	_ = payload.SyncEngine
+	debeziumOK := false
+	var debeziumErr string
+	if err := h.verifyDebeziumConnector(ctx); err != nil {
+		debeziumErr = err.Error()
+	} else {
+		debeziumOK = true
 	}
 
 	status := "success"
-	if (engine == "airbyte" && !airbyteOK) || (engine == "debezium" && !debeziumOK) || (engine == "both" && !airbyteOK && !debeziumOK) {
+	if !debeziumOK {
 		status = "error"
 	}
 	result := map[string]interface{}{
-		"command":       "sync-register",
-		"registry_id":   payload.RegistryID,
-		"target_table":  payload.TargetTable,
-		"sync_engine":   engine,
-		"airbyte_ok":    airbyteOK,
-		"debezium_ok":   debeziumOK,
-		"airbyte_error": airbyteErr,
+		"command":        "sync-register",
+		"registry_id":    payload.RegistryID,
+		"target_table":   payload.TargetTable,
+		"sync_engine":    "debezium",
+		"debezium_ok":    debeziumOK,
 		"debezium_error": debeziumErr,
-		"status":        status,
+		"status":         status,
 	}
 	data, _ := json.Marshal(result)
 	h.nats_publish(msg, "cdc.result.sync-register", data)
 	h.writeActivity("sync-register", payload.TargetTable, status, 0, result, "")
 }
 
-// syncWithAirbyte ports the legacy "DiscoverSchema + UpdateConnection"
 // path. Keeps the stream config minimal (selected=true).
-func (h *CommandHandler) syncWithAirbyte(ctx context.Context, sourceID, connectionID, sourceTable string) error {
-	catalog, err := h.airbyte.DiscoverSchema(ctx, sourceID)
-	if err != nil {
-		return fmt.Errorf("discover: %w", err)
-	}
-	streams := make([]airbyte.StreamConfig, 0, len(catalog.Streams))
-	for _, s := range catalog.Streams {
-		if sourceTable != "" && s.Stream.Name != sourceTable {
-			streams = append(streams, s)
-			continue
-		}
-		s.Config.Selected = true
-		streams = append(streams, s)
-	}
-	return h.airbyte.UpdateConnection(ctx, connectionID, streams)
-}
 
 // verifyDebeziumConnector probes Kafka Connect for the configured
 // connector. Returns nil on 2xx, an error otherwise. Circuit-breaker:
@@ -1555,7 +969,6 @@ func (h *CommandHandler) verifyDebeziumConnector(ctx context.Context) error {
 }
 
 // HandleSyncState implements boundary-refactor #6 (subject
-// cdc.cmd.sync-state). Activates/deactivates a stream in Airbyte or
 // pauses/resumes the Debezium connector via Kafka Connect REST.
 func (h *CommandHandler) HandleSyncState(msg *nats.Msg) {
 	var payload struct {
@@ -1578,34 +991,8 @@ func (h *CommandHandler) HandleSyncState(msg *nats.Msg) {
 		return
 	}
 
-	airbyteStatus, debeziumStatus := "skipped", "skipped"
+	debeziumStatus := "skipped"
 	var firstErr string
-
-	// Airbyte path — toggle stream's selected flag.
-	if service.ShouldUseAirbyte(entry) && entry.AirbyteConnectionID != nil && entry.AirbyteSourceID != nil {
-		catalog, err := h.airbyte.DiscoverSchema(ctx, *entry.AirbyteSourceID)
-		if err == nil {
-			selected := action == "activate"
-			streams := make([]airbyte.StreamConfig, 0, len(catalog.Streams))
-			for _, s := range catalog.Streams {
-				if s.Stream.Name == entry.SourceTable {
-					s.Config.Selected = selected
-				}
-				streams = append(streams, s)
-			}
-			if err := h.airbyte.UpdateConnection(ctx, *entry.AirbyteConnectionID, streams); err != nil {
-				airbyteStatus = "error"
-				if firstErr == "" {
-					firstErr = "airbyte: " + err.Error()
-				}
-			} else {
-				airbyteStatus = "ok"
-			}
-		} else {
-			airbyteStatus = "error"
-			firstErr = "airbyte discover: " + err.Error()
-		}
-	}
 
 	// Debezium path — pause / resume the connector.
 	if service.ShouldUseDebezium(entry) && h.kafkaConnectURL != "" {
@@ -1626,7 +1013,7 @@ func (h *CommandHandler) HandleSyncState(msg *nats.Msg) {
 	}
 
 	status := "success"
-	if firstErr != "" && airbyteStatus != "ok" && debeziumStatus != "ok" {
+	if firstErr != "" && debeziumStatus != "ok" {
 		status = "error"
 	}
 	result := map[string]interface{}{
@@ -1634,7 +1021,6 @@ func (h *CommandHandler) HandleSyncState(msg *nats.Msg) {
 		"registry_id":     payload.RegistryID,
 		"target_table":    entry.TargetTable,
 		"action":          action,
-		"airbyte_status":  airbyteStatus,
 		"debezium_status": debeziumStatus,
 		"error":           firstErr,
 		"status":          status,
@@ -1741,193 +1127,9 @@ func (h *CommandHandler) HandleAlterColumn(msg *nats.Msg) {
 // HandleImportStreams implements boundary-refactor #9 (subject
 // cdc.cmd.import-streams). Inserts registry rows, calls
 // create_cdc_table() on DW, and seeds default mapping rules per stream.
-func (h *CommandHandler) HandleImportStreams(msg *nats.Msg) {
-	var payload struct {
-		ConnectionID string `json:"connection_id"`
-		Streams      []struct {
-			SourceTable string `json:"source_table"`
-			TargetTable string `json:"target_table"`
-			SourceDB    string `json:"source_db"`
-			SourceType  string `json:"source_type"`
-		} `json:"streams"`
-	}
-	if err := json.Unmarshal(msg.Data, &payload); err != nil {
-		h.publishResultWithSubject(msg, "cdc.result.import-streams", CommandResult{Command: "import-streams", Status: "error", Error: "invalid payload"})
-		return
-	}
-	ctx := context.Background()
-	added, skipped := 0, 0
-	for _, s := range payload.Streams {
-		if !isSafeIdent(s.TargetTable) {
-			skipped++
-			continue
-		}
-		// Registry insert (skip if row exists).
-		var existing model.TableRegistry
-		if err := h.db.WithContext(ctx).Where("source_db = ? AND source_table = ?", s.SourceDB, s.SourceTable).First(&existing).Error; err == nil {
-			skipped++
-			continue
-		}
-		connID := payload.ConnectionID
-		entry := model.TableRegistry{
-			SourceDB:            s.SourceDB,
-			SourceType:          s.SourceType,
-			SourceTable:         s.SourceTable,
-			TargetTable:         s.TargetTable,
-			SyncEngine:          "airbyte",
-			Priority:            "normal",
-			SyncInterval:        "15m",
-			IsActive:            false,
-			AirbyteConnectionID: &connID,
-		}
-		if err := h.registryRepo.Create(ctx, &entry); err != nil {
-			h.logger.Warn("import-streams: registry create failed", zap.String("table", s.TargetTable), zap.Error(err))
-			continue
-		}
-		// Create DW table via SQL function (safe — function takes identifier arg).
-		if err := h.db.WithContext(ctx).Exec("SELECT create_cdc_table(?, ?, ?)", s.TargetTable, "id", "BIGINT").Error; err != nil {
-			h.logger.Warn("import-streams: create_cdc_table failed", zap.String("table", s.TargetTable), zap.Error(err))
-		}
-		// Seed one default mapping rule (primary key). More rules are
-		// created by HandleScanFields on demand.
-		rule := &model.MappingRule{
-			SourceTable:  s.SourceTable,
-			SourceField:  "id",
-			TargetColumn: "id",
-			DataType:     "BIGINT",
-			Status:       "approved",
-			RuleType:     "system",
-			IsActive:     true,
-		}
-		_, _ = h.mappingRepo.CreateIfNotExists(ctx, rule)
-		added++
-	}
-	result := map[string]interface{}{
-		"command":       "import-streams",
-		"connection_id": payload.ConnectionID,
-		"added":         added,
-		"skipped":       skipped,
-		"total":         len(payload.Streams),
-		"status":        "success",
-	}
-	data, _ := json.Marshal(result)
-	h.nats_publish(msg, "cdc.result.import-streams", data)
-	h.writeActivity("import-streams", payload.ConnectionID, "success", int64(added), result, "")
-}
 
-// HandleBulkSyncFromAirbyte implements boundary-refactor #10 (subject
-// cdc.cmd.bulk-sync-from-airbyte). Walks every connection in the
 // workspace and imports missing registry rows + default mapping rules.
 // Heavy operation — logs once per connection.
-func (h *CommandHandler) HandleBulkSyncFromAirbyte(msg *nats.Msg) {
-	ctx := context.Background()
-	workspaceID := h.airbyte.GetWorkspaceID()
-	conns, err := h.airbyte.ListConnections(ctx, workspaceID)
-	if err != nil {
-		h.publishResultWithSubject(msg, "cdc.result.bulk-sync-from-airbyte", CommandResult{Command: "bulk-sync-from-airbyte", Status: "error", Error: err.Error()})
-		return
-	}
-	sources, _ := h.airbyte.ListSources(ctx)
-	sourceByID := make(map[string]airbyte.Source, len(sources))
-	for _, s := range sources {
-		sourceByID[s.SourceID] = s
-	}
-
-	added, skipped := 0, 0
-	for _, conn := range conns {
-		src, ok := sourceByID[conn.SourceID]
-		sourceDB := src.Database
-		if sourceDB == "" {
-			sourceDB = src.Name
-		}
-		sourceType := "mongodb"
-		lowerName := strings.ToLower(src.SourceName)
-		if strings.Contains(lowerName, "mysql") {
-			sourceType = "mysql"
-		} else if strings.Contains(lowerName, "postgres") {
-			sourceType = "postgresql"
-		}
-		if !ok {
-			h.logger.Warn("bulk-sync: source metadata missing", zap.String("conn", conn.ConnectionID))
-		}
-
-		for _, sc := range conn.SyncCatalog.Streams {
-			var existing model.TableRegistry
-			if err := h.db.WithContext(ctx).Where("source_table = ?", sc.Stream.Name).First(&existing).Error; err == nil {
-				skipped++
-				continue
-			}
-			targetTable := sc.Stream.Name
-			connID := conn.ConnectionID
-			sourceID := conn.SourceID
-			rawTable := strings.ReplaceAll(sc.Stream.Name, "-", "_")
-			syncMode := sc.Config.SyncMode
-			destMode := sc.Config.DestinationSyncMode
-			namespace := sc.Stream.Namespace
-			cursorField := ""
-			if len(sc.Config.CursorField) > 0 {
-				cursorField = sc.Config.CursorField[0]
-			}
-			pkField := "id"
-			if len(sc.Stream.SourceDefinedPrimaryKey) > 0 && len(sc.Stream.SourceDefinedPrimaryKey[0]) > 0 {
-				pkField = sc.Stream.SourceDefinedPrimaryKey[0][0]
-			}
-			entry := model.TableRegistry{
-				SourceDB:               sourceDB,
-				SourceType:             sourceType,
-				SourceTable:            sc.Stream.Name,
-				TargetTable:            targetTable,
-				SyncEngine:             "airbyte",
-				Priority:               "normal",
-				PrimaryKeyField:        pkField,
-				PrimaryKeyType:         "BIGINT",
-				IsActive:               sc.Config.Selected,
-				AirbyteConnectionID:    &connID,
-				AirbyteSourceID:        &sourceID,
-				AirbyteRawTable:        &rawTable,
-				AirbyteSyncMode:        &syncMode,
-				AirbyteDestinationSync: &destMode,
-				AirbyteNamespace:       &namespace,
-				AirbyteCursorField:     &cursorField,
-			}
-			if err := h.registryRepo.Create(ctx, &entry); err != nil {
-				h.logger.Warn("bulk-sync: registry create failed", zap.String("table", sc.Stream.Name), zap.Error(err))
-				continue
-			}
-			// Seed mapping rules from stream JSON schema.
-			if sc.Config.Selected {
-				if props, ok := sc.Stream.JSONSchema["properties"].(map[string]interface{}); ok {
-					for field, prop := range props {
-						if strings.HasPrefix(field, "_airbyte_") {
-							continue
-						}
-						rule := &model.MappingRule{
-							SourceTable:  sc.Stream.Name,
-							SourceField:  field,
-							TargetColumn: strings.ReplaceAll(field, ".", "_"),
-							DataType:     inferSQLTypeFromAirbyteProp(prop),
-							IsActive:     true,
-							Status:       "approved",
-							RuleType:     "auto-import",
-						}
-						_, _ = h.mappingRepo.CreateIfNotExists(ctx, rule)
-					}
-				}
-			}
-			added++
-		}
-	}
-	result := map[string]interface{}{
-		"command":         "bulk-sync-from-airbyte",
-		"connections":     len(conns),
-		"added":           added,
-		"already_exists":  skipped,
-		"status":          "success",
-	}
-	data, _ := json.Marshal(result)
-	h.nats_publish(msg, "cdc.result.bulk-sync-from-airbyte", data)
-	h.writeActivity("bulk-sync-from-airbyte", "*", "success", int64(added), result, "")
-}
 
 // ---------------------------------------------------------------------------
 // Helpers used across boundary-refactor handlers.

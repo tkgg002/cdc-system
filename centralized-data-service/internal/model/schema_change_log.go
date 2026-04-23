@@ -17,10 +17,7 @@ type SchemaChangeLog struct {
 	PendingFieldID          *uint     `gorm:"column:pending_field_id" json:"pending_field_id"`
 	ExecutedBy              string    `gorm:"column:executed_by;not null" json:"executed_by"`
 	ExecutedAt              time.Time `gorm:"column:executed_at" json:"executed_at"`
-	RollbackSQL             *string   `gorm:"column:rollback_sql" json:"rollback_sql"`
-	AirbyteSourceID         *string   `gorm:"column:airbyte_source_id" json:"airbyte_source_id"`
-	AirbyteRefreshTriggered bool      `gorm:"column:airbyte_refresh_triggered;default:false" json:"airbyte_refresh_triggered"`
-	AirbyteRefreshStatus    *string   `gorm:"column:airbyte_refresh_status" json:"airbyte_refresh_status"`
+	RollbackSQL *string `gorm:"column:rollback_sql" json:"rollback_sql"`
 }
 
 func (SchemaChangeLog) TableName() string { return "schema_changes_log" }

@@ -7,7 +7,6 @@ import (
 
 	"cdc-cms-service/internal/model"
 	"cdc-cms-service/internal/repository"
-	"cdc-cms-service/pkgs/airbyte"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"go.uber.org/zap"
@@ -21,7 +20,6 @@ type ApprovalService struct {
 	schemaLogRepo *repository.SchemaLogRepo
 	registryRepo  *repository.RegistryRepo
 	natsClient    *natsconn.NatsClient
-	airbyteClient *airbyte.Client
 	logger        *zap.Logger
 }
 
@@ -32,13 +30,12 @@ func NewApprovalService(
 	schemaLogRepo *repository.SchemaLogRepo,
 	registryRepo *repository.RegistryRepo,
 	nats *natsconn.NatsClient,
-	airbyteClient *airbyte.Client,
 	logger *zap.Logger,
 ) *ApprovalService {
 	return &ApprovalService{
 		db: db, pendingRepo: pendingRepo, mappingRepo: mappingRepo,
 		schemaLogRepo: schemaLogRepo, registryRepo: registryRepo,
-		natsClient: nats, airbyteClient: airbyteClient, logger: logger,
+		natsClient: nats, logger: logger,
 	}
 }
 
@@ -155,13 +152,9 @@ func (s *ApprovalService) Reject(ctx context.Context, id uint, req RejectRequest
 
 func (s *ApprovalService) triggerAirbyteRefresh(tableName string) {
 	ctx := context.Background()
-	registry, err := s.registryRepo.GetByTargetTable(ctx, tableName)
-	if err != nil || registry.AirbyteSourceID == nil {
-		return
-	}
-	if _, err := s.airbyteClient.DiscoverSchema(ctx, *registry.AirbyteSourceID); err != nil {
-		s.logger.Error("airbyte refresh failed", zap.Error(err))
-	}
+	// schema is refreshed via signal (cdc.cmd.debezium-signal) or on connector
+	// restart — see Command Center UI.
+	_, _ = s.registryRepo.GetByTargetTable(ctx, tableName)
 }
 
 func strPtr(s string) *string { return &s }

@@ -1,6 +1,5 @@
 package model
 
-// CDCEvent represents a CloudEvents CDC message from Debezium/Airbyte
 type CDCEvent struct {
 	SpecVersion     string       `json:"specversion"`
 	ID              string       `json:"id"`

@@ -2,7 +2,7 @@
  * Visual indicator for async-dispatch operations.
  *
  * Surfaces the `DispatchState` produced by `useAsyncDispatch` / specialized
- * hooks (`useScanFields`, `useSyncAirbyte`, ...) as an Ant Design tag with
+ * hooks (`useScanFields`, `useRestartDebezium`, ...) as an Ant Design tag with
  * optional spinner + tooltip showing dispatch time.
  *
  * Accessibility: Tooltip is keyboard-focusable via tabIndex; Spin uses the

@@ -10,7 +10,6 @@ import (
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
 	"cdc-cms-service/internal/repository"
-	"cdc-cms-service/pkgs/airbyte"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"github.com/gofiber/fiber/v2"
@@ -19,22 +18,20 @@ import (
 )
 
 type RegistryHandler struct {
-	repo          *repository.RegistryRepo
-	mappingRepo   *repository.MappingRuleRepo
-	db            *gorm.DB
-	natsClient    *natsconn.NatsClient
-	airbyteClient *airbyte.Client
-	logger        *zap.Logger
+	repo        *repository.RegistryRepo
+	mappingRepo *repository.MappingRuleRepo
+	db          *gorm.DB
+	natsClient  *natsconn.NatsClient
+	logger      *zap.Logger
 }
 
-func NewRegistryHandler(repo *repository.RegistryRepo, mappingRepo *repository.MappingRuleRepo, db *gorm.DB, nats *natsconn.NatsClient, airbyte *airbyte.Client, logger *zap.Logger) *RegistryHandler {
+func NewRegistryHandler(repo *repository.RegistryRepo, mappingRepo *repository.MappingRuleRepo, db *gorm.DB, nats *natsconn.NatsClient, logger *zap.Logger) *RegistryHandler {
 	return &RegistryHandler{
-		repo:          repo,
-		mappingRepo:   mappingRepo,
-		db:            db,
-		natsClient:    nats,
-		airbyteClient: airbyte,
-		logger:        logger,
+		repo:        repo,
+		mappingRepo: mappingRepo,
+		db:          db,
+		natsClient:  nats,
+		logger:      logger,
 	}
 }
 
@@ -64,7 +61,6 @@ func (h *RegistryHandler) logAction(operation, targetTable, status string, detai
 // @Tags         Table Registry
 // @Produce      json
 // @Param        source_db    query string false "Filter by source database"
-// @Param        sync_engine  query string false "Filter by sync engine" Enums(airbyte, debezium, both)
 // @Param        priority     query string false "Filter by priority" Enums(critical, high, normal, low)
 // @Param        is_active    query string false "Filter by active status" Enums(true, false)
 // @Param        page         query int    false "Page number" default(1)
@@ -121,7 +117,6 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// Rule B: DB insert là config-write sync; external Airbyte sync
 	// (discover schema + update connection) được dispatch async qua NATS.
 	if err := h.repo.Create(c.Context(), &entry); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to register table: " + err.Error()})
@@ -129,7 +124,6 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 
 	dispatched := []string{}
 
-	// Dispatch external side effects (CDC table + Airbyte sync) to Worker async
 	createColsPayload, _ := json.Marshal(map[string]interface{}{
 		"registry_id":       entry.ID,
 		"target_table":      entry.TargetTable,
@@ -143,21 +137,8 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 		dispatched = append(dispatched, "cdc.cmd.create-default-columns")
 	}
 
-	if entry.SyncEngine == "airbyte" || entry.SyncEngine == "both" {
-		syncPayload, _ := json.Marshal(map[string]interface{}{
-			"registry_id":  entry.ID,
-			"source_db":    entry.SourceDB,
-			"source_table": entry.SourceTable,
-			"target_table": entry.TargetTable,
-			"sync_engine":  entry.SyncEngine,
-			"source_type":  entry.SourceType,
-		})
-		if err := h.natsClient.Conn.Publish("cdc.cmd.sync-register", syncPayload); err != nil {
-			h.logger.Warn("publish sync-register failed", zap.Error(err))
-		} else {
-			dispatched = append(dispatched, "cdc.cmd.sync-register")
-		}
-	}
+	// Legacy sync-register dispatch removed post-Sprint 4 — Debezium-native
+	// flow registers via cdc_internal.table_registry + Master Registry UI.
 
 	h.natsClient.PublishReload(entry.TargetTable, middleware.GetUsername(c), "register", "")
 	h.logAction("register", entry.TargetTable, "accepted", map[string]interface{}{
@@ -172,7 +153,6 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 	})
 }
 
-// (removed: syncWithAirbyte) — moved to Worker via cdc.cmd.sync-register
 
 // Update godoc
 // @Summary      Update table registry entry
@@ -274,27 +254,9 @@ func (h *RegistryHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
-	// Dispatch Airbyte state sync async qua NATS thay vì call Airbyte trực tiếp.
+	// Legacy state-sync dispatch retired Sprint 4 4A.2. Modern Debezium
+	// state is managed via Connect REST at /api/v1/system/connectors.
 	dispatched := []string{}
-	if update.IsActive != nil || update.SyncEngine != nil {
-		shouldDispatch := existing.SyncEngine == "airbyte" || existing.SyncEngine == "both"
-		if shouldDispatch && existing.AirbyteConnectionID != nil && *existing.AirbyteConnectionID != "" {
-			payload, _ := json.Marshal(map[string]interface{}{
-				"registry_id":           existing.ID,
-				"source_table":          existing.SourceTable,
-				"target_table":          existing.TargetTable,
-				"sync_engine":           existing.SyncEngine,
-				"is_active":             existing.IsActive,
-				"airbyte_connection_id": existing.AirbyteConnectionID,
-				"airbyte_source_id":     existing.AirbyteSourceID,
-			})
-			if err := h.natsClient.Conn.Publish("cdc.cmd.sync-state", payload); err != nil {
-				h.logger.Warn("publish sync-state failed", zap.Error(err))
-			} else {
-				dispatched = append(dispatched, "cdc.cmd.sync-state")
-			}
-		}
-	}
 
 	// Activity Log
 	details := map[string]interface{}{"updates": updates, "user": middleware.GetUsername(c), "dispatched": dispatched}
@@ -398,8 +360,6 @@ func (h *RegistryHandler) GetStats(c *fiber.Ctx) error {
 }
 
 // GetStatus godoc
-// @Summary      Get Airbyte sync status
-// @Description  Returns the current sync status from Airbyte for a registered table
 // @Tags         Table Registry
 // @Produce      json
 // @Param        id   path int true "Registry entry ID"
@@ -420,46 +380,10 @@ func (h *RegistryHandler) GetStatus(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "not found"})
 	}
 
-	// Fix #12: Registry-aware routing — chỉ query Airbyte nếu sync_engine phù hợp.
-	engine := strings.ToLower(entry.SyncEngine)
-	if engine != "airbyte" && engine != "both" {
-		return c.Status(400).JSON(fiber.Map{
-			"error":       "status endpoint requires sync_engine=airbyte|both",
-			"sync_engine": entry.SyncEngine,
-			"hint":        "for debezium entries, use /api/system/health or Debezium connector endpoint",
-		})
-	}
-
-	if entry.AirbyteConnectionID == nil || *entry.AirbyteConnectionID == "" {
-		return c.JSON(fiber.Map{"status": "unknown", "message": "no airbyte connection linked"})
-	}
-
-	conn, err := h.airbyteClient.GetConnection(c.Context(), *entry.AirbyteConnectionID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to get airbyte connection: " + err.Error()})
-	}
-
-	normalizedSourceTable := strings.ReplaceAll(strings.ToLower(entry.SourceTable), "_", "-")
-	streamEnabled := false
-	for _, s := range conn.SyncCatalog.Streams {
-		normalizedStreamName := strings.ReplaceAll(strings.ToLower(s.Stream.Name), "_", "-")
-		if normalizedStreamName == normalizedSourceTable || s.Stream.Name == entry.SourceTable {
-			streamEnabled = s.Config.Selected
-			break
-		}
-	}
-
-	effectiveStatus := conn.Status
-	if conn.Status == "active" && !streamEnabled {
-		effectiveStatus = "stream_disabled"
-	}
-
-	return c.JSON(fiber.Map{
-		"connection_id":  conn.ConnectionID,
-		"status":         effectiveStatus, // e.g. "active", "inactive", "stream_disabled", "deprecated"
-		"name":           conn.Name,
-		"stream_enabled": streamEnabled,
-		"sync_engine":    entry.SyncEngine,
+	return c.Status(410).JSON(fiber.Map{
+		"error":       "legacy status endpoint retired",
+		"sync_engine": entry.SyncEngine,
+		"hint":        "use GET /api/v1/system/connectors[/:name] for Debezium connector status",
 	})
 }
 
@@ -543,11 +467,8 @@ func (h *RegistryHandler) Discover(c *fiber.Ctx) error {
 	})
 }
 
-// (removed: syncRegistryStateToAirbyte) — moved to Worker via cdc.cmd.sync-state
 
 // RefreshCatalog godoc
-// @Summary      Refresh Airbyte source schema catalog
-// @Description  Triggers Airbyte schema discovery to re-add missing streams back to the connection catalog.
 //
 //	Use this when a stream was accidentally removed from catalog or when new tables are added to the source DB.
 //
@@ -560,57 +481,8 @@ func (h *RegistryHandler) Discover(c *fiber.Ctx) error {
 // @Failure      500 {object} map[string]string
 // @Security     BearerAuth
 // @Router       /api/registry/{id}/refresh-catalog [post]
-func (h *RegistryHandler) RefreshCatalog(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
-	}
-
-	entry, err := h.repo.GetByID(c.Context(), uint(id))
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not found"})
-	}
-
-	// Registry-aware (Rule C): chỉ Airbyte entries mới có source_id refresh
-	engine := strings.ToLower(entry.SyncEngine)
-	if engine != "airbyte" && engine != "both" {
-		return c.Status(400).JSON(fiber.Map{
-			"error":       "refresh-catalog requires sync_engine=airbyte|both",
-			"sync_engine": entry.SyncEngine,
-		})
-	}
-	if entry.AirbyteSourceID == nil || *entry.AirbyteSourceID == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "no airbyte source linked to this registry entry"})
-	}
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":       entry.ID,
-		"sync_engine":       entry.SyncEngine,
-		"source_type":       entry.SourceType,
-		"source_table":      entry.SourceTable,
-		"target_table":      entry.TargetTable,
-		"airbyte_source_id": *entry.AirbyteSourceID,
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.refresh-catalog", payload); err != nil {
-		h.logAction("refresh-catalog", entry.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
-	}
-
-	h.logAction("refresh-catalog", entry.TargetTable, "accepted", map[string]interface{}{
-		"user":      middleware.GetUsername(c),
-		"source_id": *entry.AirbyteSourceID,
-	}, "")
-
-	return c.Status(202).JSON(fiber.Map{
-		"message":      "refresh-catalog command accepted",
-		"source_id":    *entry.AirbyteSourceID,
-		"target_table": entry.TargetTable,
-	})
-}
 
 // Sync godoc
-// @Summary      Force Airbyte sync
-// @Description  Triggers a manual sync job in Airbyte for the connection associated with this table
 // @Tags         Table Registry
 // @Produce      json
 // @Param        id   path int true "Registry entry ID"
@@ -620,60 +492,17 @@ func (h *RegistryHandler) RefreshCatalog(c *fiber.Ctx) error {
 // @Security     BearerAuth
 // @Router       /api/registry/{id}/sync [post]
 func (h *RegistryHandler) Sync(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
-	}
-
-	entry, err := h.repo.GetByID(c.Context(), uint(id))
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not found"})
-	}
-
-	// Registry-aware (Rule C): chỉ entries Airbyte mới kích Airbyte TriggerSync.
-	engine := strings.ToLower(entry.SyncEngine)
-	if engine != "airbyte" && engine != "both" {
-		return c.Status(400).JSON(fiber.Map{
-			"error":       "sync requires sync_engine=airbyte|both",
-			"sync_engine": entry.SyncEngine,
-		})
-	}
-	if entry.AirbyteConnectionID == nil || *entry.AirbyteConnectionID == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "no airbyte connection linked"})
-	}
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":           entry.ID,
-		"sync_engine":           entry.SyncEngine,
-		"source_type":           entry.SourceType,
-		"source_table":          entry.SourceTable,
-		"target_table":          entry.TargetTable,
-		"airbyte_connection_id": *entry.AirbyteConnectionID,
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.airbyte-sync", payload); err != nil {
-		h.logAction("airbyte-sync", entry.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
-	}
-
-	h.logAction("airbyte-sync", entry.TargetTable, "accepted", map[string]interface{}{
-		"user":          middleware.GetUsername(c),
-		"connection_id": *entry.AirbyteConnectionID,
-	}, "")
-
-	return c.Status(202).JSON(fiber.Map{
-		"message":       "airbyte-sync command accepted",
-		"target_table":  entry.TargetTable,
-		"connection_id": *entry.AirbyteConnectionID,
+	return c.Status(410).JSON(fiber.Map{
+		"error": "sync endpoint retired — use Debezium Command Center",
 	})
 }
 
 // GetJobs godoc
-// @Summary      Get recent Airbyte sync jobs
 // @Description  Returns the 10 most recent sync jobs for the connection associated with this table
 // @Tags         Table Registry
 // @Produce      json
 // @Param        id   path int true "Registry entry ID"
-// @Success      200 {object} []airbyte.JobStatus
+// @Success      200 {object} []map[string]interface{}
 // @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Security     BearerAuth
@@ -689,24 +518,15 @@ func (h *RegistryHandler) GetJobs(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "not found"})
 	}
 
-	if entry.AirbyteConnectionID == nil || *entry.AirbyteConnectionID == "" {
-		return c.JSON([]interface{}{})
-	}
-
-	jobs, err := h.airbyteClient.ListJobs(c.Context(), *entry.AirbyteConnectionID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to list jobs: " + err.Error()})
-	}
-
-	return c.JSON(jobs)
+	_ = entry
+	return c.Status(410).JSON(fiber.Map{
+		"error": "legacy jobs endpoint retired — use Debezium Command Center",
+	})
 }
 
 // ScanSource godoc
-// @Summary      Scan Airbyte source for new tables
-// @Description  Discovers all streams in an Airbyte source and registers them in CDC registry if not exists (with is_active=false)
 // @Tags         Table Registry
 // @Produce      json
-// @Param        source_id  query string true "Airbyte Source ID"
 // @Success      200 {object} map[string]interface{}
 // @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
@@ -719,7 +539,7 @@ func (h *RegistryHandler) ScanSource(c *fiber.Ctx) error {
 	}
 
 	payload, _ := json.Marshal(map[string]interface{}{
-		"airbyte_source_id": sourceID,
+		"legacy_source_id": sourceID,
 		"triggered_by":      middleware.GetUsername(c),
 	})
 	if err := h.natsClient.Conn.Publish("cdc.cmd.scan-source", payload); err != nil {
@@ -729,18 +549,17 @@ func (h *RegistryHandler) ScanSource(c *fiber.Ctx) error {
 
 	h.logAction("scan-source", sourceID, "accepted", map[string]interface{}{
 		"user":              middleware.GetUsername(c),
-		"airbyte_source_id": sourceID,
+		"legacy_source_id": sourceID,
 	}, "")
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":           "scan-source command accepted",
-		"airbyte_source_id": sourceID,
+		"legacy_source_id": sourceID,
 	})
 }
 
 // ScanFields godoc
 // @Summary      Scan source fields for a registered table
-// @Description  Uses Airbyte Discovery API to find new fields and register them as 'pending' in mapping rules
 // @Tags         Table Registry
 // @Produce      json
 // @Param        id   path int true "Registry entry ID"
@@ -761,16 +580,14 @@ func (h *RegistryHandler) ScanFields(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "not found"})
 	}
 
-	// Registry-aware (Rule C): Airbyte hoặc Debezium đều có thể scan
-	// (Worker sẽ route theo source_type), nhưng cần ít nhất 1 identifier.
+	// Debezium-native scan: worker looks up Mongo source via source_db +
 	payload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":       entry.ID,
-		"sync_engine":       entry.SyncEngine,
-		"source_type":       entry.SourceType,
-		"source_db":         entry.SourceDB,
-		"source_table":      entry.SourceTable,
-		"target_table":      entry.TargetTable,
-		"airbyte_source_id": entry.AirbyteSourceID,
+		"registry_id":  entry.ID,
+		"sync_engine":  entry.SyncEngine,
+		"source_type":  entry.SourceType,
+		"source_db":    entry.SourceDB,
+		"source_table": entry.SourceTable,
+		"target_table": entry.TargetTable,
 	})
 	if err := h.natsClient.Conn.Publish("cdc.cmd.scan-fields", payload); err != nil {
 		h.logAction("scan-fields", entry.TargetTable, "error", nil, err.Error())
@@ -795,60 +612,20 @@ func (h *RegistryHandler) ScanFields(c *fiber.Ctx) error {
 func (h *RegistryHandler) SyncHealth(c *fiber.Ctx) error {
 	var totalRegistry, activeRegistry, tablesCreated int64
 	var pendingRules, approvedRules int64
-	var airbyteRegistry int64
 
 	h.db.Model(&model.TableRegistry{}).Count(&totalRegistry)
 	h.db.Model(&model.TableRegistry{}).Where("is_active = ?", true).Count(&activeRegistry)
 	h.db.Model(&model.TableRegistry{}).Where("is_table_created = ?", true).Count(&tablesCreated)
-	// Fix #13: chỉ count Airbyte-backed registry để so sánh với Airbyte streams.
-	h.db.Model(&model.TableRegistry{}).Where("sync_engine IN ?", []string{"airbyte", "both"}).Count(&airbyteRegistry)
 
 	h.db.Table("cdc_mapping_rules").Where("status = ?", "pending").Count(&pendingRules)
 	h.db.Table("cdc_mapping_rules").Where("status = ?", "approved").Count(&approvedRules)
 
-	// Fix #13: Filter connections theo registry SyncEngine.
-	// Lấy tập airbyte_connection_id từ các entry có sync_engine IN (airbyte, both).
-	var airbyteConnIDs []string
-	h.db.Model(&model.TableRegistry{}).
-		Where("sync_engine IN ? AND airbyte_connection_id IS NOT NULL AND airbyte_connection_id <> ''",
-			[]string{"airbyte", "both"}).
-		Distinct("airbyte_connection_id").Pluck("airbyte_connection_id", &airbyteConnIDs)
-
-	airbyteStreamCount := 0
-	if len(airbyteConnIDs) > 0 {
-		conns, err := h.airbyteClient.ListConnections(c.Context(), h.airbyteClient.GetWorkspaceID())
-		if err == nil {
-			allow := make(map[string]bool, len(airbyteConnIDs))
-			for _, id := range airbyteConnIDs {
-				allow[id] = true
-			}
-			for _, conn := range conns {
-				if !allow[conn.ConnectionID] {
-					continue
-				}
-				for _, sc := range conn.SyncCatalog.Streams {
-					if sc.Config.Selected {
-						airbyteStreamCount++
-					}
-				}
-			}
-		}
-	}
-
-	unregistered := airbyteStreamCount - int(airbyteRegistry)
-	if unregistered < 0 {
-		unregistered = 0
-	}
-
 	return c.JSON(fiber.Map{
-		"total_streams_airbyte":      airbyteStreamCount,
-		"total_registered_cms":       totalRegistry,
-		"total_registered_airbyte":   airbyteRegistry,
-		"active_tables":              activeRegistry,
-		"tables_created":             tablesCreated,
-		"unregistered":               unregistered,
-		"pending_mapping_rules":      pendingRules,
-		"approved_mapping_rules":     approvedRules,
+		"total_registered_cms":   totalRegistry,
+		"active_tables":          activeRegistry,
+		"tables_created":         tablesCreated,
+		"pending_mapping_rules":  pendingRules,
+		"approved_mapping_rules": approvedRules,
 	})
 }
 
@@ -864,91 +641,12 @@ func intQuery(c *fiber.Ctx, key string, defaultVal int) int {
 
 // (removed: inferDataTypeFromSchema) — moved to Worker
 
-// SyncFromAirbyte dispatches a bulk import command — thin layer (Rule B).
-// Worker handles Airbyte list + DB insert + mapping rule creation async.
-func (h *RegistryHandler) SyncFromAirbyte(c *fiber.Ctx) error {
-	payload, _ := json.Marshal(map[string]interface{}{
-		"workspace_id": h.airbyteClient.GetWorkspaceID(),
-		"triggered_by": middleware.GetUsername(c),
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.bulk-sync-from-airbyte", payload); err != nil {
-		h.logAction("bulk-sync-from-airbyte", "*", "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
-	}
 
-	h.logAction("bulk-sync-from-airbyte", "*", "accepted", map[string]interface{}{
-		"user": middleware.GetUsername(c),
-	}, "")
-
-	return c.Status(202).JSON(fiber.Map{
-		"message": "bulk-sync-from-airbyte command accepted",
-	})
-}
-
-// Bridge triggers copying data from Airbyte raw table → CDC table _raw_data
+// Bridge retired per Sprint 4 4A.2 — legacy pipeline removed. Use
+// Debezium Command Center + Transmuter (plan v2 §R6) instead.
 func (h *RegistryHandler) Bridge(c *fiber.Ctx) error {
-	id, _ := c.ParamsInt("id")
-	entry, err := h.repo.GetByID(c.Context(), uint(id))
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "registry entry not found"})
-	}
-
-	// Auto-detect Airbyte table name
-	// Airbyte typed denormalized mode: table name = source_table with - replaced by _
-	rawTable := ""
-	if entry.AirbyteRawTable != nil && *entry.AirbyteRawTable != "" && !strings.HasPrefix(*entry.AirbyteRawTable, "_airbyte_raw_") {
-		rawTable = *entry.AirbyteRawTable
-	} else {
-		rawTable = strings.ReplaceAll(entry.SourceTable, "-", "_")
-	}
-
-	payload, _ := json.Marshal(map[string]string{
-		"target_table":      entry.TargetTable,
-		"airbyte_raw_table": rawTable,
-		"primary_key_field": entry.PrimaryKeyField,
-		"source_type":       entry.SourceType,
-	})
-
-	// mode=batch → use high-throughput pgx bridge (Sonyflake + gjson)
-	subject := "cdc.cmd.bridge-airbyte"
-	if c.Query("mode") == "batch" {
-		subject = "cdc.cmd.bridge-airbyte-batch"
-		// Add last_bridge_at for keyset pagination
-		if entry.LastBridgeAt != nil {
-			payload, _ = json.Marshal(map[string]string{
-				"target_table":      entry.TargetTable,
-				"airbyte_raw_table": rawTable,
-				"primary_key_field": entry.PrimaryKeyField,
-				"last_bridge_at":    entry.LastBridgeAt.Format("2006-01-02 15:04:05"),
-			})
-		}
-	}
-
-	mode := "sql"
-	if c.Query("mode") == "batch" {
-		mode = "batch-pgx"
-	}
-
-	if err := h.natsClient.Conn.Publish(subject, payload); err != nil {
-		h.logAction("bridge-"+mode, entry.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch bridge command: " + err.Error()})
-	}
-
-	h.logAction("bridge-"+mode, entry.TargetTable, "success", map[string]interface{}{
-		"airbyte_raw_table": rawTable,
-		"mode":              mode,
-		"user":              middleware.GetUsername(c),
-	}, "")
-
-	// Save detected raw table name for future use
-	if entry.AirbyteRawTable == nil || *entry.AirbyteRawTable == "" {
-		h.db.Model(&model.TableRegistry{}).Where("id = ?", id).Update("airbyte_raw_table", rawTable)
-	}
-
-	return c.Status(202).JSON(fiber.Map{
-		"message":           "bridge command accepted",
-		"target_table":      entry.TargetTable,
-		"airbyte_raw_table": rawTable,
+	return c.Status(410).JSON(fiber.Map{
+		"error": "bridge endpoint retired — use POST /api/v1/tables/:name/transmute",
 	})
 }
 
@@ -1014,99 +712,13 @@ func (h *RegistryHandler) TransformStatus(c *fiber.Ctx) error {
 	})
 }
 
-// Reconciliation returns a per-table comparison report between Airbyte raw and CDC tables.
+// Reconciliation retired per Sprint 4 4A.2 — compared rows of legacy raw
+// tables vs CDC tables. Modern reconciliation lives at
+// /api/v1/tables + /api/v1/system/connectors (Debezium Command Center)
+// and the Transmuter's last_stats field on cdc_internal.transmute_schedule.
 func (h *RegistryHandler) Reconciliation(c *fiber.Ctx) error {
-	entries, _, err := h.repo.GetAll(c.Context(), repository.RegistryFilter{PageSize: 500})
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	type TableReport struct {
-		TargetTable   string `json:"target_table"`
-		SourceTable   string `json:"source_table"`
-		AirbyteRows   int64  `json:"airbyte_rows"`
-		CDCRows       int64  `json:"cdc_rows"`
-		RowDiff       int64  `json:"row_diff"`
-		MappedFields  int    `json:"mapped_fields"`
-		TotalFields   int    `json:"total_fields"`
-		CoveragePct   int    `json:"coverage_pct"`
-		TransformPct  int    `json:"transform_pct"`
-	}
-
-	// Helper: check table exists
-	tblExists := func(name string) bool {
-		var exists bool
-		h.db.Raw("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = 'public')", name).Scan(&exists)
-		return exists
-	}
-	colExists := func(table, col string) bool {
-		var exists bool
-		h.db.Raw("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?)", table, col).Scan(&exists)
-		return exists
-	}
-
-	var reports []TableReport
-	for _, entry := range entries {
-		if !entry.IsTableCreated {
-			continue
-		}
-
-		var report TableReport
-		report.TargetTable = entry.TargetTable
-		report.SourceTable = entry.SourceTable
-
-		// Airbyte raw table row count
-		airbyteTable := strings.ReplaceAll(entry.SourceTable, "-", "_")
-		if entry.AirbyteRawTable != nil && *entry.AirbyteRawTable != "" {
-			airbyteTable = *entry.AirbyteRawTable
-		}
-		if tblExists(airbyteTable) {
-			h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, airbyteTable)).Scan(&report.AirbyteRows)
-		}
-
-		// CDC table row count
-		if tblExists(entry.TargetTable) {
-			h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, entry.TargetTable)).Scan(&report.CDCRows)
-		}
-		report.RowDiff = report.AirbyteRows - report.CDCRows
-
-		// Field coverage
-		var mappedCount int64
-		h.db.Table("cdc_mapping_rules").Where("source_table = ? AND is_active = ?", entry.SourceTable, true).Count(&mappedCount)
-		report.MappedFields = int(mappedCount)
-
-		if tblExists(entry.TargetTable) && colExists(entry.TargetTable, "_raw_data") {
-			var rawKeys []string
-			h.db.Raw(fmt.Sprintf(`SELECT DISTINCT key FROM (SELECT jsonb_object_keys(_raw_data) AS key FROM "%s" WHERE _raw_data IS NOT NULL LIMIT 100) sub`, entry.TargetTable)).Scan(&rawKeys)
-			report.TotalFields = len(rawKeys)
-		}
-
-		if report.TotalFields > 0 {
-			report.CoveragePct = int(float64(report.MappedFields) / float64(report.TotalFields) * 100)
-		}
-
-		// Transform coverage
-		if tblExists(entry.TargetTable) {
-			var totalRows, transformedRows int64
-			h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, entry.TargetTable)).Scan(&totalRows)
-			if report.MappedFields > 0 {
-				var firstCol string
-				h.db.Table("cdc_mapping_rules").Select("target_column").Where("source_table = ? AND is_active = ?", entry.SourceTable, true).Limit(1).Scan(&firstCol)
-				if firstCol != "" && colExists(entry.TargetTable, firstCol) {
-					h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "%s" IS NOT NULL`, entry.TargetTable, firstCol)).Scan(&transformedRows)
-				}
-			}
-			if totalRows > 0 {
-				report.TransformPct = int(float64(transformedRows) / float64(totalRows) * 100)
-			}
-		}
-
-		reports = append(reports, report)
-	}
-
-	return c.JSON(fiber.Map{
-		"reports": reports,
-		"total":   len(reports),
+	return c.Status(410).JSON(fiber.Map{
+		"error": "reconciliation endpoint retired — use /api/v1/tables + Command Center",
 	})
 }
 

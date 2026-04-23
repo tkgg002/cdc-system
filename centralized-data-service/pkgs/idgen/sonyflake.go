@@ -49,6 +49,26 @@ func NextID() (uint64, error) {
 	return sf.NextID()
 }
 
+// InitWithMachineID initializes Sonyflake with a Postgres-allocated machine_id
+// (claimed via cdc_internal.claim_machine_id). Preferred for the SinkWorker
+// pipeline because it is collision-free at the whole-cluster level whereas
+// the default IP-based heuristic can collide across pods on different subnets.
+//
+// Safe to call only once per process (same `once` guard as Init()).
+func InitWithMachineID(machineID uint16) error {
+	var initErr error
+	once.Do(func() {
+		settings := sonyflake.Settings{
+			MachineID: func() (uint16, error) { return machineID, nil },
+		}
+		sf = sonyflake.NewSonyflake(settings)
+		if sf == nil {
+			initErr = fmt.Errorf("sonyflake: failed to create instance with machineID=%d", machineID)
+		}
+	})
+	return initErr
+}
+
 // outboundIP returns the preferred outbound IP of this machine.
 func outboundIP() (net.IP, error) {
 	conn, err := net.Dial("udp", "8.8.8.8:80")

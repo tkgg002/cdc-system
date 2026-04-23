@@ -14,7 +14,6 @@ type AppConfig struct {
 	Nats    NatsConfig    `mapstructure:"nats"`
 	Redis   RedisConfig   `mapstructure:"redis"`
 	Worker  WorkerConfig  `mapstructure:"worker"`
-	Airbyte AirbyteConfig `mapstructure:"airbyte"`
 	JWT     JWTConfig     `mapstructure:"jwt"`
 	Kafka   KafkaConfig   `mapstructure:"kafka"`
 	Otel    OtelConfig    `mapstructure:"otel"`
@@ -129,12 +128,6 @@ type WorkerConfig struct {
 	ScanInterval      time.Duration `mapstructure:"scanInterval"`
 }
 
-type AirbyteConfig struct {
-	APIURL       string `mapstructure:"apiUrl"`
-	ClientID     string `mapstructure:"clientId"`
-	ClientSecret string `mapstructure:"clientSecret"`
-}
-
 type JWTConfig struct {
 	Secret     string        `mapstructure:"secret"`
 	Expiration time.Duration `mapstructure:"expiration"`
@@ -185,15 +178,6 @@ func applyEnvOverrides(cfg *AppConfig) {
 	}
 	if v := os.Getenv("JWT_SECRET"); v != "" {
 		cfg.JWT.Secret = v
-	}
-	if v := os.Getenv("AIRBYTE_API_URL"); v != "" {
-		cfg.Airbyte.APIURL = v
-	}
-	if v := os.Getenv("AIRBYTE_CLIENT_ID"); v != "" {
-		cfg.Airbyte.ClientID = v
-	}
-	if v := os.Getenv("AIRBYTE_CLIENT_SECRET"); v != "" {
-		cfg.Airbyte.ClientSecret = v
 	}
 	if v := os.Getenv("KAFKA_CONNECT_URL"); v != "" {
 		cfg.Debezium.KafkaConnectURL = v
