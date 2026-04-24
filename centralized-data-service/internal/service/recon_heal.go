@@ -43,6 +43,7 @@ type HealResult struct {
 	Table         string
 	Requested     int
 	Upserted      int
+	Deleted       int
 	Skipped       int // OCC guard rejected, or doc missing in source
 	Errored       int
 	UsedSignal    bool // true when Debezium signal took the lead path
@@ -296,13 +297,9 @@ type ReconHealer struct {
 	db            *gorm.DB
 	schemaAdapter *SchemaAdapter
 	signal        *DebeziumSignalClient // optional — nil disables Signal path
+	masking       *MaskingService
 	logger        *zap.Logger
 	cfg           ReconHealerConfig
-	// perTableMaskCache memoises the sensitive_fields JSONB column of
-	// cdc_table_registry so the heal hot path does not reload it per
-	// document. Reloaded lazily on cache miss; a schema reload should
-	// call InvalidateMaskCache.
-	perTableMaskCache map[string]map[string]struct{}
 }
 
 // ReconHealerConfig exposes the handful of tunables we need. All
@@ -314,12 +311,8 @@ type ReconHealerConfig struct {
 	// ForceDirect — when true, skip the Signal path even when a healthy
 	// connector is available. Useful for tests and targeted re-heal.
 	ForceDirect bool
-	// SensitiveFieldMask — field names whose values will be replaced
-	// with "***" inside the raw_json stored in failed_sync_logs and
-	// audit details. Empty slice = mask nothing.
-	// TODO(security): wire from cdc_table_registry once we own a
-	// dedicated schema for sensitive fields. For now operators can
-	// pass a global list via ReconHealerConfig.
+	// SensitiveFieldMask provides fallback default keywords only when a
+	// shared MaskingService instance is not injected by the caller.
 	SensitiveFieldMask []string
 }
 
@@ -335,33 +328,39 @@ func (c *ReconHealerConfig) applyDefaults() {
 	}
 }
 
-// NewReconHealer — `signal` may be nil; when nil, all heal calls go
-// through the direct $in path.
+// NewReconHealer wires the heal pipeline. `signal` may be nil; when nil,
+// all heal calls go through the direct $in path.
 func NewReconHealer(
 	db *gorm.DB,
 	mongoClient *mongo.Client,
 	schemaAdapter *SchemaAdapter,
 	signal *DebeziumSignalClient,
+	masking *MaskingService,
 	cfg ReconHealerConfig,
 	logger *zap.Logger,
 ) *ReconHealer {
 	cfg.applyDefaults()
+	if masking == nil {
+		masking = NewMaskingService(db, logger, cfg.SensitiveFieldMask...)
+	}
 	return &ReconHealer{
-		db:                db,
-		mongoClient:       mongoClient,
-		schemaAdapter:     schemaAdapter,
-		signal:            signal,
-		logger:            logger,
-		cfg:               cfg,
-		perTableMaskCache: make(map[string]map[string]struct{}),
+		db:            db,
+		mongoClient:   mongoClient,
+		schemaAdapter: schemaAdapter,
+		signal:        signal,
+		masking:       masking,
+		logger:        logger,
+		cfg:           cfg,
 	}
 }
 
 // InvalidateMaskCache drops the per-table sensitive-field cache so the
-// next call reloads from cdc_table_registry. CMS calls this when an
-// operator edits the sensitive_fields column.
+// next call reloads from cdc_table_registry through the shared
+// MaskingService.
 func (rh *ReconHealer) InvalidateMaskCache() {
-	rh.perTableMaskCache = make(map[string]map[string]struct{})
+	if rh.masking != nil {
+		rh.masking.Invalidate("")
+	}
 }
 
 // HealMissingIDs performs the v3 heal pipeline on a batch of missing
@@ -372,12 +371,12 @@ func (rh *ReconHealer) InvalidateMaskCache() {
 //     range (when Signal path available + connector healthy).
 //  2. Fall through to direct heal:
 //     for chunk of BatchSize in ids:
-//       docs = coll.Find({_id: {$in: chunk}})
-//       for each doc:
-//         build OCC UPSERT via SchemaAdapter (_source_ts from updated_at
-//         or ObjectID timestamp)
-//         exec UPSERT — OCC clause decides apply vs skip
-//         buffer audit entry; flush every AuditFlushSize
+//     docs = coll.Find({_id: {$in: chunk}})
+//     for each doc:
+//     build OCC UPSERT via SchemaAdapter (_source_ts from updated_at
+//     or ObjectID timestamp)
+//     exec UPSERT — OCC clause decides apply vs skip
+//     buffer audit entry; flush every AuditFlushSize
 //     flush remaining audit buffer at end.
 //
 // The Signal path + direct path are NOT mutually exclusive: if the
@@ -439,12 +438,13 @@ func (rh *ReconHealer) healMissingIDsWithBatcher(
 	start := time.Now()
 	res := &HealResult{Table: entry.TargetTable, Requested: len(ids), RunID: runID}
 
-	// Source collection — read preference secondary to avoid primary load.
+	// Healing must read from primary so deletes/updates are not missed
+	// under replica lag.
 	coll := rh.mongoClient.
 		Database(entry.SourceDB).
 		Collection(
 			entry.SourceTable,
-			options.Collection().SetReadPreference(readpref.Secondary()),
+			options.Collection().SetReadPreference(readpref.Primary()),
 		)
 
 	for _, chunk := range chunkStrings(ids, rh.cfg.BatchSize) {
@@ -561,6 +561,68 @@ func (rh *ReconHealer) healMissingIDsWithBatcher(
 	return res, nil
 }
 
+// HealOrphanedIDs removes destination rows that no longer exist in the
+// Mongo source. Caller should pass the `missing_from_src` list emitted
+// by Tier 2 (`ReconciliationReport.StaleIDs` payload).
+func (rh *ReconHealer) HealOrphanedIDs(
+	ctx context.Context,
+	entry model.TableRegistry,
+	missingFromSrc []string,
+) (*HealResult, error) {
+	if len(missingFromSrc) == 0 {
+		return &HealResult{Table: entry.TargetTable}, nil
+	}
+	if err := validateIdent(entry.TargetTable); err != nil {
+		return nil, err
+	}
+	if err := validateIdent(entry.PrimaryKeyField); err != nil {
+		return nil, err
+	}
+
+	start := time.Now()
+	res := &HealResult{
+		Table:     entry.TargetTable,
+		Requested: len(missingFromSrc),
+	}
+
+	for _, chunk := range chunkStrings(missingFromSrc, rh.cfg.BatchSize) {
+		args := make([]interface{}, 0, len(chunk)+1)
+		placeholders := make([]string, 0, len(chunk))
+		for i, id := range chunk {
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+			_ = i
+		}
+		query := fmt.Sprintf(
+			`DELETE FROM %s WHERE %s IN (%s)`,
+			quoteIdent(entry.TargetTable),
+			quoteIdent(entry.PrimaryKeyField),
+			strings.Join(placeholders, ", "),
+		)
+		execRes := rh.db.WithContext(ctx).Exec(query, args...)
+		if execRes.Error != nil {
+			res.Errored += len(chunk)
+			rh.logger.Warn("heal orphaned delete failed",
+				zap.String("table", entry.TargetTable),
+				zap.Int("chunk_size", len(chunk)),
+				zap.Error(execRes.Error),
+			)
+			continue
+		}
+		res.Deleted += int(execRes.RowsAffected)
+	}
+
+	res.DurationMs = time.Since(start).Milliseconds()
+	rh.logger.Info("heal orphaned IDs completed",
+		zap.String("table", entry.TargetTable),
+		zap.Int("requested", res.Requested),
+		zap.Int("deleted", res.Deleted),
+		zap.Int("errored", res.Errored),
+		zap.Int64("duration_ms", res.DurationMs),
+	)
+	return res, nil
+}
+
 // HealWindow is the orchestrated heal flow (plan v3 §7):
 //
 //  1. Phase A (preferred): Debezium incremental snapshot with range
@@ -670,7 +732,7 @@ func (rh *ReconHealer) applyOne(
 		data[k] = unwrapBSONValue(v)
 	}
 
-	rawJSON, _ := json.Marshal(rh.maskSensitiveForTable(entry.TargetTable, data))
+	rawJSON := rh.buildMaskedRawJSON(entry.TargetTable, data)
 
 	// _source_ts preference order:
 	//  1. doc.updated_at (time.Time or primitive.DateTime)
@@ -701,6 +763,15 @@ func (rh *ReconHealer) applyOne(
 	return "upsert", nil
 }
 
+func (rh *ReconHealer) buildMaskedRawJSON(targetTable string, data map[string]interface{}) []byte {
+	maskedData := data
+	if rh.masking != nil {
+		maskedData = rh.masking.MaskTableData(targetTable, data)
+	}
+	rawJSON, _ := json.Marshal(maskedData)
+	return rawJSON
+}
+
 // newHealRunID produces a short, sortable correlation ID used to tie
 // every audit row emitted during a single HealWindow / HealMissingIDs
 // invocation together. Not a UUID (keeps the code dep-free and the ID
@@ -714,94 +785,6 @@ func newHealRunID() string {
 		now.Format("20060102T150405.000"),
 		uint32(now.UnixNano())&0xFFFFFF,
 	)
-}
-
-// maskSensitive returns a shallow copy of `m` with configured sensitive
-// field values replaced by "***". Sensitive field list is looked up
-// case-insensitively. Non-sensitive values are passed through as-is.
-//
-// Deprecated: use maskSensitiveForTable so per-table sensitive_fields
-// from cdc_table_registry override the global ReconHealerConfig list.
-// Kept for callers that don't have a target table in scope.
-func (rh *ReconHealer) maskSensitive(m map[string]interface{}) map[string]interface{} {
-	if len(rh.cfg.SensitiveFieldMask) == 0 {
-		return m
-	}
-	mask := make(map[string]struct{}, len(rh.cfg.SensitiveFieldMask))
-	for _, f := range rh.cfg.SensitiveFieldMask {
-		mask[strings.ToLower(f)] = struct{}{}
-	}
-	return applyMaskSet(m, mask)
-}
-
-// maskSensitiveForTable resolves the per-table sensitive_fields set from
-// cdc_table_registry (migration 014) and applies it to `m`. Global
-// ReconHealerConfig.SensitiveFieldMask is merged in as a lower bound —
-// anything in the global list is always masked. Result = union of both
-// sets.
-//
-// The per-table set is cached in rh.perTableMaskCache; the cache is
-// invalidated via InvalidateMaskCache when an operator edits the
-// registry row.
-func (rh *ReconHealer) maskSensitiveForTable(table string, m map[string]interface{}) map[string]interface{} {
-	mask := rh.resolveMaskSet(table)
-	if len(mask) == 0 {
-		return m
-	}
-	return applyMaskSet(m, mask)
-}
-
-// resolveMaskSet returns the case-insensitive field set for a table.
-// Empty result means nothing to mask.
-func (rh *ReconHealer) resolveMaskSet(table string) map[string]struct{} {
-	if cached, ok := rh.perTableMaskCache[table]; ok {
-		return cached
-	}
-
-	// Seed with the global fallback list.
-	set := make(map[string]struct{}, len(rh.cfg.SensitiveFieldMask))
-	for _, f := range rh.cfg.SensitiveFieldMask {
-		set[strings.ToLower(f)] = struct{}{}
-	}
-
-	// Load from registry — scan into a string so pgx's default JSONB
-	// decoder returns the serialised array text. Casting to []byte
-	// directly fails because the pgx JSONB codec yields a string.
-	var raw string
-	err := rh.db.Raw(
-		`SELECT sensitive_fields::text FROM cdc_table_registry WHERE target_table = ? LIMIT 1`,
-		table,
-	).Scan(&raw).Error
-	if err == nil && raw != "" {
-		var list []string
-		if jerr := json.Unmarshal([]byte(raw), &list); jerr == nil {
-			for _, f := range list {
-				set[strings.ToLower(f)] = struct{}{}
-			}
-		} else if rh.logger != nil {
-			rh.logger.Warn("sensitive_fields parse failed",
-				zap.String("table", table),
-				zap.Error(jerr),
-			)
-		}
-	}
-	// Cache even when empty so we don't re-query per document.
-	rh.perTableMaskCache[table] = set
-	return set
-}
-
-// applyMaskSet returns a shallow copy of m with fields in mask replaced
-// by "***". Lookup is case-insensitive (mask keys must be lowercase).
-func applyMaskSet(m map[string]interface{}, mask map[string]struct{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(m))
-	for k, v := range m {
-		if _, hit := mask[strings.ToLower(k)]; hit {
-			out[k] = "***"
-		} else {
-			out[k] = v
-		}
-	}
-	return out
 }
 
 // ============================================================

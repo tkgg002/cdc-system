@@ -283,10 +283,9 @@ func (da *ReconDestAgent) HashWindow(ctx context.Context, tableName, pkColumn st
 	return result.(*WindowResult), nil
 }
 
-// BucketHash computes 256 buckets keyed by the FIRST BYTE of hashtext(id).
-// Fixed-size result regardless of table size. Entire scan runs in-DB so
-// no row shipping; cost is a single seqscan/indexscan aggregate on the
-// replica.
+// BucketHash streams destination rows and computes the same 256-bucket
+// xxhash64(id + "|" + ts_ms) fingerprint as the source-side agent.
+// This makes Tier 3 bucket values directly comparable across stores.
 func (da *ReconDestAgent) BucketHash(ctx context.Context, tableName, pkColumn string) (*BucketHashResult, error) {
 	if err := validateIdent(tableName); err != nil {
 		return nil, err
@@ -297,37 +296,43 @@ func (da *ReconDestAgent) BucketHash(ctx context.Context, tableName, pkColumn st
 	ctx, cancel := context.WithTimeout(ctx, da.cfg.QueryTimeout)
 	defer cancel()
 
-	// Group rows by (hashtext(id) & 0xFF) then BIT_XOR per group.
-	// Cast hashtext to int4 then mask; int4 in PG is signed so we use
-	// `& 255` which yields an int with a value in [0,255].
 	sql := fmt.Sprintf(
-		`SELECT (hashtext(%s::text) & 255) AS bucket,
-		        COUNT(*) AS count,
-		        COALESCE(BIT_XOR(hashtext(%s::text || '|' || COALESCE("_source_ts"::text, ''))::int8), 0) AS xor_hash
-		 FROM %s
-		 GROUP BY 1`,
-		quoteIdent(pkColumn), quoteIdent(pkColumn), quoteIdent(tableName),
+		`SELECT %s::text AS id, "_source_ts" AS source_ts
+		   FROM %s`,
+		quoteIdent(pkColumn), quoteIdent(tableName),
 	)
-
-	type bucketRow struct {
-		Bucket int32 `gorm:"column:bucket"`
-		Count  int64 `gorm:"column:count"`
-		Xor    int64 `gorm:"column:xor_hash"`
-	}
 
 	result, err := da.breaker.Execute(func() (interface{}, error) {
 		tx := da.readOnlyDB(ctx)
 		defer tx.Rollback()
-		var rows []bucketRow
-		if err := tx.Raw(sql).Scan(&rows).Error; err != nil {
+
+		rows, err := tx.Raw(sql).Rows()
+		if err != nil {
 			return nil, err
 		}
+		defer rows.Close()
+
 		var bh BucketHashResult
-		for _, r := range rows {
-			// hashtext can return negative int; mask to [0,255] portably.
-			idx := uint8(r.Bucket & 0xFF)
-			bh.Buckets[idx] = uint64(r.Xor)
-			bh.Total += r.Count
+		for rows.Next() {
+			if err := da.limiter.Wait(ctx); err != nil {
+				return nil, fmt.Errorf("rate limiter: %w", err)
+			}
+			var (
+				id       string
+				sourceTs *int64
+			)
+			if err := rows.Scan(&id, &sourceTs); err != nil {
+				return nil, err
+			}
+			if sourceTs == nil {
+				continue
+			}
+			idx := bucketIndex(id)
+			bh.Buckets[idx] ^= hashIDPlusTsMs(id, *sourceTs)
+			bh.Total++
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
 		}
 		return &bh, nil
 	})

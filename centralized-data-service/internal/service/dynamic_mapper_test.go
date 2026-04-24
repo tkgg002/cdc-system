@@ -1,9 +1,13 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+
+	"centralized-data-service/internal/model"
 )
 
 func TestConvertType_Int(t *testing.T) {
@@ -124,4 +128,159 @@ func TestGetNestedField(t *testing.T) {
 	if v := getNestedField(data, "missing.field"); v != nil {
 		t.Errorf("missing.field = %v, want nil", v)
 	}
+}
+
+func TestDynamicMapperMasksRawJSONWithoutRules(t *testing.T) {
+	registry := &RegistryService{mappingCache: map[string][]model.MappingRule{}}
+	mapper := NewDynamicMapper(registry, nil)
+	mapper.SetMaskingService(NewMaskingService(nil, nil, "phone", "email"))
+
+	mapped, err := mapper.MapData(context.Background(), "customer_profiles", map[string]interface{}{
+		"phone": "0901234567",
+		"email": "alice@example.com",
+		"name":  "Alice",
+	})
+	if err != nil {
+		t.Fatalf("MapData returned error: %v", err)
+	}
+
+	payload := decodeDynamicMapperRawJSON(t, mapped.RawJSON)
+	if payload["phone"] != "***" {
+		t.Fatalf("phone should be masked, got %#v", payload["phone"])
+	}
+	if payload["email"] != "***" {
+		t.Fatalf("email should be masked, got %#v", payload["email"])
+	}
+	if payload["name"] != "Alice" {
+		t.Fatalf("non-sensitive field changed unexpectedly, got %#v", payload["name"])
+	}
+}
+
+func TestDynamicMapperMasksNestedAndArrayFields(t *testing.T) {
+	registry := &RegistryService{mappingCache: map[string][]model.MappingRule{
+		"customer_profiles": {
+			{
+				SourceField:  "profile.name",
+				TargetColumn: "full_name",
+				DataType:     "TEXT",
+				IsActive:     true,
+			},
+		},
+	}}
+	mapper := NewDynamicMapper(registry, nil)
+	mapper.SetMaskingService(NewMaskingService(nil, nil, "phone", "balance"))
+
+	mapped, err := mapper.MapData(context.Background(), "customer_profiles", map[string]interface{}{
+		"profile": map[string]interface{}{
+			"name": "Alice",
+		},
+		"metadata": map[string]interface{}{
+			"user_info": map[string]interface{}{
+				"balance": float64(125000),
+			},
+		},
+		"contacts": []interface{}{
+			map[string]interface{}{"phone_number": "0901", "label": "home"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("MapData returned error: %v", err)
+	}
+	if mapped.Columns["full_name"] != "Alice" {
+		t.Fatalf("expected mapped column full_name=Alice, got %#v", mapped.Columns["full_name"])
+	}
+
+	payload := decodeDynamicMapperRawJSON(t, mapped.RawJSON)
+	metadata := payload["metadata"].(map[string]interface{})
+	userInfo := metadata["user_info"].(map[string]interface{})
+	if userInfo["balance"] != "***" {
+		t.Fatalf("nested balance should be masked, got %#v", userInfo["balance"])
+	}
+	contacts := payload["contacts"].([]interface{})
+	first := contacts[0].(map[string]interface{})
+	if first["phone_number"] != "***" {
+		t.Fatalf("array phone_number should be masked, got %#v", first["phone_number"])
+	}
+	if first["label"] != "home" {
+		t.Fatalf("non-sensitive array field changed unexpectedly, got %#v", first["label"])
+	}
+}
+
+func TestDynamicMapperHeuristicMaskingWithoutRegistry(t *testing.T) {
+	registry := &RegistryService{mappingCache: map[string][]model.MappingRule{}}
+	mapper := NewDynamicMapper(registry, nil)
+	mapper.SetMaskingService(NewMaskingService(nil, nil))
+
+	mapped, err := mapper.MapData(context.Background(), "orders", map[string]interface{}{
+		"customer_secret":   "token-123",
+		"remaining_balance": 5000,
+		"altPhone":          "0902",
+		"status":            "active",
+	})
+	if err != nil {
+		t.Fatalf("MapData returned error: %v", err)
+	}
+
+	payload := decodeDynamicMapperRawJSON(t, mapped.RawJSON)
+	for _, field := range []string{"customer_secret", "remaining_balance", "altPhone"} {
+		if payload[field] != "***" {
+			t.Fatalf("%s should be masked heuristically, got %#v", field, payload[field])
+		}
+	}
+	if payload["status"] != "active" {
+		t.Fatalf("heuristic masking touched non-sensitive field, got %#v", payload["status"])
+	}
+}
+
+func TestDynamicMapperBuildUpsertQueryUsesMaskedRawJSON(t *testing.T) {
+	registry := &RegistryService{mappingCache: map[string][]model.MappingRule{}}
+	adapter := &SchemaAdapter{}
+	adapter.cache.Store("customer_profiles", &TableSchema{
+		Columns: map[string]ColumnInfo{
+			"_id":       {Name: "_id", DataType: "text"},
+			"full_name": {Name: "full_name", DataType: "text"},
+			"_raw_data": {Name: "_raw_data", DataType: "jsonb"},
+		},
+		PKColumn: "_id",
+	})
+
+	mapper := NewDynamicMapper(registry, nil, adapter)
+	mapper.SetMaskingService(NewMaskingService(nil, nil, "phone"))
+
+	mapped, err := mapper.MapData(context.Background(), "customer_profiles", map[string]interface{}{
+		"phone": "0901234567",
+		"name":  "Alice",
+	})
+	if err != nil {
+		t.Fatalf("MapData returned error: %v", err)
+	}
+	mapped.Columns["full_name"] = "Alice"
+
+	query, args := mapper.BuildUpsertQuery("customer_profiles", "_id", mapped)
+	if !strings.Contains(query, `"_raw_data"`) {
+		t.Fatalf("expected upsert query to include _raw_data, got %s", query)
+	}
+
+	foundMaskedRaw := false
+	for _, arg := range args {
+		if v, ok := arg.(string); ok && strings.Contains(v, `"phone":"***"`) {
+			foundMaskedRaw = true
+		}
+	}
+	if !foundMaskedRaw {
+		t.Fatalf("expected masked _raw_data in upsert args, got %#v", args)
+	}
+	if strings.Contains(string(mapped.RawJSON), "0901234567") {
+		t.Fatalf("raw JSON still contains unmasked phone: %s", string(mapped.RawJSON))
+	}
+}
+
+func decodeDynamicMapperRawJSON(t *testing.T, raw []byte) map[string]interface{} {
+	t.Helper()
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal dynamic mapper raw JSON: %v", err)
+	}
+	return payload
 }

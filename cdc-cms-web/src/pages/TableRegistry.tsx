@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Table, Tag, Select, Switch, Button, Space, Modal, Form, Input, message, Upload, Badge, Collapse, Typography, Progress, Tooltip } from 'antd';
-import { PlusOutlined, UploadOutlined, SyncOutlined, DatabaseOutlined, SearchOutlined, ToolOutlined, ThunderboltOutlined, SwapOutlined } from '@ant-design/icons';
+import { PlusOutlined, UploadOutlined, SyncOutlined, DatabaseOutlined, SearchOutlined, ToolOutlined, ThunderboltOutlined, RocketOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { cmsApi } from '../services/api';
@@ -12,41 +12,57 @@ import ConfirmDestructiveModal from '../components/ConfirmDestructiveModal';
 const { Panel } = Collapse;
 const { Title } = Typography;
 
-const SyncStatusIndicator = ({ id, engine }: { id: number, engine: string }) => {
-  const [status, setStatus] = useState<string>('n/a');
+// SyncStatusIndicator — Gap 3 Option B: fetch real Debezium connector status
+// via /api/v1/system/connectors. Match by collection.include.list entry.
+const SyncStatusIndicator = ({ sourceDB, sourceTable }: { sourceDB: string; sourceTable: string }) => {
+  const [status, setStatus] = useState<string>('loading');
+  const [connectorName, setConnectorName] = useState<string>('');
 
   const fetchStatus = useCallback(async () => {
-    // Legacy per-entry status endpoint retired in Sprint 4. Debezium
-    // connector status is exposed at /api/v1/system/connectors.
-    void id;
-    void engine;
-    setStatus('n/a');
-  }, [id, engine]);
+    setStatus('loading');
+    try {
+      const { data: res } = await cmsApi.get('/api/v1/system/connectors');
+      const list = res.data || res || [];
+      const needle = `${sourceDB}.${sourceTable}`;
+      const match = list.find((c: { config?: Record<string, string> }) => {
+        const include = c.config?.['collection.include.list'] || '';
+        return include.split(',').map((s) => s.trim()).includes(needle);
+      });
+      if (match) {
+        setConnectorName(match.name || '');
+        setStatus(match.state || 'UNKNOWN');
+      } else {
+        setStatus('not_configured');
+      }
+    } catch {
+      setStatus('error');
+    }
+  }, [sourceDB, sourceTable]);
 
-  useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
+  useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
-  const handleRefresh = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    fetchStatus();
-  };
+  const handleRefresh = (e: React.MouseEvent) => { e.stopPropagation(); fetchStatus(); };
 
-  if (status === 'n/a') return <Tag>N/A</Tag>;
-  if (status === 'loading') return <span>...</span>;
-  if (status === 'error') return <Tag color="error">Error</Tag>;
+  const badgeStatus =
+    status === 'RUNNING' ? 'success' :
+    status === 'PAUSED' ? 'warning' :
+    status === 'FAILED' ? 'error' :
+    status === 'not_configured' ? 'default' :
+    status === 'loading' ? 'processing' : 'default';
 
-  const displayStatus = status === 'stream_disabled' ? 'disabled' : status;
-  const badgeStatus = (status === 'active' || status === 'running') ? 'success' :
-                      (status === 'inactive' || status === 'stream_disabled' ? 'warning' : 'default');
+  const label =
+    status === 'not_configured' ? 'Chưa có connector' :
+    status === 'loading' ? '...' :
+    status === 'error' ? 'Lỗi' :
+    status;
 
   return (
-    <Space>
-      <Badge status={badgeStatus as 'success' | 'warning' | 'default'} text={displayStatus} style={{ textTransform: 'capitalize' }} />
-      <Space>
-         <Button icon={<SyncOutlined />} size="small" type="text" onClick={handleRefresh} title="Refresh Status" />
+    <Tooltip title={connectorName ? `Connector: ${connectorName}` : 'Không có Debezium connector match collection này'}>
+      <Space size={4}>
+        <Badge status={badgeStatus as 'success' | 'warning' | 'error' | 'default' | 'processing'} text={label} />
+        <Button icon={<SyncOutlined />} size="small" type="text" onClick={handleRefresh} title="Refresh" />
       </Space>
-    </Space>
+    </Tooltip>
   );
 };
 
@@ -229,29 +245,32 @@ export default function TableRegistry() {
     }
   };
 
-  const handleBridge = (e: React.MouseEvent, id: number, batch = false) => {
+  // Gap 5b — Snapshot Now: publish NATS cdc.cmd.debezium-signal via CMS
+  // /api/tools/trigger-snapshot/:table. Worker writes Mongo debezium_signal
+  // collection → Debezium performs incremental snapshot.
+  const handleSnapshot = (e: React.MouseEvent, record: TRegistry) => {
     e.stopPropagation();
-    setActionLoadingId(id);
-    const url = batch ? `/api/registry/${id}/bridge?mode=batch` : `/api/registry/${id}/bridge`;
-    cmsApi.post(url)
-      .then(() => message.success(batch ? 'Batch bridge (pgx) submitted' : 'Bridge command submitted'))
-      .catch((err) => {
-        const e = err as { response?: { data?: { error?: string } } };
-        message.error(e.response?.data?.error || 'Bridge failed');
-      })
-      .finally(() => setActionLoadingId(null));
-  };
-
-  const handleTransform = (e: React.MouseEvent, id: number) => {
-    e.stopPropagation();
-    setActionLoadingId(id);
-    cmsApi.post(`/api/registry/${id}/transform`)
-      .then(() => message.success('Transform command submitted'))
-      .catch((err) => {
-        const e = err as { response?: { data?: { error?: string } } };
-        message.error(e.response?.data?.error || 'Transform failed');
-      })
-      .finally(() => setActionLoadingId(null));
+    Modal.confirm({
+      title: `Trigger Debezium snapshot: ${record.source_table}?`,
+      content: 'Debezium sẽ thực hiện incremental snapshot collection này. Dùng khi connector vừa add hoặc sau rebuild shadow.',
+      okText: 'Snapshot',
+      onOk: async () => {
+        setActionLoadingId(record.id);
+        try {
+          await cmsApi.post(
+            `/api/tools/trigger-snapshot/${encodeURIComponent(record.source_table)}`,
+            { database: record.source_db, collection: record.source_table },
+            { headers: { 'Idempotency-Key': `snapshot-${record.id}-${Date.now()}` } },
+          );
+          message.success(`Snapshot dispatched: ${record.source_table}`);
+        } catch (err) {
+          const e = err as { response?: { data?: { error?: string; detail?: string } } };
+          message.error(e.response?.data?.error || e.response?.data?.detail || 'Snapshot failed');
+        } finally {
+          setActionLoadingId(null);
+        }
+      },
+    });
   };
 
   const handleCreateTable = (e: React.MouseEvent, id: number) => {
@@ -303,11 +322,11 @@ export default function TableRegistry() {
     { title: 'Source Table', dataIndex: 'source_table', width: 180, render: (t) => <strong style={{color: '#1890ff'}}>{t}</strong> },
     { title: 'Target Table', dataIndex: 'target_table', width: 180 },
     {
-      title: 'Sync Engine', dataIndex: 'sync_engine', width: 120,
+      title: 'Sync Engine', dataIndex: 'sync_engine', width: 160,
       render: (v: string, record) => (
         <Space direction="vertical" size={0} onClick={e => e.stopPropagation()}>
           <Tag color="blue">{v || 'debezium'}</Tag>
-          <SyncStatusIndicator id={record.id} engine={v} />
+          <SyncStatusIndicator sourceDB={record.source_db} sourceTable={record.source_table} />
         </Space>
       ),
     },
@@ -359,17 +378,16 @@ export default function TableRegistry() {
                   onClick={(e) => handleCreateDefaultFields(e, record.id)}>Tạo Field MĐ</Button>
               </Tooltip>
             )}
-            <Tooltip title="Đồng bộ dữ liệu từ Airbyte sang table đích (SQL)">
-              <Button size="small" icon={<SwapOutlined />} loading={actionLoadingId === record.id}
-                onClick={(e) => handleBridge(e, record.id)}>Đồng bộ</Button>
+            <Tooltip title="Trigger Debezium incremental snapshot cho collection này">
+              <Button size="small" icon={<ThunderboltOutlined />} type="primary" ghost
+                loading={actionLoadingId === record.id}
+                onClick={(e) => handleSnapshot(e, record)}>Snapshot Now</Button>
             </Tooltip>
-            <Tooltip title="Đồng bộ hiệu suất cao (Go + Sonyflake ID, cho data lớn >100K)">
-              <Button size="small" icon={<ThunderboltOutlined />} loading={actionLoadingId === record.id}
-                onClick={(e) => handleBridge(e, record.id, true)} type="primary" ghost>Batch</Button>
-            </Tooltip>
-            <Tooltip title="Chuyển _raw_data sang các cột đã mapping">
-              <Button size="small" loading={actionLoadingId === record.id}
-                onClick={(e) => handleTransform(e, record.id)}>Chuyển đổi</Button>
+            <Tooltip title="Đi tới Master Registry để tạo / chạy Transmute">
+              <Button size="small" icon={<RocketOutlined />}
+                onClick={(e) => { e.stopPropagation(); navigate(`/masters?source_shadow=${record.target_table}`); }}>
+                Manage Masters
+              </Button>
             </Tooltip>
           </Space>
           <AsyncRowActions record={record} onChange={fetchData} />
@@ -439,8 +457,8 @@ export default function TableRegistry() {
           </Form.Item>
           <Form.Item name="source_table" label="Source Table" rules={[{ required: true }]}><Input placeholder="wallet_transactions" /></Form.Item>
           <Form.Item name="target_table" label="Target Table" rules={[{ required: true }]}><Input placeholder="wallet_transactions" /></Form.Item>
-          <Form.Item name="sync_engine" label="Sync Engine">
-            <Select><Select.Option value="airbyte">Airbyte</Select.Option><Select.Option value="debezium">Debezium</Select.Option><Select.Option value="both">Both</Select.Option></Select>
+          <Form.Item name="sync_engine" label="Sync Engine" initialValue="debezium">
+            <Input disabled />
           </Form.Item>
           <Form.Item name="priority" label="Priority">
             <Select><Select.Option value="critical">Critical</Select.Option><Select.Option value="high">High</Select.Option><Select.Option value="normal">Normal</Select.Option><Select.Option value="low">Low</Select.Option></Select>

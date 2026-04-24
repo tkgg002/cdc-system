@@ -507,9 +507,8 @@ func (sa *ReconSourceAgent) HashWindow(ctx context.Context, sourceURL, database,
 
 // BucketHash streams the entire collection once and distributes docs
 // into 256 buckets keyed by the FIRST BYTE of xxhash(_id). Each bucket
-// accumulates XOR of hash(id + updated_at_rfc3339) so insert / delete /
-// update on any doc flips exactly 1 bucket value. Caller can diff
-// buckets side-by-side to pinpoint the mismatched partition.
+// accumulates XOR of xxhash64(id + "|" + ts_ms) so source and
+// destination fingerprints are directly comparable bucket-by-bucket.
 //
 // Cost: O(N) read with rate limiter → ~200s for 1M @ 5K/s. Result is
 // [256]uint64 = 2 KiB fixed memory, independent of N.
@@ -545,8 +544,11 @@ func (sa *ReconSourceAgent) BucketHash(ctx context.Context, sourceURL, database,
 				}
 				idStr := extractMongoID(raw["_id"])
 				ts := extractTimestampMs(raw, tsField, idStr)
+				if ts == 0 {
+					continue
+				}
 				bucket := bucketIndex(idStr)
-				bh.Buckets[bucket] ^= hashIDPlusTs(idStr, time.UnixMilli(ts))
+				bh.Buckets[bucket] ^= hashIDPlusTsMs(idStr, ts)
 				bh.Total++
 			}
 			if err := cursor.Err(); err != nil {
@@ -706,11 +708,8 @@ func (sa *ReconSourceAgent) GetChunkHashes(ctx context.Context, sourceURL, datab
 }
 
 // hashIDPlusTs computes xxhash of (idString || "|" || rfc3339nano(ts)).
-// Commutative over XOR across the collection — insert order independent.
-//
-// Used by BucketHash (256-bucket fingerprint over the entire collection)
-// where only one side (source) produces the buckets and we compare
-// presence+position over time rather than byte equality across stores.
+// Kept for backward compatibility with older tests/helpers; cross-store
+// reconciliation now standardizes on hashIDPlusTsMs.
 func hashIDPlusTs(idStr string, ts time.Time) uint64 {
 	var b strings.Builder
 	b.Grow(len(idStr) + 1 + 32)

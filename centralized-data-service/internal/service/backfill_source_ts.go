@@ -182,7 +182,7 @@ func (b *BackfillSourceTsService) BackfillOne(
 		cancel()
 		if err != nil {
 			finalStatus = "failed"
-			finalErr = err.Error()
+			finalErr = SanitizeFreeformText(err.Error(), 2000)
 			break
 		}
 		if len(ids) == 0 {
@@ -458,6 +458,7 @@ func (b *BackfillSourceTsService) finishRun(
 	status, errMsg string,
 ) {
 	finished := time.Now().UTC()
+	errMsg = SanitizeFreeformText(errMsg, 2000)
 	_ = b.db.WithContext(ctx).Exec(
 		`UPDATE recon_runs
 		   SET status=?, finished_at=?, docs_scanned=?, heal_actions=?, error_message=?
@@ -480,10 +481,10 @@ func (b *BackfillSourceTsService) WriteActivity(
 	outcome string,
 ) {
 	now := time.Now()
-	details, _ := json.Marshal(map[string]interface{}{
+	details, _ := json.Marshal(SanitizeNestedStrings(map[string]interface{}{
 		"run_id":  runID,
 		"results": results,
-	})
+	}, 2000))
 	_ = b.db.WithContext(ctx).Create(&model.ActivityLog{
 		Operation:   "recon-backfill-source-ts",
 		TargetTable: "*",

@@ -23,6 +23,7 @@ type ReconHandler struct {
 	db          *gorm.DB
 	mongoClient *mongo.Client
 	schema      *service.SchemaAdapter
+	masking     *service.MaskingService
 	backfill    *service.BackfillSourceTsService
 	tsDetector  *service.TimestampDetector // Migration 017 — manual re-detect
 	natsPub     NatsPublisher
@@ -54,6 +55,11 @@ func (h *ReconHandler) WithBackfill(b *service.BackfillSourceTsService, pub Nats
 // legacy ReconCore.Heal path.
 func (h *ReconHandler) WithHealer(healer *service.ReconHealer) *ReconHandler {
 	h.healer = healer
+	return h
+}
+
+func (h *ReconHandler) WithMaskingService(masking *service.MaskingService) *ReconHandler {
+	h.masking = masking
 	return h
 }
 
@@ -215,9 +221,11 @@ func (h *ReconHandler) HandleRetryFailed(msg *nats.Msg) {
 
 	h.logger.Info("retry failed received", zap.Uint64("id", payload.FailedLogID), zap.String("table", payload.TargetTable))
 
+	sanitizedRawJSON := h.sanitizeRetryRawJSON(payload.TargetTable, payload.RawJSON)
+
 	// Parse raw JSON → map
 	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(payload.RawJSON), &data); err != nil {
+	if err := json.Unmarshal([]byte(sanitizedRawJSON), &data); err != nil {
 		h.updateFailedLog(payload.FailedLogID, "failed", err.Error())
 		return
 	}
@@ -242,7 +250,7 @@ func (h *ReconHandler) HandleRetryFailed(msg *nats.Msg) {
 
 	// Retry path: unknown Debezium ts_ms → pass 0 so the OCC guard on
 	// _source_ts is skipped (hash guard still applies).
-	query, values := h.schema.BuildUpsertSQL(schema, payload.TargetTable, entry.PrimaryKeyField, payload.RecordID, data, payload.RawJSON, "retry", "", 0)
+	query, values := h.schema.BuildUpsertSQL(schema, payload.TargetTable, entry.PrimaryKeyField, payload.RecordID, data, sanitizedRawJSON, "retry", "", 0)
 	if err := h.db.Exec(query, values...).Error; err != nil {
 		h.updateFailedLog(payload.FailedLogID, "failed", err.Error())
 		return
@@ -518,4 +526,15 @@ func (h *ReconHandler) logActivity(operation, table, status string, rows int64, 
 		StartedAt:    now,
 		CompletedAt:  &now,
 	})
+}
+
+func (h *ReconHandler) sanitizeRetryRawJSON(table, raw string) string {
+	if h.masking != nil {
+		return string(h.masking.MaskJSONPayload(table, []byte(raw)))
+	}
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+	wrapped, _ := json.Marshal(map[string]string{"raw": raw})
+	return string(wrapped)
 }

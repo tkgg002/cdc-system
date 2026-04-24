@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -108,4 +110,93 @@ func TestTruncate(t *testing.T) {
 	if got := truncate(s, 0); got != s {
 		t.Errorf("truncate zero should pass through: %q", got)
 	}
+}
+
+func TestDLQWorkerBuildRetryRawJSONMasksTopLevelFields(t *testing.T) {
+	worker := &DLQWorker{}
+	worker.SetMaskingService(NewMaskingService(nil, nil, "phone", "email"))
+
+	raw := worker.buildRetryRawJSON("customer_profiles", map[string]interface{}{
+		"phone": "0901234567",
+		"email": "alice@example.com",
+		"name":  "Alice",
+	})
+
+	payload := decodeDLQWorkerRawJSON(t, raw)
+	if payload["phone"] != "***" {
+		t.Fatalf("phone should be masked, got %#v", payload["phone"])
+	}
+	if payload["email"] != "***" {
+		t.Fatalf("email should be masked, got %#v", payload["email"])
+	}
+	if payload["name"] != "Alice" {
+		t.Fatalf("non-sensitive field changed unexpectedly, got %#v", payload["name"])
+	}
+}
+
+func TestDLQWorkerBuildRetryRawJSONMasksNestedAndArrayFields(t *testing.T) {
+	worker := &DLQWorker{}
+	worker.SetMaskingService(NewMaskingService(nil, nil, "balance", "phone"))
+
+	raw := worker.buildRetryRawJSON("wallet_accounts", map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"user_info": map[string]interface{}{
+				"balance": float64(125000),
+				"tier":    "gold",
+			},
+		},
+		"contacts": []interface{}{
+			map[string]interface{}{"phone_number": "0901", "label": "home"},
+		},
+	})
+
+	payload := decodeDLQWorkerRawJSON(t, raw)
+	metadata := payload["metadata"].(map[string]interface{})
+	userInfo := metadata["user_info"].(map[string]interface{})
+	if userInfo["balance"] != "***" {
+		t.Fatalf("nested balance should be masked, got %#v", userInfo["balance"])
+	}
+	contacts := payload["contacts"].([]interface{})
+	first := contacts[0].(map[string]interface{})
+	if first["phone_number"] != "***" {
+		t.Fatalf("array phone_number should be masked, got %#v", first["phone_number"])
+	}
+	if first["label"] != "home" {
+		t.Fatalf("non-sensitive array field changed unexpectedly, got %#v", first["label"])
+	}
+}
+
+func TestDLQWorkerBuildRetryRawJSONHeuristicMaskingWithoutRegistry(t *testing.T) {
+	worker := &DLQWorker{}
+	worker.SetMaskingService(NewMaskingService(nil, nil))
+
+	raw := worker.buildRetryRawJSON("orders", map[string]interface{}{
+		"customer_secret":   "token-123",
+		"remaining_balance": 5000,
+		"altPhone":          "0902",
+		"status":            "active",
+	})
+
+	payload := decodeDLQWorkerRawJSON(t, raw)
+	for _, field := range []string{"customer_secret", "remaining_balance", "altPhone"} {
+		if payload[field] != "***" {
+			t.Fatalf("%s should be masked heuristically, got %#v", field, payload[field])
+		}
+	}
+	if payload["status"] != "active" {
+		t.Fatalf("heuristic masking touched non-sensitive field, got %#v", payload["status"])
+	}
+	if strings.Contains(string(raw), "0902") {
+		t.Fatalf("raw retry JSON still contains unmasked phone: %s", string(raw))
+	}
+}
+
+func decodeDLQWorkerRawJSON(t *testing.T, raw []byte) map[string]interface{} {
+	t.Helper()
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal dlq worker raw JSON: %v", err)
+	}
+	return payload
 }

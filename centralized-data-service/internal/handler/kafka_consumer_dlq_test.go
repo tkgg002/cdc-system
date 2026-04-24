@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"centralized-data-service/internal/service"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -73,6 +74,81 @@ func TestExtractDLQMetadata_NonJSONValue(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "this is definitely not JSON") {
 		t.Errorf("wrapped raw must contain original text, got %s", raw)
+	}
+}
+
+func TestKafkaConsumerSanitizeDLQRawJSONMasksTopLevelFields(t *testing.T) {
+	kc := &KafkaConsumer{}
+	kc.SetMaskingService(service.NewMaskingService(nil, nil, "phone", "email"))
+
+	raw := kc.sanitizeDLQRawJSON("customer_profiles", []byte(`{"phone":"0901234567","email":"alice@example.com","name":"Alice"}`))
+	if strings.Contains(string(raw), "0901234567") {
+		t.Fatalf("sanitized raw JSON still contains unmasked phone: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), `"phone":"***"`) {
+		t.Fatalf("sanitized raw JSON missing masked phone: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), `"email":"***"`) {
+		t.Fatalf("sanitized raw JSON missing masked email: %s", string(raw))
+	}
+}
+
+func TestKafkaConsumerSanitizeDLQRawJSONMasksNestedAndArrayFields(t *testing.T) {
+	kc := &KafkaConsumer{}
+	kc.SetMaskingService(service.NewMaskingService(nil, nil, "balance", "phone"))
+
+	raw := kc.sanitizeDLQRawJSON("wallet_accounts", []byte(`{"metadata":{"user_info":{"balance":125000,"tier":"gold"}},"contacts":[{"phone_number":"0901","label":"home"}]}`))
+	if strings.Contains(string(raw), "125000") || strings.Contains(string(raw), "0901") {
+		t.Fatalf("sanitized raw JSON still contains nested sensitive data: %s", string(raw))
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal sanitized raw JSON: %v", err)
+	}
+	metadata := payload["metadata"].(map[string]interface{})
+	userInfo := metadata["user_info"].(map[string]interface{})
+	if userInfo["balance"] != "***" {
+		t.Fatalf("nested balance should be masked, got %#v", userInfo["balance"])
+	}
+	contacts := payload["contacts"].([]interface{})
+	first := contacts[0].(map[string]interface{})
+	if first["phone_number"] != "***" {
+		t.Fatalf("array phone_number should be masked, got %#v", first["phone_number"])
+	}
+}
+
+func TestKafkaConsumerSanitizeDLQRawJSONHeuristicMaskingWithoutRegistry(t *testing.T) {
+	kc := &KafkaConsumer{}
+	kc.SetMaskingService(service.NewMaskingService(nil, nil))
+
+	raw := kc.sanitizeDLQRawJSON("orders", []byte(`{"customer_secret":"token-123","remaining_balance":5000,"altPhone":"0902","status":"active"}`))
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal sanitized raw JSON: %v", err)
+	}
+	for _, field := range []string{"customer_secret", "remaining_balance", "altPhone"} {
+		if payload[field] != "***" {
+			t.Fatalf("%s should be masked heuristically, got %#v", field, payload[field])
+		}
+	}
+	if payload["status"] != "active" {
+		t.Fatalf("heuristic masking touched non-sensitive field, got %#v", payload["status"])
+	}
+}
+
+func TestKafkaConsumerWriteDLQSanitizesErrorText(t *testing.T) {
+	errText := service.SanitizeFreeformText("schema_drift email=alice@example.com phone=0901234567 secret=token-123", 2000)
+	for _, needle := range []string{"alice@example.com", "0901234567", "token-123"} {
+		if strings.Contains(errText, needle) {
+			t.Fatalf("sanitized error still contains %q: %q", needle, errText)
+		}
+	}
+	for _, expected := range []string{"email=***", "phone=***", "secret=***"} {
+		if !strings.Contains(errText, expected) {
+			t.Fatalf("sanitized error missing %q: %q", expected, errText)
+		}
 	}
 }
 

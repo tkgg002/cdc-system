@@ -169,6 +169,49 @@ func (h *SystemConnectorsHandler) RestartTask(c *fiber.Ctx) error {
 	return c.Status(202).JSON(fiber.Map{"status": "task_restart_triggered", "connector": name, "task_id": taskID})
 }
 
+// Create forwards a new connector config to Kafka Connect.
+// POST /api/v1/system/connectors
+// Body: {"name": "...", "config": {"connector.class": "...", ...}}
+func (h *SystemConnectorsHandler) Create(c *fiber.Ctx) error {
+	var req struct {
+		Name   string            `json:"name"`
+		Config map[string]string `json:"config"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "bad_json"})
+	}
+	if !connectorNameRE.MatchString(req.Name) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_connector_name"})
+	}
+	if len(req.Config) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "config_required"})
+	}
+	if _, ok := req.Config["connector.class"]; !ok {
+		return c.Status(400).JSON(fiber.Map{"error": "connector.class_required"})
+	}
+	payload := map[string]any{"name": req.Name, "config": req.Config}
+	var resp map[string]any
+	if err := h.doJSON(c.Context(), http.MethodPost, "/connectors", payload, &resp); err != nil {
+		return c.Status(502).JSON(fiber.Map{"error": "connector_create_failed", "detail": err.Error()})
+	}
+	h.logger.Info("connector created", zap.String("connector", req.Name))
+	return c.Status(201).JSON(resp)
+}
+
+// Delete removes a connector (use with care — consumer offsets may replay).
+// DELETE /api/v1/system/connectors/:name
+func (h *SystemConnectorsHandler) Delete(c *fiber.Ctx) error {
+	name := strings.TrimSpace(c.Params("name"))
+	if !connectorNameRE.MatchString(name) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_connector_name"})
+	}
+	if err := h.doJSON(c.Context(), http.MethodDelete, "/connectors/"+url.PathEscape(name), nil, nil); err != nil {
+		return c.Status(502).JSON(fiber.Map{"error": "delete_failed", "detail": err.Error()})
+	}
+	h.logger.Info("connector deleted", zap.String("connector", name))
+	return c.Status(202).JSON(fiber.Map{"status": "delete_triggered", "connector": name})
+}
+
 // Pause / Resume for maintenance.
 // POST /api/v1/system/connectors/:name/pause
 func (h *SystemConnectorsHandler) Pause(c *fiber.Ctx) error {

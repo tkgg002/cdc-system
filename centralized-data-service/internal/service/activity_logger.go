@@ -39,7 +39,8 @@ func (a *ActivityLogger) Start(operation, targetTable, triggeredBy string) *mode
 func (a *ActivityLogger) Complete(entry *model.ActivityLog, rowsAffected int64, details map[string]interface{}) {
 	now := time.Now()
 	duration := int(now.Sub(entry.StartedAt).Milliseconds())
-	detailsJSON, _ := json.Marshal(details)
+	sanitizedDetails, _ := SanitizeNestedStrings(details, 2000).(map[string]interface{})
+	detailsJSON, _ := json.Marshal(sanitizedDetails)
 
 	a.db.Model(entry).Updates(map[string]interface{}{
 		"status":        "success",
@@ -61,6 +62,7 @@ func (a *ActivityLogger) Complete(entry *model.ActivityLog, rowsAffected int64, 
 func (a *ActivityLogger) Fail(entry *model.ActivityLog, errMsg string) {
 	now := time.Now()
 	duration := int(now.Sub(entry.StartedAt).Milliseconds())
+	errMsg = SanitizeFreeformText(errMsg, 2000)
 
 	a.db.Model(entry).Updates(map[string]interface{}{
 		"status":        "error",
@@ -81,6 +83,7 @@ func (a *ActivityLogger) Fail(entry *model.ActivityLog, errMsg string) {
 func (a *ActivityLogger) Skip(entry *model.ActivityLog, reason string) {
 	now := time.Now()
 	duration := int(now.Sub(entry.StartedAt).Milliseconds())
+	reason = SanitizeFreeformText(reason, 2000)
 
 	a.db.Model(entry).Updates(map[string]interface{}{
 		"status":        "skipped",
@@ -92,10 +95,12 @@ func (a *ActivityLogger) Skip(entry *model.ActivityLog, reason string) {
 
 // Quick logs a complete activity in one call (for simple operations)
 func (a *ActivityLogger) Quick(operation, targetTable, triggeredBy, status string, rowsAffected int64, details map[string]interface{}, errMsg string) {
-	detailsJSON, _ := json.Marshal(details)
+	sanitizedDetails, _ := SanitizeNestedStrings(details, 2000).(map[string]interface{})
+	detailsJSON, _ := json.Marshal(sanitizedDetails)
 	now := time.Now()
 	var errPtr *string
 	if errMsg != "" {
+		errMsg = SanitizeFreeformText(errMsg, 2000)
 		errPtr = &errMsg
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"centralized-data-service/internal/repository"
@@ -13,7 +14,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// EventBridge listens to PostgreSQL changes and publishes NATS events for Moleculer services.
+// EventBridge listens to PostgreSQL changes and publishes minimized NATS events for Moleculer services.
 // Critical tables: LISTEN/NOTIFY (realtime <10ms)
 // Non-critical tables: Polling changelog (1-5s interval)
 type EventBridge struct {
@@ -24,17 +25,18 @@ type EventBridge struct {
 	stopCh       chan struct{}
 }
 
-// MoleculerEvent is the CloudEvents-compatible format for downstream services
+// MoleculerEvent is the CloudEvents-compatible format for downstream services.
+// Data payloads are minimized to metadata only; raw row images are not forwarded.
 type MoleculerEvent struct {
-	SpecVersion string      `json:"specversion"`
-	Source      string      `json:"source"`
-	Type        string      `json:"type"`
-	Time        string      `json:"time"`
-	Data        EventData   `json:"data"`
+	SpecVersion string    `json:"specversion"`
+	Source      string    `json:"source"`
+	Type        string    `json:"type"`
+	Time        string    `json:"time"`
+	Data        EventData `json:"data"`
 }
 
 type EventData struct {
-	Op     string                 `json:"op"`     // c=create, u=update, d=delete
+	Op     string                 `json:"op"` // c=create, u=update, d=delete
 	Table  string                 `json:"table"`
 	Before map[string]interface{} `json:"before,omitempty"`
 	After  map[string]interface{} `json:"after,omitempty"`
@@ -143,6 +145,8 @@ func (eb *EventBridge) publishEvent(channel, payload string) {
 		table = channel
 	}
 
+	minimized := minimizeBridgePayload(table, data)
+
 	event := MoleculerEvent{
 		SpecVersion: "1.0",
 		Source:      fmt.Sprintf("/cdc/postgres/goopay/%s", table),
@@ -151,7 +155,7 @@ func (eb *EventBridge) publishEvent(channel, payload string) {
 		Data: EventData{
 			Op:    "u",
 			Table: table,
-			After: data,
+			After: minimized,
 		},
 	}
 
@@ -165,4 +169,99 @@ func (eb *EventBridge) publishEvent(channel, payload string) {
 
 func (eb *EventBridge) Stop() {
 	close(eb.stopCh)
+}
+
+func minimizeBridgePayload(table string, data map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{
+		"table": table,
+	}
+	if len(data) == 0 {
+		return out
+	}
+
+	if count, ok := data["count"]; ok {
+		out["count"] = count
+	}
+	if op, ok := data["op"].(string); ok && op != "" {
+		out["op"] = op
+	}
+	if source, ok := data["source"].(string); ok && source != "" {
+		out["source"] = source
+	}
+	if id := firstBridgeID(data); id != "" {
+		out["record_id"] = id
+	}
+
+	keys := minimizedChangedFields(data)
+	if len(keys) > 0 {
+		out["changed_fields"] = keys
+	}
+
+	return out
+}
+
+func firstBridgeID(data map[string]interface{}) string {
+	if id := stringifyBridgeValue(data["record_id"]); id != "" {
+		return id
+	}
+	if id := stringifyBridgeValue(data["id"]); id != "" {
+		return id
+	}
+	if after, ok := data["after"].(map[string]interface{}); ok {
+		if id := stringifyBridgeValue(after["_id"]); id != "" {
+			return id
+		}
+		if id := stringifyBridgeValue(after["id"]); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func stringifyBridgeValue(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case float64:
+		return fmt.Sprintf("%.0f", v)
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case map[string]interface{}:
+		if oid, ok := v["$oid"].(string); ok {
+			return oid
+		}
+	}
+	return ""
+}
+
+func minimizedChangedFields(data map[string]interface{}) []string {
+	fieldSet := make(map[string]struct{})
+	for key := range data {
+		switch key {
+		case "table", "count", "op", "source", "record_id", "id", "after", "before":
+			continue
+		default:
+			fieldSet[key] = struct{}{}
+		}
+	}
+	for _, side := range []string{"after", "before"} {
+		nested, ok := data[side].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for key := range nested {
+			fieldSet[key] = struct{}{}
+		}
+	}
+	if len(fieldSet) == 0 {
+		return nil
+	}
+	fields := make([]string, 0, len(fieldSet))
+	for key := range fieldSet {
+		fields = append(fields, key)
+	}
+	sort.Strings(fields)
+	return fields
 }

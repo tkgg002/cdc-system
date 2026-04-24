@@ -17,21 +17,35 @@ import (
 type MappedData struct {
 	Columns      map[string]interface{} // Direct column mappings (field → typed value)
 	EnrichedData map[string]interface{} // Fields needing enrichment processing (Phase 2+)
-	RawJSON      []byte                 // Full raw JSON for _raw_data column
+	RawJSON      []byte                 // Masked raw JSON persisted into _raw_data
 }
 
 // DynamicMapper handles config-driven field mapping from CDC events to PostgreSQL columns.
 // Uses RegistryService for cached mapping rules (no duplicate cache).
 type DynamicMapper struct {
-	registry *RegistryService
-	logger   *zap.Logger
+	registry      *RegistryService
+	schemaAdapter *SchemaAdapter
+	masking       *MaskingService
+	logger        *zap.Logger
 }
 
-func NewDynamicMapper(registry *RegistryService, logger *zap.Logger) *DynamicMapper {
-	return &DynamicMapper{
+func NewDynamicMapper(registry *RegistryService, logger *zap.Logger, adapters ...*SchemaAdapter) *DynamicMapper {
+	dm := &DynamicMapper{
 		registry: registry,
 		logger:   logger,
 	}
+	if len(adapters) > 0 {
+		dm.schemaAdapter = adapters[0]
+	}
+	return dm
+}
+
+func (dm *DynamicMapper) SetSchemaAdapter(schemaAdapter *SchemaAdapter) {
+	dm.schemaAdapter = schemaAdapter
+}
+
+func (dm *DynamicMapper) SetMaskingService(masking *MaskingService) {
+	dm.masking = masking
 }
 
 // LoadRules delegates to RegistryService.ReloadAll (single source of truth for cache)
@@ -45,12 +59,12 @@ func (dm *DynamicMapper) GetRulesForTable(targetTable string) []model.MappingRul
 }
 
 // MapData applies mapping rules to transform raw CDC event data into structured columns.
-// Returns: mapped typed columns + raw JSON for _raw_data
+// Returns mapped typed columns plus masked raw JSON for _raw_data persistence.
 func (dm *DynamicMapper) MapData(ctx context.Context, targetTable string, rawData map[string]interface{}) (*MappedData, error) {
 	rules := dm.registry.GetMappingRules(targetTable)
 	if len(rules) == 0 {
 		// No rules — store as raw only
-		rawJSON, _ := json.Marshal(rawData)
+		rawJSON, _ := json.Marshal(dm.maskRawData(targetTable, rawData))
 		return &MappedData{
 			Columns:      make(map[string]interface{}),
 			EnrichedData: make(map[string]interface{}),
@@ -97,7 +111,7 @@ func (dm *DynamicMapper) MapData(ctx context.Context, targetTable string, rawDat
 		columns[rule.TargetColumn] = converted
 	}
 
-	rawJSON, _ := json.Marshal(rawData)
+	rawJSON, _ := json.Marshal(dm.maskRawData(targetTable, rawData))
 
 	return &MappedData{
 		Columns:      columns,
@@ -106,51 +120,46 @@ func (dm *DynamicMapper) MapData(ctx context.Context, targetTable string, rawDat
 	}, nil
 }
 
-// BuildUpsertQuery dynamically builds INSERT...ON CONFLICT query based on mapped data.
+func (dm *DynamicMapper) maskRawData(targetTable string, rawData map[string]interface{}) map[string]interface{} {
+	if dm.masking == nil {
+		return cloneAnyMap(rawData)
+	}
+	return dm.masking.MaskTableData(targetTable, rawData)
+}
+
+// BuildUpsertQuery delegates SQL generation to SchemaAdapter so DynamicMapper
+// never drifts from the shared OCC upsert semantics.
 func (dm *DynamicMapper) BuildUpsertQuery(targetTable, pkField string, mappedData *MappedData) (string, []interface{}) {
-	// Columns: pk + mapped + _raw_data + CDC metadata
-	colNames := []string{pkField, "_raw_data", "_source", "_synced_at", "_hash", "_version", "_created_at", "_updated_at"}
-	placeholders := []string{"$1", "$2", "$3", "$4", "$5", "$6", "$7", "$8"}
-	args := []interface{}{
-		nil, // $1 = pk value (set by caller)
-		mappedData.RawJSON,
-		"debezium",
-		time.Now(),
-		"", // hash (set by caller)
-		1,
-		time.Now(),
-		time.Now(),
+	if dm.schemaAdapter == nil {
+		if dm.logger != nil {
+			dm.logger.Warn("BuildUpsertQuery called without schema adapter",
+				zap.String("table", targetTable),
+			)
+		}
+		return "", nil
 	}
 
-	// Add mapped columns
-	idx := 9
-	updateClauses := []string{
-		"_raw_data = EXCLUDED._raw_data",
-		"_synced_at = EXCLUDED._synced_at",
-		"_hash = EXCLUDED._hash",
-		fmt.Sprintf("_version = \"%s\"._version + 1", targetTable),
-		"_updated_at = NOW()",
+	schema := dm.schemaAdapter.GetSchema(targetTable)
+	if schema == nil {
+		if dm.logger != nil {
+			dm.logger.Warn("BuildUpsertQuery schema cache miss",
+				zap.String("table", targetTable),
+			)
+		}
+		return "", nil
 	}
 
-	for col, val := range mappedData.Columns {
-		colNames = append(colNames, fmt.Sprintf(`"%s"`, col))
-		placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
-		args = append(args, val)
-		updateClauses = append(updateClauses, fmt.Sprintf(`"%s" = EXCLUDED."%s"`, col, col))
-		idx++
-	}
-
-	query := fmt.Sprintf(
-		`INSERT INTO "%s" (%s) VALUES (%s) ON CONFLICT ("%s") DO UPDATE SET %s WHERE "%s"._hash IS DISTINCT FROM EXCLUDED._hash`,
+	return dm.schemaAdapter.BuildUpsertSQL(
+		schema,
 		targetTable,
-		strings.Join(colNames, ", "),
-		strings.Join(placeholders, ", "),
 		pkField,
-		strings.Join(updateClauses, ", "),
-		targetTable,
+		nil,
+		mappedData.Columns,
+		string(mappedData.RawJSON),
+		"dynamic-mapper",
+		"",
+		0,
 	)
-
-	return query, args
 }
 
 // convertType converts raw value to PostgreSQL-compatible typed value

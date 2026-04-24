@@ -7,6 +7,7 @@ import {
   BranchesOutlined,
   SettingOutlined,
   LogoutOutlined,
+  CompassOutlined,
 } from '@ant-design/icons';
 import QueryErrorBoundary from './components/QueryErrorBoundary';
 
@@ -26,6 +27,7 @@ const ActivityLog = lazy(() => import('./pages/ActivityLog'));
 const ActivityManager = lazy(() => import('./pages/ActivityManager'));
 const DataIntegrity = lazy(() => import('./pages/DataIntegrity'));
 const SystemHealth = lazy(() => import('./pages/SystemHealth'));
+const SourceToMasterWizard = lazy(() => import('./pages/SourceToMasterWizard'));
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -72,6 +74,9 @@ function AppLayout() {
         <Menu theme="dark" mode="inline" defaultSelectedKeys={['dashboard']}>
           <Menu.Item key="dashboard" icon={<DashboardOutlined />}>
             <Link to="/">Dashboard</Link>
+          </Menu.Item>
+          <Menu.Item key="wizard" icon={<CompassOutlined />}>
+            <Link to="/source-to-master">Source → Master Wizard</Link>
           </Menu.Item>
           <Menu.Item key="schema" icon={<BranchesOutlined />}>
             <Link to="/schema-changes">Mapping Approval</Link>
@@ -134,6 +139,7 @@ function AppLayout() {
                 <Route path="/activity-manager" element={<ActivityManager />} />
                 <Route path="/data-integrity" element={<DataIntegrity />} />
                 <Route path="/system-health" element={<SystemHealth />} />
+                <Route path="/source-to-master" element={<SourceToMasterWizard />} />
               </Routes>
             </Suspense>
           </QueryErrorBoundary>

@@ -157,10 +157,18 @@ func SetupRoutes(
 	}
 
 	// Debezium Command Center — Kafka Connect REST proxy. Replaces the
+	registerDestructive("/v1/system/connectors", systemConnectorsHandler.Create)
 	registerDestructive("/v1/system/connectors/:name/restart", systemConnectorsHandler.Restart)
 	registerDestructive("/v1/system/connectors/:name/tasks/:taskId/restart", systemConnectorsHandler.RestartTask)
 	registerDestructive("/v1/system/connectors/:name/pause", systemConnectorsHandler.Pause)
 	registerDestructive("/v1/system/connectors/:name/resume", systemConnectorsHandler.Resume)
+	// Destructive DELETE — removes connector entirely. Registered manually
+	// (registerDestructive only wraps POST).
+	{
+		deleteHandlers := append([]fiber.Handler{}, destructiveChain...)
+		deleteHandlers = append(deleteHandlers, systemConnectorsHandler.Delete)
+		apiGroup.Delete("/v1/system/connectors/:name", deleteHandlers...)
+	}
 
 	// Master Table Registry (Sprint 5 §R8) — admin plane for warehouse
 	// masters. Approve dispatches cdc.cmd.master-create → worker runs DDL.

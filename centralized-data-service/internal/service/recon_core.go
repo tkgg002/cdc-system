@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"hash/fnv"
 	"math/rand"
 	"os"
@@ -28,8 +29,8 @@ import (
 // All fields optional — sensible defaults applied at construction.
 type ReconCoreConfig struct {
 	// Window sizing
-	WindowSize        time.Duration // default 15m
-	WindowLookback   time.Duration // default 7 * 24h
+	WindowSize         time.Duration // default 15m
+	WindowLookback     time.Duration // default 7 * 24h
 	WindowFreezeMargin time.Duration // default 5m (don't scan t > now - margin)
 
 	// Thresholds
@@ -46,9 +47,9 @@ type ReconCoreConfig struct {
 	// Leader election (Redis). When nil — scheduled recon runs on every
 	// instance. Still per-table advisory-locked so there is no duplicate
 	// work, but allocating work across instances is more efficient.
-	LeaderLockTTL       time.Duration // default 60s
-	LeaderHeartbeat     time.Duration // default 20s
-	LeaderLockKey       string        // default "recon:leader"
+	LeaderLockTTL   time.Duration // default 60s
+	LeaderHeartbeat time.Duration // default 20s
+	LeaderLockKey   string        // default "recon:leader"
 
 	// Instance identity for recon_runs.instance_id.
 	InstanceID string
@@ -164,16 +165,17 @@ func NewReconCoreWithConfig(
 // Per-table locking
 // ============================================================
 
-// withTableLock acquires `pg_try_advisory_lock(hashtext('recon_'||table))`.
+// withTableLock acquires `pg_try_advisory_lock(key)` with a stable
+// CRC32-derived 32-bit key. This avoids per-cluster hashtext drift and
+// reduces accidental collisions between different table names.
 // Returns (acquired, unlock). Caller MUST call unlock() whether acquired
 // or not (unlock is a no-op when not acquired). A non-acquired lock
 // means a previous run is still in flight; the caller should skip.
 func (rc *ReconCore) withTableLock(ctx context.Context, table string) (bool, func()) {
-	key := "recon_" + table
+	key := advisoryLockKey("recon_" + table)
 	var acquired bool
-	// pg_try_advisory_lock(int) — hashtext() returns int4 so it fits.
 	if err := rc.db.WithContext(ctx).Raw(
-		"SELECT pg_try_advisory_lock(hashtext(?))", key,
+		"SELECT pg_try_advisory_lock(?)", key,
 	).Scan(&acquired).Error; err != nil {
 		rc.logger.Warn("advisory lock acquire failed — assuming NOT acquired",
 			zap.String("table", table), zap.Error(err))
@@ -183,7 +185,7 @@ func (rc *ReconCore) withTableLock(ctx context.Context, table string) (bool, fun
 		return false, func() {}
 	}
 	unlock := func() {
-		rc.db.Exec("SELECT pg_advisory_unlock(hashtext(?))", key)
+		rc.db.Exec("SELECT pg_advisory_unlock(?)", key)
 	}
 	return true, unlock
 }
@@ -292,6 +294,7 @@ func (rc *ReconCore) beginRun(ctx context.Context, table string, tier int) (*rec
 func (rc *ReconCore) finishRun(ctx context.Context, h *reconRunHandle, status, errMsg string) {
 	finished := time.Now().UTC()
 	dur := finished.Sub(h.started).Seconds()
+	errMsg = SanitizeFreeformText(errMsg, 2000)
 
 	updates := map[string]interface{}{
 		"status":           status,
@@ -526,8 +529,9 @@ func (rc *ReconCore) RunTier1(ctx context.Context, entry model.TableRegistry) *m
 
 // RunTier2 picks up drifted windows detected by Tier 1 (or scans the
 // same range if Tier 1 has not run yet) and for each such window:
-//   1. HashWindow on both sides (count + xor)
-//   2. If count / xor mismatch → ListIDsInWindow on both sides, diff.
+//  1. HashWindow on both sides (count + xor)
+//  2. If count / xor mismatch → ListIDsInWindow on both sides, diff.
+//
 // Writes mismatches to cdc_reconciliation_report with status=drift.
 func (rc *ReconCore) RunTier2(ctx context.Context, entry model.TableRegistry) *model.ReconciliationReport {
 	acquired, unlock := rc.withTableLock(ctx, entry.TargetTable)
@@ -695,19 +699,9 @@ func (rc *ReconCore) RunTier3(ctx context.Context, entry model.TableRegistry) *m
 	}
 	handle.docsScanned = srcBuckets.Total + dstBuckets.Total
 
-	// NOTE on cross-store bucket equality: the hash functions on the
-	// two sides are NOT identical (xxhash vs hashtext). We therefore
-	// compare *each side's buckets over time* — a Tier 3 run records
-	// the 256-vec as a fingerprint per side; drift within one side
-	// between consecutive runs is the drift signal. For plan v3 this
-	// Tier 3 output is primarily an operator-facing digest.
 	var driftedBuckets []int
 	for i := 0; i < 256; i++ {
-		// Can't compare across stores directly; fall back to presence:
-		// if exactly one side has a non-zero bucket it is drifted.
-		sEmpty := srcBuckets.Buckets[i] == 0
-		dEmpty := dstBuckets.Buckets[i] == 0
-		if sEmpty != dEmpty {
+		if srcBuckets.Buckets[i] != dstBuckets.Buckets[i] {
 			driftedBuckets = append(driftedBuckets, i)
 		}
 	}
@@ -887,7 +881,7 @@ func (rc *ReconCore) CheckAll(ctx context.Context) []*model.ReconciliationReport
 // and continue to render as generic "Lỗi nguồn" — intentional, no
 // backfill needed.
 func (rc *ReconCore) errorReport(entry model.TableRegistry, checkType string, tier int, err error) *model.ReconciliationReport {
-	errMsg := err.Error()
+	errMsg := SanitizeFreeformText(err.Error(), 2000)
 	code := classifyMongoError(err)
 	if code == "" {
 		code = ErrCodeUnknown
@@ -981,6 +975,10 @@ func fnvHash32(s string) uint32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(s))
 	return h.Sum32()
+}
+
+func advisoryLockKey(name string) int64 {
+	return int64(crc32.ChecksumIEEE([]byte(name)))
 }
 
 // ensure we use the helper (prevents goimports from removing the import

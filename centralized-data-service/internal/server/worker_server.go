@@ -15,8 +15,8 @@ import (
 	"centralized-data-service/pkgs/mongodb"
 	"centralized-data-service/pkgs/natsconn"
 
-	"go.mongodb.org/mongo-driver/mongo"
 	"centralized-data-service/pkgs/rediscache"
+	"go.mongodb.org/mongo-driver/mongo"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
@@ -39,14 +39,16 @@ type WorkerServer struct {
 	eventHandler     *handler.EventHandler
 	registrySvc      *service.RegistryService
 	registryRepo     *repository.RegistryRepo
+	maskingSvc       *service.MaskingService
 	activityLogger   *service.ActivityLogger
 	reconCore        *service.ReconCore
 	reconHealer      *service.ReconHealer
 	schemaValidator  *service.SchemaValidator
-	dlqWorker        *service.DLQWorker
+	dlqHandler       *handler.DLQHandler
+	dlqWorker        *handler.DLQStateMachine
 	partitionDropper *service.PartitionDropper
-	tsDetector       *service.TimestampDetector     // Migration 017 — auto-detect
-	fullCountAgg     *service.FullCountAggregator   // Migration 017 — full-count daily
+	tsDetector       *service.TimestampDetector   // Migration 017 — auto-detect
+	fullCountAgg     *service.FullCountAggregator // Migration 017 — full-count daily
 	mongoClient      *mongo.Client
 	app              *fiber.App
 }
@@ -115,11 +117,14 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 
 	// 5. Services
 	registrySvc := service.NewRegistryService(registryRepo, mappingRepo, logger)
+	maskingSvc := service.NewMaskingService(db, logger)
 	schemaInspector := service.NewSchemaInspector(pendingRepo, redisCache, natsClient, logger)
+	schemaInspector.SetMaskingService(maskingSvc)
 
 	// 6. Batch buffer
 	schemaAdapter := service.NewSchemaAdapter(db, logger)
 	batchBuffer := handler.NewBatchBuffer(cfg.Worker.BatchSize, cfg.Worker.BatchTimeout, db, schemaAdapter, logger)
+	batchBuffer.SetMaskingService(maskingSvc)
 
 	// 6b. MongoDB + Reconciliation Core (plan WORKER tasks #2, #3).
 	// - ReconDestAgent uses the dedicated replica pool when configured.
@@ -157,9 +162,12 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 
 	// 6d. DLQ retry worker. Runs alongside the consumer, polling
 	// failed_sync_logs every 5m and applying exponential backoff.
-	dlqWorker := service.NewDLQWorker(db, mongoClientShared, schemaAdapter, service.DLQWorkerConfig{}, logger)
+	dlqHandler := handler.NewDLQHandler(natsClient, logger, db)
+	dlqHandler.SetMaskingService(maskingSvc)
+	dlqWorker := handler.NewDLQStateMachine(db, natsClient, handler.DLQStateMachineConfig{}, logger)
 	// 7. Dynamic Mapper + Event handler
-	dynamicMapper := service.NewDynamicMapper(registrySvc, logger)
+	dynamicMapper := service.NewDynamicMapper(registrySvc, logger, schemaAdapter)
+	dynamicMapper.SetMaskingService(maskingSvc)
 	eventHandler := handler.NewEventHandler(db, registrySvc, dynamicMapper, schemaInspector, batchBuffer, logger)
 
 	// 8. Consumer pool
@@ -284,13 +292,14 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 			)
 		}
 		reconHealerShared = service.NewReconHealer(
-			db, mongoClientShared, schemaAdapter, signalClient,
+			db, mongoClientShared, schemaAdapter, signalClient, maskingSvc,
 			service.ReconHealerConfig{}, // per-table masks loaded from registry
 			logger,
 		)
 
 		reconHandler := handler.NewReconHandler(reconCore, db, mongoClientForRecon, schemaAdapter, logger).
-			WithHealer(reconHealerShared)
+			WithHealer(reconHealerShared).
+			WithMaskingService(maskingSvc)
 
 		// Backfill (_source_ts) service — tier 4 runs. Requires Mongo
 		// client + registry to resolve source → dest pairs.
@@ -385,10 +394,12 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 		eventHandler:     eventHandler,
 		registrySvc:      registrySvc,
 		registryRepo:     registryRepo,
+		maskingSvc:       maskingSvc,
 		activityLogger:   activityLogger,
 		reconCore:        reconCore,
 		reconHealer:      reconHealerShared,
 		schemaValidator:  schemaValidator,
+		dlqHandler:       dlqHandler,
 		dlqWorker:        dlqWorker,
 		partitionDropper: partitionDropper,
 		tsDetector:       tsDetectorShared,
@@ -417,6 +428,7 @@ func (s *WorkerServer) Start() error {
 			s.logger,
 		)
 		kafkaConsumer.SetSchemaValidator(s.schemaValidator)
+		kafkaConsumer.SetMaskingService(s.maskingSvc)
 		go kafkaConsumer.Start(context.Background())
 		s.logger.Info("kafka consumer started",
 			zap.Strings("brokers", s.cfg.Kafka.Brokers),
@@ -424,8 +436,8 @@ func (s *WorkerServer) Start() error {
 		)
 	}
 
-	// DLQ retry worker — polls failed_sync_logs every 5 minutes and
-	// applies exponential backoff. Runs regardless of Kafka/NATS mode.
+	// DLQ retry worker — polls failed_sync_logs every 5 minutes via the
+	// handler-level state machine and replays due records over NATS.
 	if s.dlqWorker != nil {
 		go s.dlqWorker.Start(context.Background())
 	}

@@ -64,6 +64,7 @@ type KafkaConsumer struct {
 	eventHandler *EventHandler
 	registrySvc  interface{ GetDebeziumTables() []string }
 	validator    *service.SchemaValidator
+	masking      *service.MaskingService
 	logger       *zap.Logger
 	readers      []*kafka.Reader
 	db           *gorm.DB
@@ -85,6 +86,10 @@ func NewKafkaConsumer(cfg KafkaConsumerConfig, handler *EventHandler, registrySv
 // worker wiring. Nil validator = validation disabled (legacy mode).
 func (kc *KafkaConsumer) SetSchemaValidator(v *service.SchemaValidator) {
 	kc.validator = v
+}
+
+func (kc *KafkaConsumer) SetMaskingService(masking *service.MaskingService) {
+	kc.masking = masking
 }
 
 // Start discovers Kafka topics matching prefix and starts consuming
@@ -117,16 +122,16 @@ func (kc *KafkaConsumer) Start(ctx context.Context) {
 
 	// Create reader for all matching topics
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        kc.config.Brokers,
-		GroupID:         kc.config.GroupID,
-		GroupTopics:     topics,
-		MinBytes:        10e3, // 10KB
-		MaxBytes:        10e6, // 10MB
-		CommitInterval:  time.Second,
-		SessionTimeout:  30 * time.Second,
+		Brokers:          kc.config.Brokers,
+		GroupID:          kc.config.GroupID,
+		GroupTopics:      topics,
+		MinBytes:         10e3, // 10KB
+		MaxBytes:         10e6, // 10MB
+		CommitInterval:   time.Second,
+		SessionTimeout:   30 * time.Second,
 		RebalanceTimeout: 30 * time.Second,
-		StartOffset:     kafka.FirstOffset,
-		Logger:          nil, // suppress kafka-go internal logs
+		StartOffset:      kafka.FirstOffset,
+		Logger:           nil, // suppress kafka-go internal logs
 	})
 
 	kc.readers = append(kc.readers, reader)
@@ -615,10 +620,12 @@ func (kc *KafkaConsumer) writeDLQ(ctx context.Context, msg kafka.Message, procEr
 
 	// Try to pull record_id from the message body for DLQ diagnostics.
 	recordID, operation, rawJSON := extractDLQMetadata(msg)
+	rawJSON = kc.sanitizeDLQRawJSON(targetTable, rawJSON)
 
 	errorType := "processing"
 	status := "failed"
 	errText := procErr.Error()
+	sanitizedErrText := service.SanitizeFreeformText(errText, 2000)
 	if strings.Contains(errText, "schema_drift") {
 		errorType = "schema_drift"
 		status = "pending"
@@ -635,7 +642,7 @@ func (kc *KafkaConsumer) writeDLQ(ctx context.Context, msg kafka.Message, procEr
 		RecordID:       recordID,
 		Operation:      operation,
 		RawJSON:        rawJSON,
-		ErrorMessage:   errText,
+		ErrorMessage:   sanitizedErrText,
 		ErrorType:      errorType,
 		KafkaTopic:     msg.Topic,
 		KafkaPartition: &partition,
@@ -696,14 +703,25 @@ func extractDLQMetadata(msg kafka.Message) (string, string, []byte) {
 		}
 	}
 
-	// Store the raw Kafka value as raw_json (JSONB). If it is not
-	// valid JSON (edge case: non-JSON producer), wrap it as a string.
+	// Extract the Kafka value into a JSONB-friendly payload. The caller
+	// decides whether additional sanitization is required before persistence.
 	raw := msg.Value
 	if !json.Valid(raw) {
 		wrapped, _ := json.Marshal(map[string]string{"raw": string(raw)})
 		raw = wrapped
 	}
 	return recordID, operation, raw
+}
+
+func (kc *KafkaConsumer) sanitizeDLQRawJSON(table string, raw []byte) json.RawMessage {
+	if kc.masking != nil {
+		return kc.masking.MaskJSONPayload(table, raw)
+	}
+	if json.Valid(raw) {
+		return json.RawMessage(raw)
+	}
+	wrapped, _ := json.Marshal(map[string]string{"raw": string(raw)})
+	return json.RawMessage(wrapped)
 }
 
 // Stop closes all Kafka readers

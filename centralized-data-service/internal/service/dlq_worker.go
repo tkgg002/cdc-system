@@ -98,6 +98,7 @@ type DLQWorker struct {
 	db            *gorm.DB
 	mongoClient   *mongo.Client
 	schemaAdapter *SchemaAdapter
+	masking       *MaskingService
 	logger        *zap.Logger
 	cfg           DLQWorkerConfig
 }
@@ -120,6 +121,10 @@ func NewDLQWorker(
 		cfg:           cfg,
 		logger:        logger,
 	}
+}
+
+func (w *DLQWorker) SetMaskingService(masking *MaskingService) {
+	w.masking = masking
 }
 
 // Start runs the poll loop until ctx is cancelled. First iteration
@@ -259,7 +264,9 @@ func (w *DLQWorker) retryOne(ctx context.Context, r model.FailedSyncLog) {
 
 // tryApply attempts the actual re-insert into the target table. Fetch
 // strategy:
-//  1. If raw_json column is populated, use it directly — cheapest path.
+//  1. If raw_json column is populated, use it directly as the retry
+//     payload and re-sanitize the _raw_data representation before the
+//     UPSERT is rebuilt.
 //  2. Else, if mongoClient + record_id available, re-fetch from Mongo.
 //  3. Else, return error → caller schedules backoff or dead-letters.
 func (w *DLQWorker) tryApply(ctx context.Context, r model.FailedSyncLog) error {
@@ -335,7 +342,7 @@ func (w *DLQWorker) tryApply(ctx context.Context, r model.FailedSyncLog) error {
 		return fmt.Errorf("missing primary key")
 	}
 
-	rawJSON, _ := json.Marshal(payload)
+	rawJSON := w.buildRetryRawJSON(r.TargetTable, payload)
 	query, values := w.schemaAdapter.BuildUpsertSQL(
 		schema,
 		r.TargetTable,
@@ -352,6 +359,16 @@ func (w *DLQWorker) tryApply(ctx context.Context, r model.FailedSyncLog) error {
 		return fmt.Errorf("upsert: %w", err)
 	}
 	return nil
+}
+
+func (w *DLQWorker) buildRetryRawJSON(table string, payload map[string]interface{}) []byte {
+	if w.masking != nil {
+		masked := w.masking.MaskTableData(table, payload)
+		rawJSON, _ := json.Marshal(masked)
+		return rawJSON
+	}
+	rawJSON, _ := json.Marshal(payload)
+	return rawJSON
 }
 
 // refreshStuckGauge samples count per status for Prom export.

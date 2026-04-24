@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -185,24 +186,31 @@ func (sa *SchemaAdapter) CoerceValue(schema *TableSchema, colName string, val in
 		return val
 	}
 
-	// JSONB column — ensure value is valid JSON
+	// JSONB column — ensure value is valid JSON and normalize Mongo
+	// extended JSON / base64-encoded Avro payloads into stable JSONB.
 	switch v := val.(type) {
 	case string:
-		// Try base64 decode (Avro bytes → base64 for JSON fields)
-		if decoded, err := base64.StdEncoding.DecodeString(v); err == nil && json.Valid(decoded) {
+		if decoded := decodeBase64JSON(v); len(decoded) > 0 {
 			return string(decoded)
 		}
 		if json.Valid([]byte(v)) {
+			var parsed interface{}
+			if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+				normalized := normalizeMongoExtendedJSON(parsed)
+				if marshaled, err := json.Marshal(normalized); err == nil {
+					return string(marshaled)
+				}
+			}
 			return v
 		}
 		// Wrap as JSON string
 		jsonVal, _ := json.Marshal(v)
 		return string(jsonVal)
 	case map[string]interface{}, []interface{}:
-		jsonVal, _ := json.Marshal(v)
+		jsonVal, _ := json.Marshal(normalizeMongoExtendedJSON(v))
 		return string(jsonVal)
 	default:
-		jsonVal, _ := json.Marshal(v)
+		jsonVal, _ := json.Marshal(normalizeMongoExtendedJSON(v))
 		return string(jsonVal)
 	}
 }
@@ -313,7 +321,7 @@ func (sa *SchemaAdapter) BuildUpsertSQL(schema *TableSchema, tableName string, p
 	var whereClause string
 	if hasSourceTs && sourceTsMs > 0 {
 		whereClause = fmt.Sprintf(
-			`WHERE "%s"."_source_ts" IS NULL OR "%s"."_source_ts" < EXCLUDED."_source_ts"`,
+			`WHERE "%s"."_source_ts" IS NULL OR "%s"."_source_ts" <= EXCLUDED."_source_ts"`,
 			tableName, tableName,
 		)
 	} else {
@@ -331,4 +339,106 @@ func (sa *SchemaAdapter) BuildUpsertSQL(schema *TableSchema, tableName string, p
 	)
 
 	return query, finalValues
+}
+
+func decodeBase64JSON(v string) []byte {
+	for _, decoder := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	} {
+		decoded, err := decoder.DecodeString(v)
+		if err == nil && json.Valid(decoded) {
+			var parsed interface{}
+			if err := json.Unmarshal(decoded, &parsed); err == nil {
+				normalized := normalizeMongoExtendedJSON(parsed)
+				if marshaled, err := json.Marshal(normalized); err == nil {
+					return marshaled
+				}
+			}
+			return decoded
+		}
+	}
+	return nil
+}
+
+func normalizeMongoExtendedJSON(val interface{}) interface{} {
+	switch v := val.(type) {
+	case map[string]interface{}:
+		if oid, ok := asOIDValue(v); ok {
+			return oid
+		}
+		if dateVal, ok := asDateValue(v); ok {
+			return dateVal
+		}
+		out := make(map[string]interface{}, len(v))
+		for key, item := range v {
+			out[key] = normalizeMongoExtendedJSON(item)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = normalizeMongoExtendedJSON(item)
+		}
+		return out
+	default:
+		return val
+	}
+}
+
+func asOIDValue(v map[string]interface{}) (string, bool) {
+	if len(v) != 1 {
+		return "", false
+	}
+	raw, ok := v["$oid"]
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("%v", raw), true
+}
+
+func asDateValue(v map[string]interface{}) (string, bool) {
+	if len(v) != 1 {
+		return "", false
+	}
+	raw, ok := v["$date"]
+	if !ok {
+		return "", false
+	}
+	switch d := raw.(type) {
+	case string:
+		if t, err := time.Parse(time.RFC3339Nano, d); err == nil {
+			return t.UTC().Format(time.RFC3339Nano), true
+		}
+		if t, err := time.Parse(time.RFC3339, d); err == nil {
+			return t.UTC().Format(time.RFC3339Nano), true
+		}
+		return d, true
+	case float64:
+		return time.UnixMilli(int64(d)).UTC().Format(time.RFC3339Nano), true
+	case int64:
+		return time.UnixMilli(d).UTC().Format(time.RFC3339Nano), true
+	case int32:
+		return time.UnixMilli(int64(d)).UTC().Format(time.RFC3339Nano), true
+	case json.Number:
+		if ms, err := d.Int64(); err == nil {
+			return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano), true
+		}
+	case map[string]interface{}:
+		if num, ok := d["$numberLong"]; ok {
+			switch n := num.(type) {
+			case string:
+				if parsed, err := json.Number(n).Int64(); err == nil {
+					return time.UnixMilli(parsed).UTC().Format(time.RFC3339Nano), true
+				}
+			case json.Number:
+				if parsed, err := n.Int64(); err == nil {
+					return time.UnixMilli(parsed).UTC().Format(time.RFC3339Nano), true
+				}
+			}
+		}
+	}
+	return "", false
 }

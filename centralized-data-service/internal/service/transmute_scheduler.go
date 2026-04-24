@@ -43,10 +43,10 @@ func NewTransmuteScheduler(
 	fencingToken int64,
 ) *TransmuteScheduler {
 	return &TransmuteScheduler{
-		db:     db,
-		nats:   nats,
-		logger: logger,
-		parser: cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
+		db:           db,
+		nats:         nats,
+		logger:       logger,
+		parser:       cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
 		interval:     60 * time.Second,
 		machineID:    machineID,
 		fencingToken: fencingToken,
@@ -153,10 +153,11 @@ func (s *TransmuteScheduler) tick(ctx context.Context) {
 						zap.Int64("id", d.id),
 						zap.String("master", d.master),
 						zap.Error(err))
+					lastErr := SanitizeFreeformText(err.Error(), 2000)
 					_ = tx.Exec(
 						`UPDATE cdc_internal.transmute_schedule
 						   SET last_status='failed', last_error=?, updated_at=NOW()
-						 WHERE id=?`, err.Error(), d.id).Error
+						 WHERE id=?`, lastErr, d.id).Error
 					continue
 				}
 			}
@@ -166,10 +167,11 @@ func (s *TransmuteScheduler) tick(ctx context.Context) {
 			if perr != nil {
 				s.logger.Warn("scheduler parse cron failed",
 					zap.Int64("id", d.id), zap.String("expr", d.cronExpr), zap.Error(perr))
+				lastErr := SanitizeFreeformText("cron parse: "+perr.Error(), 2000)
 				_ = tx.Exec(
 					`UPDATE cdc_internal.transmute_schedule
 					   SET last_status='failed', last_error=?, updated_at=NOW()
-					 WHERE id=?`, "cron parse: "+perr.Error(), d.id).Error
+					 WHERE id=?`, lastErr, d.id).Error
 				continue
 			}
 			next := schedule.Next(now)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -51,7 +52,9 @@ func (h *CommandHandler) SetNATSConn(conn *nats.Conn) {
 	h.natsConn = conn
 }
 
-// CommandResult is published back after command execution (for logging/audit purposes).
+// CommandResult is the admin-facing result envelope. It must stay
+// sanitized before being logged, stored in ActivityLog, or published to
+// downstream control-plane consumers.
 type CommandResult struct {
 	Command      string `json:"command"`
 	RegistryID   uint   `json:"registry_id,omitempty"`
@@ -372,12 +375,10 @@ func (h *CommandHandler) HandleBackfill(msg *nats.Msg) {
 	})
 }
 
-// HandleIntrospect subscribes to "cdc.cmd.introspect" and scans a sample of _raw_data 
+// HandleIntrospect subscribes to "cdc.cmd.introspect" and scans a sample of _raw_data
 // from the DW table to find unmapped fields. It replies via NATS Request-Reply.
 
-
 // Debezium path is the sole CDC engine. Shadow→Master via TransmuterModule (R6).
-
 
 // HandleBatchTransform applies mapping rules to populate typed columns from _raw_data.
 // Subject: "cdc.cmd.batch-transform" (pub/sub pattern)
@@ -535,13 +536,14 @@ func (h *CommandHandler) HandleScanRawData(msg *nats.Msg) {
 	}
 
 	res := map[string]interface{}{
-		"status":        "ok",
-		"table":         targetTable,
-		"source_table":  sourceTable,
+		"status":         "ok",
+		"table":          targetTable,
+		"source_table":   sourceTable,
 		"total_raw_keys": len(rawKeys),
-		"mapped_count":  len(existingRules),
-		"new_fields":    unmappedFields,
+		"mapped_count":   len(existingRules),
+		"new_fields":     unmappedFields,
 	}
+	res = sanitizeAdminResultMap(res)
 	resBytes, _ := json.Marshal(res)
 	if msg.Reply != "" {
 		_ = msg.Respond(resBytes)
@@ -635,28 +637,31 @@ func buildCastExpr(field, dataType string) string {
 	}
 }
 
-// publishResult publishes the command result to NATS reply-to (if present) or logs it.
+// publishResult publishes a sanitized command result to reply-to (if
+// present), then writes the same sanitized payload into ActivityLog.
 func (h *CommandHandler) publishResult(msg *nats.Msg, result CommandResult) {
-	data, _ := json.Marshal(result)
+	safeResult := result
+	safeResult.Error = sanitizeAdminError(result.Error)
+	data, _ := json.Marshal(safeResult)
 	if msg.Reply != "" {
 		if err := msg.Respond(data); err != nil {
 			h.logger.Error("failed to reply to NATS", zap.Error(err))
 		}
 	}
-	h.logger.Info("command result", zap.String("payload", string(data)))
+	h.logCommandResult(safeResult)
 
 	// Activity Log — every command result
 	now := time.Now()
 	var errPtr *string
-	if result.Error != "" {
-		e := result.Error
+	if safeResult.Error != "" {
+		e := safeResult.Error
 		errPtr = &e
 	}
 	h.db.Create(&model.ActivityLog{
-		Operation:    "cmd-" + result.Command,
-		TargetTable:  result.TargetTable,
-		Status:       result.Status,
-		RowsAffected: int64(result.RowsAffected),
+		Operation:    "cmd-" + safeResult.Command,
+		TargetTable:  safeResult.TargetTable,
+		Status:       safeResult.Status,
+		RowsAffected: int64(safeResult.RowsAffected),
 		ErrorMessage: errPtr,
 		Details:      data,
 		TriggeredBy:  "nats-command",
@@ -786,7 +791,6 @@ func inferSQLTypeFromLegacyCatalogProp(prop interface{}) string {
 	}
 }
 
-
 // scanFieldsDebezium samples _raw_data JSONB (last 100 rows) to infer
 // new fields for Debezium-backed tables.
 func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, targetTable, sourceTable string) (int, int, error) {
@@ -854,7 +858,7 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, targetTable, so
 // Debezium _raw_data sampling based on sync_engine.
 func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 	var payload struct {
-		RegistryID      uint   `json:"registry_id"`
+		RegistryID     uint   `json:"registry_id"`
 		TargetTable    string `json:"target_table"`
 		SourceTable    string `json:"source_table"`
 		SyncEngine     string `json:"sync_engine"`
@@ -898,6 +902,7 @@ func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 		"source_used":  sourceUsed,
 		"status":       "success",
 	}
+	result = sanitizeAdminResultMap(result)
 	data, _ := json.Marshal(result)
 	h.nats_publish(msg, "cdc.result.scan-fields", data)
 	h.writeActivity("scan-fields", payload.TargetTable, "success", int64(added), result, "")
@@ -908,7 +913,6 @@ func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 
 // HandleRefreshCatalog implements boundary-refactor #3 (subject
 // drift into schema_changes_log when the catalogue changes.
-
 
 // HandleSyncRegister implements boundary-refactor #5 (subject
 // cdc.cmd.sync-register). Routes the "sync registry entry with sync
@@ -947,6 +951,7 @@ func (h *CommandHandler) HandleSyncRegister(msg *nats.Msg) {
 		"debezium_error": debeziumErr,
 		"status":         status,
 	}
+	result = sanitizeAdminResultMap(result)
 	data, _ := json.Marshal(result)
 	h.nats_publish(msg, "cdc.result.sync-register", data)
 	h.writeActivity("sync-register", payload.TargetTable, status, 0, result, "")
@@ -1025,6 +1030,7 @@ func (h *CommandHandler) HandleSyncState(msg *nats.Msg) {
 		"error":           firstErr,
 		"status":          status,
 	}
+	result = sanitizeAdminResultMap(result)
 	data, _ := json.Marshal(result)
 	h.nats_publish(msg, "cdc.result.sync-state", data)
 	h.writeActivity("sync-state", entry.TargetTable, status, 0, result, firstErr)
@@ -1060,6 +1066,7 @@ func (h *CommandHandler) HandleRestartDebezium(msg *nats.Msg) {
 		"connector_name": connector,
 		"status":         "success",
 	}
+	result = sanitizeAdminResultMap(result)
 	data, _ := json.Marshal(result)
 	h.nats_publish(msg, "cdc.result.restart-debezium", data)
 	h.writeActivity("restart-debezium", connector, "success", 0, result, "")
@@ -1116,9 +1123,9 @@ func (h *CommandHandler) HandleAlterColumn(msg *nats.Msg) {
 		"target_table": payload.TargetTable,
 		"column_name":  payload.ColumnName,
 		"action":       payload.Action,
-		"sql":          sql,
 		"status":       "success",
 	}
+	result = sanitizeAdminResultMap(result)
 	data, _ := json.Marshal(result)
 	h.nats_publish(msg, "cdc.result.alter-column", data)
 	h.writeActivity("alter-column", payload.TargetTable, "success", 0, result, "")
@@ -1135,8 +1142,8 @@ func (h *CommandHandler) HandleAlterColumn(msg *nats.Msg) {
 // Helpers used across boundary-refactor handlers.
 // ---------------------------------------------------------------------------
 
-// nats_publish fires a result event to the configured subject when the
-// caller used pub/sub; falls back to msg.Respond for request-reply.
+// nats_publish emits a sanitized result event to the configured subject
+// when the caller used pub/sub; falls back to request-reply otherwise.
 func (h *CommandHandler) nats_publish(msg *nats.Msg, subject string, data []byte) {
 	if msg.Reply != "" {
 		_ = msg.Respond(data)
@@ -1148,28 +1155,36 @@ func (h *CommandHandler) nats_publish(msg *nats.Msg, subject string, data []byte
 		}
 		return
 	}
-	h.logger.Info("command result", zap.String("subject", subject), zap.String("payload", string(data)))
+	var result CommandResult
+	if err := json.Unmarshal(data, &result); err == nil {
+		h.logCommandResult(result, zap.String("subject", subject))
+		return
+	}
+	h.logger.Info("command result", zap.String("subject", subject), zap.Int("bytes", len(data)))
 }
 
-// publishResultWithSubject is the error-path variant — keeps the legacy
-// activity log write plus routes through nats_publish.
+// publishResultWithSubject is the error-path variant; it keeps
+// ActivityLog and outbound result subjects aligned on the same
+// sanitized payload shape.
 func (h *CommandHandler) publishResultWithSubject(msg *nats.Msg, subject string, result CommandResult) {
+	result.Error = sanitizeAdminError(result.Error)
 	data, _ := json.Marshal(result)
 	h.nats_publish(msg, subject, data)
 	h.writeActivity("cmd-"+result.Command, result.TargetTable, result.Status, int64(result.RowsAffected), nil, result.Error)
 }
 
-// writeActivity mirrors publishResult's activity log side-effect in a
-// reusable form.
+// writeActivity mirrors publishResult's ActivityLog side-effect in a
+// reusable form and never stores unsanitized admin-facing details.
 func (h *CommandHandler) writeActivity(op, table, status string, rows int64, details map[string]interface{}, errMsg string) {
 	now := time.Now()
 	var errPtr *string
-	if errMsg != "" {
+	if errMsg = sanitizeAdminError(errMsg); errMsg != "" {
 		e := errMsg
 		errPtr = &e
 	}
 	var detailsJSON []byte
 	if details != nil {
+		details = sanitizeAdminResultMap(details)
 		detailsJSON, _ = json.Marshal(details)
 	}
 	h.db.Create(&model.ActivityLog{
@@ -1265,4 +1280,74 @@ func (h *CommandHandler) connectCall(ctx context.Context, method, url string, bo
 		return fmt.Errorf("kafka-connect %d: %s", resp.StatusCode, string(respBody))
 	}
 	return lastErr
+}
+
+func (h *CommandHandler) logCommandResult(result CommandResult, fields ...zap.Field) {
+	baseFields := []zap.Field{
+		zap.String("command", result.Command),
+		zap.String("target_table", result.TargetTable),
+		zap.String("status", result.Status),
+		zap.Int("rows_affected", result.RowsAffected),
+	}
+	if result.RegistryID > 0 {
+		baseFields = append(baseFields, zap.Uint("registry_id", result.RegistryID))
+	}
+	if result.Error != "" {
+		baseFields = append(baseFields, zap.String("error", sanitizeAdminError(result.Error)))
+	}
+	baseFields = append(baseFields, fields...)
+	h.logger.Info("command result", baseFields...)
+}
+
+func sanitizeAdminError(errMsg string) string {
+	return service.SanitizeFreeformText(errMsg, 240)
+}
+
+func sanitizeAdminResultMap(input map[string]interface{}) map[string]interface{} {
+	if len(input) == 0 {
+		return map[string]interface{}{}
+	}
+	allowed := map[string]struct{}{
+		"command": {}, "registry_id": {}, "target_table": {}, "table": {}, "rows_affected": {},
+		"status": {}, "error": {}, "reason": {}, "added": {}, "total": {},
+		"source_used": {}, "source_table": {}, "mapped_count": {}, "new_fields": {},
+		"total_raw_keys": {}, "sync_engine": {}, "debezium_ok": {}, "debezium_error": {},
+		"debezium_status": {}, "action": {}, "connector_name": {}, "column_name": {},
+	}
+	out := make(map[string]interface{}, len(input))
+	for key, value := range input {
+		if _, ok := allowed[key]; !ok {
+			continue
+		}
+		switch key {
+		case "error", "reason", "debezium_error":
+			out[key] = sanitizeAdminError(fmt.Sprintf("%v", value))
+		case "new_fields":
+			out[key] = sanitizeAdminFields(value)
+		default:
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func sanitizeAdminFields(value interface{}) []string {
+	list, ok := value.([]string)
+	if ok {
+		out := append([]string(nil), list...)
+		sort.Strings(out)
+		return out
+	}
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

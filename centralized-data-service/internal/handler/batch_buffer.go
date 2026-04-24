@@ -23,6 +23,7 @@ type BatchBuffer struct {
 	timeout       time.Duration
 	db            *gorm.DB
 	schemaAdapter *service.SchemaAdapter
+	masking       *service.MaskingService
 	logger        *zap.Logger
 	flushCh       chan struct{}
 	ctx           context.Context
@@ -39,18 +40,22 @@ type BatchStatus struct {
 func NewBatchBuffer(maxSize int, timeout time.Duration, db *gorm.DB, schemaAdapter *service.SchemaAdapter, logger *zap.Logger) *BatchBuffer {
 	ctx, cancel := context.WithCancel(context.Background())
 	bb := &BatchBuffer{
-		records: make([]*model.UpsertRecord, 0, maxSize),
-		maxSize: maxSize,
-		timeout: timeout,
+		records:       make([]*model.UpsertRecord, 0, maxSize),
+		maxSize:       maxSize,
+		timeout:       timeout,
 		db:            db,
 		schemaAdapter: schemaAdapter,
 		logger:        logger,
-		flushCh: make(chan struct{}, 1),
-		ctx:     ctx,
-		cancel:  cancel,
+		flushCh:       make(chan struct{}, 1),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 	go bb.timerLoop()
 	return bb
+}
+
+func (bb *BatchBuffer) SetMaskingService(masking *service.MaskingService) {
+	bb.masking = masking
 }
 
 func (bb *BatchBuffer) Add(record *model.UpsertRecord) {
@@ -146,22 +151,38 @@ func (bb *BatchBuffer) batchUpsert(tableName string, records []*model.UpsertReco
 				zap.String("pk", r.PrimaryKeyValue),
 				zap.Error(err),
 			)
-			// DLQ: write to failed_sync_logs
-			bb.db.Create(&model.FailedSyncLog{
-				TargetTable:  tableName,
-				RecordID:     r.PrimaryKeyValue,
-				Operation:    "upsert",
-				RawJSON:      json.RawMessage(r.RawData),
-				ErrorMessage: err.Error(),
-				ErrorType:    classifyError(err),
-				Status:       "failed",
-			})
+			// Persist only sanitized payloads into failed_sync_logs.
+			bb.db.Create(bb.buildFailedSyncLog(tableName, r, err))
 			metrics.SyncFailed.WithLabelValues(tableName, "upsert", r.Source).Inc()
 		} else {
 			metrics.SyncSuccess.WithLabelValues(tableName, "upsert", r.Source).Inc()
 		}
 	}
 	return nil
+}
+
+func (bb *BatchBuffer) buildFailedSyncLog(tableName string, record *model.UpsertRecord, err error) *model.FailedSyncLog {
+	rawJSON := bb.sanitizeRawData(tableName, record.RawData)
+	return &model.FailedSyncLog{
+		TargetTable:  tableName,
+		RecordID:     record.PrimaryKeyValue,
+		Operation:    "upsert",
+		RawJSON:      rawJSON,
+		ErrorMessage: err.Error(),
+		ErrorType:    classifyError(err),
+		Status:       "failed",
+	}
+}
+
+func (bb *BatchBuffer) sanitizeRawData(tableName, raw string) json.RawMessage {
+	if bb.masking != nil {
+		return bb.masking.MaskJSONPayload(tableName, []byte(raw))
+	}
+	if json.Valid([]byte(raw)) {
+		return json.RawMessage(raw)
+	}
+	wrapped, _ := json.Marshal(map[string]string{"raw": raw})
+	return json.RawMessage(wrapped)
 }
 
 func classifyError(err error) string {
