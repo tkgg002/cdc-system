@@ -4,12 +4,19 @@ import { ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, ClockCircleOu
 import type { ColumnsType } from 'antd/es/table';
 import { cmsApi } from '../services/api';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 interface ActivityLogEntry {
   id: number;
   operation: string;
   target_table: string;
+  source_database?: string | null;
+  source_schema?: string | null;
+  source_namespace?: string | null;
+  source_table?: string | null;
+  shadow_schema?: string | null;
+  shadow_table?: string | null;
+  scope_ambiguous?: boolean;
   status: string;
   rows_affected: number;
   duration_ms: number | null;
@@ -36,7 +43,6 @@ const statusColor: Record<string, string> = {
 };
 
 const operationColor: Record<string, string> = {
-  bridge: 'cyan',
   transform: 'purple',
   'field-scan': 'geekblue',
   'periodic-cycle': 'blue',
@@ -55,6 +61,7 @@ export default function ActivityLog() {
   const [total, setTotal] = useState(0);
   const [opFilter, setOpFilter] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('');
+  const [sourceDbFilter, setSourceDbFilter] = useState<string>('');
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
@@ -62,12 +69,13 @@ export default function ActivityLog() {
       const params: any = { page, page_size: 30 };
       if (opFilter) params.operation = opFilter;
       if (statusFilter) params.status = statusFilter;
+      if (sourceDbFilter) params.source_database = sourceDbFilter;
       const { data: res } = await cmsApi.get('/api/activity-log', { params });
       setLogs(res.data || []);
       setTotal(res.total || 0);
     } catch { /* */ }
     finally { setLoading(false); }
-  }, [page, opFilter, statusFilter]);
+  }, [page, opFilter, statusFilter, sourceDbFilter]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -83,6 +91,31 @@ export default function ActivityLog() {
   const totalOps = stats.reduce((s, o) => s + o.total, 0);
   const totalErrors = stats.reduce((s, o) => s + o.error, 0);
   const totalSuccess = stats.reduce((s, o) => s + o.success, 0);
+  const uniqueSourceDbs = [...new Set(logs.map((l) => l.source_database).filter(Boolean) as string[])];
+
+  const operationOptions = [
+    'periodic-cycle',
+    'transform',
+    'field-scan',
+    'partition-check',
+    'create-default-columns',
+    'drop-gin-index',
+    'kafka-consume-batch',
+    'cmd-standardize',
+    'cmd-discover',
+    'cmd-backfill',
+    'cmd-batch-transform',
+    'recon-check',
+    'recon-check-all',
+    'recon-heal',
+    'retry-failed',
+    'debezium-signal',
+    'registry-update',
+    'auto-approve-fields',
+    'scan-fields',
+    'standardize',
+    'discover',
+  ];
 
   const columns: ColumnsType<ActivityLogEntry> = [
     {
@@ -93,7 +126,24 @@ export default function ActivityLog() {
       title: 'Operation', dataIndex: 'operation', width: 160,
       render: (v) => <Tag color={operationColor[v] || 'default'}>{v}</Tag>,
     },
-    { title: 'Table', dataIndex: 'target_table', width: 180, render: (v) => v === '*' ? <Tag>ALL</Tag> : <strong>{v}</strong> },
+    {
+      title: 'Scope', dataIndex: 'target_table', width: 240,
+      render: (v, r) => {
+        if (v === '*') return <Tag>ALL</Tag>;
+        if (r.source_database && r.source_table && r.shadow_schema && r.shadow_table) {
+          return (
+            <Space direction="vertical" size={0}>
+              <Text>{r.source_database}.{r.source_table}</Text>
+              <Space size={6}>
+                <Text type="secondary" code>{r.shadow_schema}.{r.shadow_table}</Text>
+                {r.scope_ambiguous ? <Tag color="orange">Ambiguous</Tag> : null}
+              </Space>
+            </Space>
+          );
+        }
+        return <strong>{v}</strong>;
+      },
+    },
     {
       title: 'Status', dataIndex: 'status', width: 90,
       render: (v) => <Tag color={statusColor[v] || 'default'}>{v}</Tag>,
@@ -117,6 +167,11 @@ export default function ActivityLog() {
   return (
     <div>
       <Title level={4} style={{ marginBottom: 16 }}>CDC Worker Activity Log</Title>
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Text type="secondary">
+          Surface này đã được rút về Debezium-only. Những operation legacy kiểu bridge hoặc Airbyte không còn được đưa vào filter chính của UI nữa.
+        </Text>
+      </Card>
 
       {/* Stats Cards */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -145,11 +200,7 @@ export default function ActivityLog() {
       <Space style={{ marginBottom: 12 }}>
         <Select placeholder="Filter operation" allowClear style={{ width: 180 }} value={opFilter || undefined}
           onChange={(v) => { setOpFilter(v || ''); setPage(1); }}>
-          {['periodic-cycle', 'bridge', 'transform', 'field-scan', 'partition-check', 'create-default-columns', 'drop-gin-index',
-            'kafka-consume-batch', 'cmd-standardize', 'cmd-discover', 'cmd-backfill', 'cmd-bridge-airbyte', 'cmd-batch-transform',
-            'recon-check', 'recon-check-all', 'recon-heal', 'retry-failed', 'debezium-signal',
-            'registry-update', 'auto-approve-fields', 'scan-airbyte-streams', 'auto-register-stream',
-            'bridge-sql', 'bridge-batch-pgx', 'scan-fields', 'standardize', 'discover'].map(op =>
+          {operationOptions.map(op =>
             <Select.Option key={op} value={op}><Tag color={operationColor[op] || 'default'}>{op}</Tag></Select.Option>
           )}
         </Select>
@@ -158,6 +209,10 @@ export default function ActivityLog() {
           {['success', 'error', 'running', 'skipped'].map(s =>
             <Select.Option key={s} value={s}><Tag color={statusColor[s]}>{s}</Tag></Select.Option>
           )}
+        </Select>
+        <Select placeholder="Filter source DB" allowClear style={{ width: 180 }} value={sourceDbFilter || undefined}
+          onChange={(v) => { setSourceDbFilter(v || ''); setPage(1); }}>
+          {uniqueSourceDbs.map(db => <Select.Option key={db} value={db}>{db}</Select.Option>)}
         </Select>
         <Button icon={<ReloadOutlined />} onClick={() => { fetchLogs(); fetchStats(); }}>Refresh</Button>
       </Space>

@@ -21,4 +21,4 @@ type PendingField struct {
 	DetectionCount   int        `gorm:"column:detection_count;default:1" json:"detection_count"`
 }
 
-func (PendingField) TableName() string { return "pending_fields" }
+func (PendingField) TableName() string { return "cdc_system.pending_fields" }

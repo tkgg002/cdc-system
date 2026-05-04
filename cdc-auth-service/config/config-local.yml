@@ -3,11 +3,13 @@ server:
   port: ":8081"
 
 db:
+  # Phase 01 split E2E — auth-only PG instance.
+  #   gpay-postgres : localhost:5432  gpay_auth
   host: localhost
   port: 5432
-  username: user
-  password: password
-  database: goopay_dw
+  username: gpay_admin
+  password: gpay_pass
+  database: gpay_auth
   sslMode: disable
   maxOpenConn: 10
   maxIdleConn: 5

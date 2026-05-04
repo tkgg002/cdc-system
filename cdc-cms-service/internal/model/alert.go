@@ -34,7 +34,7 @@ type Alert struct {
 }
 
 // TableName binds the struct to the migrated table.
-func (Alert) TableName() string { return "cdc_alerts" }
+func (Alert) TableName() string { return "cdc_system.cdc_alerts" }
 
 // Alert status values. These mirror the TEXT column domain; keep the list
 // explicit rather than using an enum type so migrations remain cheap.

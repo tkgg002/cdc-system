@@ -10,32 +10,29 @@ import (
 	"sync"
 	"time"
 
+	"centralized-data-service/internal/model"
+	"centralized-data-service/internal/repository"
+	"centralized-data-service/pkgs/idgen"
+
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
-// TransmuterModule reads from cdc_internal.<shadow> JSONB rows, applies
-// approved cdc_mapping_rules (with JsonPath + transform_fn), and upserts
-// typed rows into public.<master>.
-//
-// Idempotency contract:
-//   - For each (shadow, master) pair, output row is keyed by _gpay_source_id
-//     (copied from shadow).
-//   - Master row holds its own _hash computed from the canonical extracted
-//     payload. Second run with identical input → 0 UPDATE.
-//
-// Active-gate contract (§17 of plan v2):
-//   - shadow `is_active=true` AND `profile_status='active'`
-//   - master `is_active=true` AND `schema_status='approved'`
-//   - Run skips with WARN log if either check fails — never error.
+type MasterDestinationEnsurer interface {
+	EnsureMaster(ctx context.Context, masterName string) error
+}
+
 type TransmuterModule struct {
-	db          *gorm.DB
+	systemDB    *gorm.DB
+	connMgr     *ConnectionManager
+	runtimeRepo *repository.SyncRuntimeStateRepo
+	ddlEnsurer  MasterDestinationEnsurer
 	typeRes     *TypeResolver
 	logger      *zap.Logger
 	batchSize   int
 	mu          sync.Mutex
-	cache       map[string]cachedRules // master_table -> ruleset
+	cache       map[string]cachedRules
 	cacheTTL    time.Duration
 	shadowCache map[string]shadowState
 }
@@ -51,26 +48,78 @@ type shadowState struct {
 	loadedAt      time.Time
 }
 
-// MappingRuleRow mirrors the subset of cdc_mapping_rules columns the
-// Transmuter needs at runtime. Distinct from the CMS model so the worker
-// package has no CMS dependency.
 type mappingRuleRow struct {
-	ID            int64   `gorm:"column:id"`
-	SourceTable   string  `gorm:"column:source_table"`
-	MasterTable   *string `gorm:"column:master_table"`
-	SourceField   string  `gorm:"column:source_field"`
-	TargetColumn  string  `gorm:"column:target_column"`
-	DataType      string  `gorm:"column:data_type"`
-	SourceFormat  string  `gorm:"column:source_format"`
-	JsonPath      *string `gorm:"column:jsonpath"`
-	TransformFn   *string `gorm:"column:transform_fn"`
-	IsNullable    bool    `gorm:"column:is_nullable"`
-	DefaultValue  *string `gorm:"column:default_value"`
+	ID              int64   `gorm:"column:id"`
+	SourceObjectID  int64   `gorm:"column:source_object_id"`
+	MasterBindingID *int64  `gorm:"column:master_binding_id"`
+	SourceField     string  `gorm:"column:source_field"`
+	TargetColumn    string  `gorm:"column:target_column"`
+	DataType        string  `gorm:"column:data_type"`
+	SourceFormat    string  `gorm:"column:source_format"`
+	SourcePath      *string `gorm:"column:source_path"`
+	TransformFn     *string `gorm:"column:transform_fn"`
+	IsNullable      bool    `gorm:"column:is_nullable"`
+	DefaultValue    *string `gorm:"column:default_value"`
 }
 
-func NewTransmuterModule(db *gorm.DB, typeRes *TypeResolver, logger *zap.Logger) *TransmuterModule {
+type masterBindingRuntime struct {
+	ID                  int64  `gorm:"column:id"`
+	SourceObjectID      int64  `gorm:"column:source_object_id"`
+	ShadowBindingID     *int64 `gorm:"column:shadow_binding_id"`
+	MasterConnectionKey string `gorm:"column:master_connection_key"`
+	MasterSchema        string `gorm:"column:master_schema"`
+	MasterTable         string `gorm:"column:master_table"`
+	PhysicalTableFQN    string `gorm:"column:physical_table_fqn"`
+	TransformType       string `gorm:"column:transform_type"`
+	IsActive            bool   `gorm:"column:is_active"`
+	SchemaStatus        string `gorm:"column:schema_status"`
+	ShadowConnectionKey string `gorm:"column:shadow_connection_key"`
+	ShadowSchema        string `gorm:"column:shadow_schema"`
+	ShadowTable         string `gorm:"column:shadow_table"`
+	ShadowIsActive      bool   `gorm:"column:shadow_is_active"`
+	SourceProfileStatus string `gorm:"column:source_profile_status"`
+	SourcePK            string `gorm:"column:source_pk"`
+	ShadowPK            string `gorm:"column:shadow_pk"`
+}
+
+type shadowBatchRow struct {
+	GpayID      int64  `gorm:"column:_gpay_id"`
+	SourceID    string `gorm:"column:_gpay_source_id"`
+	RawData     []byte `gorm:"column:_raw_data"`
+	SourceTs    int64  `gorm:"column:_source_ts"`
+	GpayDeleted bool   `gorm:"column:_gpay_deleted"`
+}
+
+type batchOutcome struct {
+	scanned, inserted, updated, skipped, ruleMisses, typeErrors, lastGpayID int64
+}
+
+type TransmuteResult struct {
+	Master     string `json:"master"`
+	Source     string `json:"source"`
+	Scanned    int64  `json:"scanned"`
+	Inserted   int64  `json:"inserted"`
+	Updated    int64  `json:"updated"`
+	Skipped    int64  `json:"skipped"`
+	RuleMisses int64  `json:"rule_misses"`
+	TypeErrors int64  `json:"type_errors"`
+	DurationMs int64  `json:"duration_ms"`
+	ActiveGate string `json:"active_gate,omitempty"`
+}
+
+func NewTransmuterModule(
+	systemDB *gorm.DB,
+	connMgr *ConnectionManager,
+	runtimeRepo *repository.SyncRuntimeStateRepo,
+	ddlEnsurer MasterDestinationEnsurer,
+	typeRes *TypeResolver,
+	logger *zap.Logger,
+) *TransmuterModule {
 	return &TransmuterModule{
-		db:          db,
+		systemDB:    systemDB,
+		connMgr:     connMgr,
+		runtimeRepo: runtimeRepo,
+		ddlEnsurer:  ddlEnsurer,
 		typeRes:     typeRes,
 		logger:      logger,
 		batchSize:   500,
@@ -80,80 +129,56 @@ func NewTransmuterModule(db *gorm.DB, typeRes *TypeResolver, logger *zap.Logger)
 	}
 }
 
-// TransmuteResult summarises one run for callers (NATS handler, scheduler).
-type TransmuteResult struct {
-	Master      string `json:"master"`
-	Source      string `json:"source"`
-	Scanned     int64  `json:"scanned"`
-	Inserted    int64  `json:"inserted"`
-	Updated     int64  `json:"updated"`
-	Skipped     int64  `json:"skipped"`
-	RuleMisses  int64  `json:"rule_misses"`
-	TypeErrors  int64  `json:"type_errors"`
-	DurationMs  int64  `json:"duration_ms"`
-	ActiveGate  string `json:"active_gate,omitempty"` // "" if pass, else reason
-}
-
-// Run materialises the full shadow → master set. This is the entry point
-// for immediate + scheduled + post-ingest triggers. Caller passes
-// `onlySourceIDs` (optional) to limit scope to a slice of _gpay_source_id,
-// typical for post-ingest incremental sync.
-func (t *TransmuterModule) Run(
-	ctx context.Context,
-	masterName string,
-	onlySourceIDs []string,
-) (TransmuteResult, error) {
+func (t *TransmuterModule) Run(ctx context.Context, masterName string, onlySourceIDs []string) (TransmuteResult, error) {
 	start := time.Now()
 	res := TransmuteResult{Master: masterName}
 
-	// 1. Master registry lookup + active gate L2.
 	masterRow, err := t.loadMaster(ctx, masterName)
 	if err != nil {
+		t.markRuntimeFailure(ctx, 0, err)
 		return res, fmt.Errorf("master lookup: %w", err)
 	}
 	if !masterRow.IsActive || masterRow.SchemaStatus != "approved" {
-		res.ActiveGate = fmt.Sprintf("master gate: is_active=%v schema_status=%s",
-			masterRow.IsActive, masterRow.SchemaStatus)
-		t.logger.Warn("transmute skipped — master inactive",
-			zap.String("master", masterName),
-			zap.Bool("is_active", masterRow.IsActive),
-			zap.String("schema_status", masterRow.SchemaStatus))
+		res.ActiveGate = fmt.Sprintf("master gate: is_active=%v schema_status=%s", masterRow.IsActive, masterRow.SchemaStatus)
+		t.markRuntimeSkipped(ctx, masterRow.ID, res.ActiveGate)
 		return res, nil
 	}
+	res.Source = masterRow.ShadowTable
 
-	res.Source = masterRow.SourceShadow
-
-	// 2. Shadow active gate L1.
-	if ok, reason := t.shadowActive(ctx, masterRow.SourceShadow); !ok {
+	if ok, reason := t.shadowActive(masterRow); !ok {
 		res.ActiveGate = fmt.Sprintf("shadow gate: %s", reason)
-		t.logger.Warn("transmute skipped — shadow inactive",
-			zap.String("shadow", masterRow.SourceShadow), zap.String("reason", reason))
+		t.markRuntimeSkipped(ctx, masterRow.ID, res.ActiveGate)
 		return res, nil
 	}
+	if t.ddlEnsurer != nil {
+		if err := t.ddlEnsurer.EnsureMaster(ctx, masterRow.MasterTable); err != nil {
+			t.markRuntimeFailure(ctx, masterRow.ID, err)
+			return res, fmt.Errorf("ensure master destination: %w", err)
+		}
+	}
 
-	// 3. Rule set.
-	rules, err := t.loadRules(ctx, masterRow.SourceShadow, masterName)
+	rules, err := t.loadRules(ctx, masterRow)
 	if err != nil {
+		t.markRuntimeFailure(ctx, masterRow.ID, err)
 		return res, fmt.Errorf("rule load: %w", err)
 	}
 	if len(rules) == 0 {
-		t.logger.Warn("transmute: no approved rules — nothing to do",
-			zap.String("master", masterName))
 		res.DurationMs = time.Since(start).Milliseconds()
+		t.markRuntimeSuccess(ctx, masterRow.ID, res)
 		return res, nil
 	}
 
-	// 4. Scan shadow rows in batches.
-	var lastGpayID int64 // cursor-paginate by _gpay_id ascending
+	var lastGpayID int64
 	for {
-		shadowRows, err := t.fetchShadowBatch(ctx, masterRow.SourceShadow, lastGpayID, onlySourceIDs)
+		shadowRows, err := t.fetchShadowBatch(ctx, masterRow, lastGpayID, onlySourceIDs)
 		if err != nil {
+			t.markRuntimeFailure(ctx, masterRow.ID, err)
 			return res, fmt.Errorf("fetch shadow batch: %w", err)
 		}
 		if len(shadowRows) == 0 {
 			break
 		}
-		batchRes := t.processBatch(ctx, masterName, rules, shadowRows)
+		batchRes := t.processBatch(ctx, masterRow, rules, shadowRows)
 		res.Scanned += batchRes.scanned
 		res.Inserted += batchRes.inserted
 		res.Updated += batchRes.updated
@@ -161,46 +186,66 @@ func (t *TransmuterModule) Run(
 		res.RuleMisses += batchRes.ruleMisses
 		res.TypeErrors += batchRes.typeErrors
 		lastGpayID = batchRes.lastGpayID
-
 		if len(onlySourceIDs) > 0 {
-			// Targeted incremental: one batch is enough.
 			break
 		}
 	}
 	res.DurationMs = time.Since(start).Milliseconds()
+	t.markRuntimeSuccess(ctx, masterRow.ID, res)
 	return res, nil
 }
 
-// ---- helpers ----
-
-type masterRegistryRow struct {
-	MasterName     string          `gorm:"column:master_name"`
-	SourceShadow   string          `gorm:"column:source_shadow"`
-	TransformType  string          `gorm:"column:transform_type"`
-	Spec           json.RawMessage `gorm:"column:spec"`
-	IsActive       bool            `gorm:"column:is_active"`
-	SchemaStatus   string          `gorm:"column:schema_status"`
-}
-
-func (t *TransmuterModule) loadMaster(ctx context.Context, name string) (*masterRegistryRow, error) {
-	var row masterRegistryRow
-	err := t.db.WithContext(ctx).Raw(
-		`SELECT master_name, source_shadow, transform_type, spec, is_active, schema_status
-		   FROM cdc_internal.master_table_registry
-		  WHERE master_name = ?`, name,
-	).Scan(&row).Error
+func (t *TransmuterModule) loadMaster(ctx context.Context, name string) (*masterBindingRuntime, error) {
+	var row masterBindingRuntime
+	err := t.systemDB.WithContext(ctx).Raw(`
+		SELECT mb.id,
+		       mb.source_object_id,
+		       mb.shadow_binding_id,
+		       COALESCE(mc.connection_code, 'default') AS master_connection_key,
+		       mb.master_schema,
+		       mb.master_table,
+		       mb.physical_table_fqn,
+		       mb.transform_type,
+		       mb.is_active,
+		       mb.schema_status,
+		       COALESCE(sc.connection_code, 'default') AS shadow_connection_key,
+		       sb.shadow_schema,
+		       sb.shadow_table,
+		       sb.is_active AS shadow_is_active,
+		       sor.profile_status AS source_profile_status,
+		       COALESCE(sor.primary_key_field, 'id') AS source_pk,
+		       CASE 
+		         WHEN EXISTS (
+		           SELECT 1 FROM information_schema.columns 
+		           WHERE table_schema = sb.shadow_schema 
+		             AND table_name = sb.shadow_table 
+		             AND column_name = '_gpay_id'
+		         ) THEN '_gpay_id'
+		         ELSE COALESCE(sor.primary_key_field, 'id')
+		       END AS shadow_pk
+		  FROM cdc_system.master_binding mb
+		  LEFT JOIN cdc_system.connection_registry mc ON mc.id = mb.master_connection_id
+		  LEFT JOIN cdc_system.shadow_binding sb ON sb.id = mb.shadow_binding_id
+		  LEFT JOIN cdc_system.connection_registry sc ON sc.id = sb.shadow_connection_id
+		  LEFT JOIN cdc_system.source_object_registry sor ON sor.id = mb.source_object_id
+		 WHERE mb.master_table = ?
+		 LIMIT 1`, name).Scan(&row).Error
 	if err != nil {
 		return nil, err
 	}
-	if row.MasterName == "" {
+	if row.MasterTable == "" {
 		return nil, fmt.Errorf("master %q not registered", name)
 	}
 	return &row, nil
 }
 
-func (t *TransmuterModule) shadowActive(ctx context.Context, shadow string) (bool, string) {
+func (t *TransmuterModule) shadowActive(row *masterBindingRuntime) (bool, string) {
+	if row == nil {
+		return false, "missing master row"
+	}
+	cacheKey := row.ShadowConnectionKey + "|" + row.ShadowSchema + "|" + row.ShadowTable
 	t.mu.Lock()
-	if e, ok := t.shadowCache[shadow]; ok && time.Since(e.loadedAt) < t.cacheTTL {
+	if e, ok := t.shadowCache[cacheKey]; ok && time.Since(e.loadedAt) < t.cacheTTL {
 		t.mu.Unlock()
 		if !e.isActive {
 			return false, "is_active=false"
@@ -212,36 +257,25 @@ func (t *TransmuterModule) shadowActive(ctx context.Context, shadow string) (boo
 	}
 	t.mu.Unlock()
 
-	var row struct {
-		IsActive      bool   `gorm:"column:is_active"`
-		ProfileStatus string `gorm:"column:profile_status"`
+	state := shadowState{
+		isActive:      row.ShadowIsActive,
+		profileStatus: row.SourceProfileStatus,
+		loadedAt:      time.Now(),
 	}
-	err := t.db.WithContext(ctx).Raw(
-		`SELECT is_active, profile_status FROM cdc_internal.table_registry
-		  WHERE target_table = ?`, shadow,
-	).Scan(&row).Error
-	if err != nil {
-		return false, fmt.Sprintf("lookup error: %v", err)
-	}
-
 	t.mu.Lock()
-	t.shadowCache[shadow] = shadowState{
-		isActive: row.IsActive, profileStatus: row.ProfileStatus,
-		loadedAt: time.Now(),
-	}
+	t.shadowCache[cacheKey] = state
 	t.mu.Unlock()
-
-	if !row.IsActive {
+	if !state.isActive {
 		return false, "is_active=false"
 	}
-	if row.ProfileStatus != "active" {
-		return false, fmt.Sprintf("profile_status=%s", row.ProfileStatus)
+	if state.profileStatus != "active" {
+		return false, fmt.Sprintf("profile_status=%s", state.profileStatus)
 	}
 	return true, ""
 }
 
-func (t *TransmuterModule) loadRules(ctx context.Context, shadow, master string) ([]mappingRuleRow, error) {
-	cacheKey := shadow + "|" + master
+func (t *TransmuterModule) loadRules(ctx context.Context, row *masterBindingRuntime) ([]mappingRuleRow, error) {
+	cacheKey := fmt.Sprintf("%d|%s", row.ID, row.MasterTable)
 	t.mu.Lock()
 	if e, ok := t.cache[cacheKey]; ok && time.Since(e.loadedAt) < t.cacheTTL {
 		defer t.mu.Unlock()
@@ -250,30 +284,24 @@ func (t *TransmuterModule) loadRules(ctx context.Context, shadow, master string)
 	t.mu.Unlock()
 
 	var rules []mappingRuleRow
-	err := t.db.WithContext(ctx).Raw(
-		`SELECT id, source_table, master_table, source_field, target_column,
-		        data_type, source_format, jsonpath, transform_fn, is_nullable, default_value
-		   FROM cdc_mapping_rules
-		  WHERE source_table = ?
-		    AND (master_table = ? OR master_table IS NULL)
-		    AND is_active = true
-		    AND status = 'approved'
-		  ORDER BY id`, shadow, master,
-	).Scan(&rules).Error
+	err := t.systemDB.WithContext(ctx).Raw(`
+		SELECT id, source_object_id, master_binding_id, source_field, target_column,
+		       data_type, source_format, source_path, transform_fn, is_nullable, default_value
+		  FROM cdc_system.mapping_rule_v2
+		 WHERE source_object_id = ?
+		   AND (master_binding_id = ? OR master_binding_id IS NULL)
+		   AND is_active = true
+		   AND status = 'approved'
+		 ORDER BY id`, row.SourceObjectID, row.ID).Scan(&rules).Error
 	if err != nil {
 		return nil, err
 	}
-	// Reject rules with non-whitelisted transform_fn up front.
 	valid := rules[:0]
 	for _, r := range rules {
 		if r.TransformFn != nil && !IsTransformWhitelisted(*r.TransformFn) {
-			t.logger.Error("rule rejected — unknown transform_fn",
-				zap.Int64("rule_id", r.ID), zap.String("fn", *r.TransformFn))
 			continue
 		}
 		if !t.typeRes.Validate(r.DataType) {
-			t.logger.Error("rule rejected — invalid data_type",
-				zap.Int64("rule_id", r.ID), zap.String("data_type", r.DataType))
 			continue
 		}
 		valid = append(valid, r)
@@ -284,56 +312,53 @@ func (t *TransmuterModule) loadRules(ctx context.Context, shadow, master string)
 	return valid, nil
 }
 
-type shadowBatchRow struct {
-	GpayID       int64  `gorm:"column:_gpay_id"`
-	SourceID     string `gorm:"column:_gpay_source_id"`
-	RawData      []byte `gorm:"column:_raw_data"`
-	SourceTs     int64  `gorm:"column:_source_ts"`
-	GpayDeleted  bool   `gorm:"column:_gpay_deleted"`
-}
-
-func (t *TransmuterModule) fetchShadowBatch(
-	ctx context.Context, shadow string, cursor int64, onlyIDs []string,
-) ([]shadowBatchRow, error) {
+func (t *TransmuterModule) fetchShadowBatch(ctx context.Context, row *masterBindingRuntime, cursor int64, onlyIDs []string) ([]shadowBatchRow, error) {
+	shadowDB, err := t.connMgr.GetShadowDB(ctx, row.ShadowConnectionKey)
+	if err != nil {
+		return nil, err
+	}
 	var rows []shadowBatchRow
-	qt := `SELECT _gpay_id, _gpay_source_id, _raw_data, _source_ts, _gpay_deleted
-	         FROM cdc_internal.` + quoteIdent(shadow) + `
-	        WHERE _gpay_id > ?`
+	// PK dynamic handling: if ShadowPK is not _gpay_id, we must cast to BIGINT for cursor comparison
+	pkIdent := quoteTransmuteIdent(row.ShadowPK)
+	pkSelect := pkIdent
+	if row.ShadowPK != "_gpay_id" {
+		pkSelect = fmt.Sprintf("%s::bigint AS _gpay_id", pkIdent)
+	}
+
+	qt := fmt.Sprintf(`SELECT %s, _gpay_source_id, _raw_data, _source_ts, _gpay_deleted
+		FROM %s
+		WHERE %s > ?`, pkSelect, quoteTransmuteQualified(row.ShadowSchema, row.ShadowTable), 
+		fmt.Sprintf("(%s)::bigint", pkIdent))
+
 	args := []any{cursor}
 	if len(onlyIDs) > 0 {
 		qt += ` AND _gpay_source_id = ANY(?)`
 		args = append(args, onlyIDs)
 	}
-	qt += ` ORDER BY _gpay_id LIMIT ?`
+	qt += ` ORDER BY 1 LIMIT ?`
 	args = append(args, t.batchSize)
-
-	err := t.db.WithContext(ctx).Raw(qt, args...).Scan(&rows).Error
+	err = shadowDB.WithContext(ctx).Raw(qt, args...).Scan(&rows).Error
 	return rows, err
 }
 
-type batchOutcome struct {
-	scanned, inserted, updated, skipped, ruleMisses, typeErrors, lastGpayID int64
-}
-
-func (t *TransmuterModule) processBatch(
-	ctx context.Context, master string, rules []mappingRuleRow, rows []shadowBatchRow,
-) batchOutcome {
+func (t *TransmuterModule) processBatch(ctx context.Context, binding *masterBindingRuntime, rules []mappingRuleRow, rows []shadowBatchRow) batchOutcome {
 	out := batchOutcome{}
 	for _, row := range rows {
 		out.scanned++
 		out.lastGpayID = row.GpayID
-
 		record, hash, miss, typeErr := t.buildMasterRow(ctx, rules, row)
 		out.ruleMisses += miss
 		out.typeErrors += typeErr
-
 		if len(record) == 0 {
 			out.skipped++
 			continue
 		}
-
-		// System columns stitched on unconditionally.
-		record["_gpay_id"] = row.GpayID
+		if sfID, err := idgen.NextID(); err == nil {
+			record["_gpay_id"] = int64(sfID)
+		} else {
+			// Fallback (though Sonyflake should not fail if initialized)
+			record["_gpay_id"] = row.GpayID
+		}
 		record["_gpay_source_id"] = row.SourceID
 		record["_source"] = "debezium-transmute"
 		record["_source_ts"] = row.SourceTs
@@ -342,12 +367,9 @@ func (t *TransmuterModule) processBatch(
 		record["_gpay_deleted"] = row.GpayDeleted
 		record["_version"] = int64(1)
 
-		upd, err := t.upsertMaster(ctx, master, record)
+		upd, err := t.upsertMaster(ctx, binding, record)
 		if err != nil {
-			t.logger.Error("master upsert failed",
-				zap.String("master", master),
-				zap.String("source_id", row.SourceID),
-				zap.Error(err))
+			t.logger.Error("master upsert failed", zap.String("master", binding.MasterTable), zap.String("source_id", row.SourceID), zap.Error(err))
 			out.skipped++
 			continue
 		}
@@ -360,24 +382,17 @@ func (t *TransmuterModule) processBatch(
 	return out
 }
 
-// buildMasterRow evaluates JsonPath + transform per rule, returns
-// (record, hash, ruleMissCount, typeErrorCount).
-func (t *TransmuterModule) buildMasterRow(
-	ctx context.Context, rules []mappingRuleRow, row shadowBatchRow,
-) (map[string]any, string, int64, int64) {
+func (t *TransmuterModule) buildMasterRow(ctx context.Context, rules []mappingRuleRow, row shadowBatchRow) (map[string]any, string, int64, int64) {
 	rec := make(map[string]any, len(rules)+4)
 	rawStr := string(row.RawData)
-
 	var missCount, typeErrCount int64
-
 	for _, r := range rules {
 		path := r.SourceField
-		if r.JsonPath != nil && *r.JsonPath != "" {
-			path = *r.JsonPath
+		if r.SourcePath != nil && *r.SourcePath != "" {
+			path = *r.SourcePath
 		} else if r.SourceFormat == "debezium_after" {
 			path = "after." + r.SourceField
 		}
-
 		gres := gjson.Get(rawStr, path)
 		if !gres.Exists() {
 			if r.IsNullable {
@@ -386,20 +401,14 @@ func (t *TransmuterModule) buildMasterRow(
 				rec[r.TargetColumn] = *r.DefaultValue
 			} else {
 				missCount++
-				// Non-nullable missing = skip whole row for safety.
 				return nil, "", missCount, typeErrCount
 			}
 			continue
 		}
-
 		val := gjsonValueToGo(gres)
 		if r.TransformFn != nil && *r.TransformFn != "" {
 			converted, err := ApplyTransform(*r.TransformFn, val)
 			if err != nil {
-				t.logger.Warn("transform failed",
-					zap.Int64("rule_id", r.ID),
-					zap.String("fn", *r.TransformFn),
-					zap.Error(err))
 				typeErrCount++
 				if r.IsNullable {
 					rec[r.TargetColumn] = nil
@@ -409,12 +418,7 @@ func (t *TransmuterModule) buildMasterRow(
 			}
 			val = converted
 		}
-
 		if violation := t.typeRes.ValidateValue(ctx, r.DataType, val); violation != "" {
-			t.logger.Warn("type violation",
-				zap.Int64("rule_id", r.ID),
-				zap.String("data_type", r.DataType),
-				zap.String("violation", violation))
 			typeErrCount++
 			if r.IsNullable {
 				rec[r.TargetColumn] = nil
@@ -422,47 +426,42 @@ func (t *TransmuterModule) buildMasterRow(
 			}
 			return nil, "", missCount, typeErrCount
 		}
-
 		rec[r.TargetColumn] = val
 	}
-
 	hash := computeMasterHash(rec)
 	return rec, hash, missCount, typeErrCount
 }
 
-// upsertMaster builds dynamic INSERT ... ON CONFLICT (_gpay_source_id)
-// DO UPDATE SET ... WHERE target._hash IS DISTINCT FROM EXCLUDED._hash.
-// Returns RowsAffected (1 = update/insert happened, 0 = identical row).
-func (t *TransmuterModule) upsertMaster(
-	ctx context.Context, master string, record map[string]any,
-) (int64, error) {
-	keys := sortedKeys(record)
+func (t *TransmuterModule) upsertMaster(ctx context.Context, binding *masterBindingRuntime, record map[string]any) (int64, error) {
+	masterDB, err := t.connMgr.GetMasterDB(ctx, binding.MasterConnectionKey)
+	if err != nil {
+		return 0, err
+	}
+	keys := sortedKeysAny(record)
 	cols := make([]string, len(keys))
 	placeholders := make([]string, len(keys))
 	values := make([]any, len(keys))
 	sets := make([]string, 0, len(keys))
 	for i, k := range keys {
-		cols[i] = quoteIdent(k)
+		cols[i] = quoteTransmuteIdent(k)
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 		values[i] = sqlBindValueTransmute(record[k])
 		if k == "_gpay_id" || k == "_gpay_source_id" {
 			continue
 		}
-		sets = append(sets, fmt.Sprintf("%s = EXCLUDED.%s", quoteIdent(k), quoteIdent(k)))
+		sets = append(sets, fmt.Sprintf("%s = EXCLUDED.%s", quoteTransmuteIdent(k), quoteTransmuteIdent(k)))
 	}
-
-	sqlText := fmt.Sprintf(
-		`INSERT INTO public.%s (%s) VALUES (%s)
+	qt := quoteTransmuteQualified(binding.MasterSchema, binding.MasterTable)
+	sqlText := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)
 ON CONFLICT (_gpay_source_id) DO UPDATE SET %s
-WHERE public.%s._hash IS DISTINCT FROM EXCLUDED._hash`,
-		quoteIdent(master),
+WHERE %s._hash IS DISTINCT FROM EXCLUDED._hash`,
+		qt,
 		strings.Join(cols, ", "),
 		strings.Join(placeholders, ", "),
 		strings.Join(sets, ", "),
-		quoteIdent(master),
+		qt,
 	)
-
-	res := t.db.WithContext(ctx).Exec(sqlText, values...)
+	res := masterDB.WithContext(ctx).Exec(sqlText, values...)
 	return res.RowsAffected, res.Error
 }
 
@@ -482,7 +481,6 @@ func gjsonValueToGo(r gjson.Result) any {
 	case gjson.String:
 		return r.String()
 	case gjson.JSON:
-		// Object or array — return raw so jsonb_passthrough can marshal.
 		var v any
 		_ = json.Unmarshal([]byte(r.Raw), &v)
 		return v
@@ -491,10 +489,9 @@ func gjsonValueToGo(r gjson.Result) any {
 }
 
 func computeMasterHash(rec map[string]any) string {
-	keys := sortedKeys(rec)
+	keys := sortedKeysAny(rec)
 	buf := make([]byte, 0, 256)
 	for _, k := range keys {
-		// Skip system columns from hash — they are derivatives / timestamps.
 		switch k {
 		case "_gpay_id", "_synced_at", "_source", "_version", "_hash":
 			continue
@@ -509,7 +506,7 @@ func computeMasterHash(rec map[string]any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func sortedKeys(m map[string]any) []string {
+func sortedKeysAny(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -524,8 +521,6 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
-// sqlBindValueTransmute marshals maps/slices to JSON for JSONB columns —
-// mirrors the SinkWorker helper but keeps the package self-contained.
 func sqlBindValueTransmute(v any) any {
 	switch v.(type) {
 	case map[string]any, []any, []map[string]any:
@@ -536,4 +531,93 @@ func sqlBindValueTransmute(v any) any {
 		return string(b)
 	}
 	return v
+}
+
+func quoteTransmuteIdent(v string) string {
+	return `"` + strings.ReplaceAll(v, `"`, `""`) + `"`
+}
+
+func quoteTransmuteQualified(schemaName, tableName string) string {
+	return quoteTransmuteIdent(schemaName) + "." + quoteTransmuteIdent(tableName)
+}
+
+func (t *TransmuterModule) markRuntimeSuccess(ctx context.Context, masterBindingID int64, res TransmuteResult) {
+	stats, _ := json.Marshal(map[string]any{
+		"master":      res.Master,
+		"source":      res.Source,
+		"scanned":     res.Scanned,
+		"inserted":    res.Inserted,
+		"updated":     res.Updated,
+		"skipped":     res.Skipped,
+		"rule_misses": res.RuleMisses,
+		"type_errors": res.TypeErrors,
+		"duration_ms": res.DurationMs,
+		"active_gate": res.ActiveGate,
+	})
+	t.persistRuntimeState(ctx, masterBindingID, func(item *model.SyncRuntimeState, now time.Time) {
+		item.LastSuccessAt = &now
+		item.LastErrorAt = nil
+		item.LastErrorMessage = nil
+		item.StatsJSON = stats
+	})
+}
+
+func (t *TransmuterModule) markRuntimeFailure(ctx context.Context, masterBindingID int64, opErr error) {
+	if opErr == nil {
+		return
+	}
+	msg := SanitizeFreeformText(opErr.Error(), 2000)
+	t.persistRuntimeState(ctx, masterBindingID, func(item *model.SyncRuntimeState, now time.Time) {
+		item.LastErrorAt = &now
+		item.LastErrorMessage = &msg
+	})
+}
+
+func (t *TransmuterModule) markRuntimeSkipped(ctx context.Context, masterBindingID int64, reason string) {
+	stats, _ := json.Marshal(map[string]any{
+		"active_gate": reason,
+		"status":      "skipped",
+	})
+	t.persistRuntimeState(ctx, masterBindingID, func(item *model.SyncRuntimeState, now time.Time) {
+		item.LastSuccessAt = &now
+		item.LastErrorAt = nil
+		item.LastErrorMessage = nil
+		item.StatsJSON = stats
+	})
+}
+
+func (t *TransmuterModule) persistRuntimeState(ctx context.Context, masterBindingID int64, mutate func(*model.SyncRuntimeState, time.Time)) {
+	if t.runtimeRepo == nil || masterBindingID == 0 {
+		return
+	}
+	item, err := t.runtimeRepo.GetByMasterBinding(ctx, masterBindingID)
+	if err != nil && err != gorm.ErrRecordNotFound {
+		t.logger.Warn("transmuter runtime lookup failed",
+			zap.Int64("master_binding_id", masterBindingID),
+			zap.Error(err))
+		return
+	}
+	now := time.Now().UTC()
+	if err == gorm.ErrRecordNotFound || item == nil || item.ID == 0 {
+		item = &model.SyncRuntimeState{
+			MasterBindingID: &masterBindingID,
+			RuntimeScope:    "master",
+			StatsJSON:       []byte(`{}`),
+		}
+	}
+	item.UpdatedAt = now
+	mutate(item, now)
+	if item.ID == 0 {
+		if createErr := t.runtimeRepo.Create(ctx, item); createErr != nil {
+			t.logger.Warn("transmuter runtime create failed",
+				zap.Int64("master_binding_id", masterBindingID),
+				zap.Error(createErr))
+		}
+		return
+	}
+	if updateErr := t.runtimeRepo.Update(ctx, item); updateErr != nil {
+		t.logger.Warn("transmuter runtime update failed",
+			zap.Int64("master_binding_id", masterBindingID),
+			zap.Error(updateErr))
+	}
 }

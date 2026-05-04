@@ -38,9 +38,9 @@ func TestCommandHandlerPublishResultWithSubjectSanitizesActivityLog(t *testing.T
 	handler := NewCommandHandler(db, nil, nil, nil, logger)
 
 	targetTable := "it_cmd_activity_log_security"
-	db.Exec(`DELETE FROM cdc_activity_log WHERE target_table = ?`, targetTable)
+	db.Exec(`DELETE FROM cdc_system.cdc_activity_log WHERE target_table = ?`, targetTable)
 	t.Cleanup(func() {
-		db.Exec(`DELETE FROM cdc_activity_log WHERE target_table = ?`, targetTable)
+		db.Exec(`DELETE FROM cdc_system.cdc_activity_log WHERE target_table = ?`, targetTable)
 	})
 
 	handler.publishResultWithSubject(&nats.Msg{}, "cdc.result.sync-register", CommandResult{
@@ -86,9 +86,9 @@ func TestCommandHandlerWriteActivitySanitizesDetailsBeforeDBInsert(t *testing.T)
 	handler := NewCommandHandler(db, nil, nil, nil, logger)
 
 	targetTable := "it_cmd_activity_log_details"
-	db.Exec(`DELETE FROM cdc_activity_log WHERE target_table = ?`, targetTable)
+	db.Exec(`DELETE FROM cdc_system.cdc_activity_log WHERE target_table = ?`, targetTable)
 	t.Cleanup(func() {
-		db.Exec(`DELETE FROM cdc_activity_log WHERE target_table = ?`, targetTable)
+		db.Exec(`DELETE FROM cdc_system.cdc_activity_log WHERE target_table = ?`, targetTable)
 	})
 
 	handler.writeActivity("scan-fields", targetTable, "error", 0, map[string]interface{}{

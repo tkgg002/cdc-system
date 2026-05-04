@@ -33,6 +33,7 @@ type FullCountAggregator struct {
 	dbReplica    *gorm.DB
 	mongoClient  *mongo.Client
 	registryRepo *repository.RegistryRepo
+	metadata     MetadataRegistry
 	cfg          FullCountAggregatorConfig
 	logger       *zap.Logger
 }
@@ -40,11 +41,15 @@ type FullCountAggregator struct {
 // FullCountAggregatorConfig groups the tunables; zero-value works fine
 // for production (daily at 03:00 UTC with a 10M-row PG fast-path cutoff).
 type FullCountAggregatorConfig struct {
-	RunAt              string        // HH:MM UTC, default "03:00"
-	PGFastPathCutoff   int64         // rows above this → use reltuples, default 10_000_000
-	MongoCountTimeout  time.Duration // default 10s
-	PGCountTimeout     time.Duration // default 2m (COUNT on partitioned tables)
-	PerTableGap        time.Duration // sleep between tables, default 500ms
+	RunAt             string        // HH:MM UTC, default "03:00"
+	PGFastPathCutoff  int64         // rows above this → use reltuples, default 10_000_000
+	MongoCountTimeout time.Duration // default 10s
+	PGCountTimeout    time.Duration // default 2m (COUNT on partitioned tables)
+	PerTableGap       time.Duration // sleep between tables, default 500ms
+}
+
+func (fa *FullCountAggregator) SetMetadataRegistry(metadata MetadataRegistry) {
+	fa.metadata = metadata
 }
 
 func (c *FullCountAggregatorConfig) applyDefaults() {
@@ -118,9 +123,9 @@ func (fa *FullCountAggregator) Start(ctx context.Context) {
 // operators can trigger a one-off via admin API if needed.
 func (fa *FullCountAggregator) RunOnce(ctx context.Context) {
 	started := time.Now()
-	entries, err := fa.registryRepo.GetAllActive(ctx)
-	if err != nil {
-		fa.logger.Warn("full-count aggregator: registry load failed", zap.Error(err))
+	entries := fa.listActiveTableConfigs(ctx)
+	if len(entries) == 0 {
+		fa.logger.Warn("full-count aggregator: registry load failed", zap.String("reason", "no active table configs"))
 		return
 	}
 	fa.logger.Info("full-count aggregator pass starting", zap.Int("tables", len(entries)))
@@ -144,6 +149,22 @@ func (fa *FullCountAggregator) RunOnce(ctx context.Context) {
 		zap.Int("tables_failed", errs),
 		zap.Duration("elapsed", time.Since(started)),
 	)
+}
+
+func (fa *FullCountAggregator) listActiveTableConfigs(ctx context.Context) []model.TableRegistry {
+	if fa.metadata != nil {
+		if items := fa.metadata.ListTableConfigs(); len(items) > 0 {
+			return items
+		}
+	}
+	if fa.registryRepo == nil {
+		return nil
+	}
+	items, err := fa.registryRepo.GetAllActive(ctx)
+	if err != nil {
+		return nil
+	}
+	return items
 }
 
 // countOne executes Mongo + PG counts for a single registry entry and

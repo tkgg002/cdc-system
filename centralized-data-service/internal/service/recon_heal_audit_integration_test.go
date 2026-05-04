@@ -51,7 +51,7 @@ func TestHealAuditBatcher_ScaleCap(t *testing.T) {
 
 	const table = "test_heal_audit_scale"
 	// Purge any prior test rows for this synthetic table.
-	db.Exec(`DELETE FROM cdc_activity_log WHERE target_table = ?`, table)
+	db.Exec(`DELETE FROM cdc_system.cdc_activity_log WHERE target_table = ?`, table)
 
 	batcher := newHealAuditBatcher(db, logger, 100, 100)
 	runID := newHealRunID()
@@ -84,7 +84,7 @@ func TestHealAuditBatcher_ScaleCap(t *testing.T) {
 	var buckets []bucket
 	if err := db.Raw(`
 		SELECT COALESCE(details->>'action','') AS action, COUNT(*) AS n
-		FROM cdc_activity_log
+		FROM cdc_system.cdc_activity_log
 		WHERE target_table = ?
 		GROUP BY action
 	`, table).Scan(&buckets).Error; err != nil {
@@ -114,7 +114,7 @@ func TestHealAuditBatcher_ScaleCap(t *testing.T) {
 	}
 
 	var total int64
-	db.Raw(`SELECT COUNT(*) FROM cdc_activity_log WHERE target_table = ?`, table).Scan(&total)
+	db.Raw(`SELECT COUNT(*) FROM cdc_system.cdc_activity_log WHERE target_table = ?`, table).Scan(&total)
 	// Cap: 1 start + 100 upsert + errors + 1 completed
 	maxExpected := int64(1 + 100 + errors + 1)
 	if total > maxExpected {
@@ -126,7 +126,7 @@ func TestHealAuditBatcher_ScaleCap(t *testing.T) {
 	var details string
 	err := db.Raw(`
 		SELECT details::text
-		FROM cdc_activity_log
+		FROM cdc_system.cdc_activity_log
 		WHERE target_table = ? AND details->>'action' = 'run_completed'
 		LIMIT 1
 	`, table).Scan(&details).Error
@@ -139,7 +139,7 @@ func TestHealAuditBatcher_ScaleCap(t *testing.T) {
 	t.Logf("run_completed details: %s", details)
 
 	// Cleanup
-	db.Exec(`DELETE FROM cdc_activity_log WHERE target_table = ?`, table)
+	db.Exec(`DELETE FROM cdc_system.cdc_activity_log WHERE target_table = ?`, table)
 	_ = model.ActivityLog{} // ensure model import used
 	_ = time.Now
 }

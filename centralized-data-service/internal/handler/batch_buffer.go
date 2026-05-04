@@ -23,6 +23,8 @@ type BatchBuffer struct {
 	timeout       time.Duration
 	db            *gorm.DB
 	schemaAdapter *service.SchemaAdapter
+	connMgr       *service.ConnectionManager
+	adapters      sync.Map // role:key -> *service.SchemaAdapter
 	masking       *service.MaskingService
 	logger        *zap.Logger
 	flushCh       chan struct{}
@@ -56,6 +58,10 @@ func NewBatchBuffer(maxSize int, timeout time.Duration, db *gorm.DB, schemaAdapt
 
 func (bb *BatchBuffer) SetMaskingService(masking *service.MaskingService) {
 	bb.masking = masking
+}
+
+func (bb *BatchBuffer) SetConnectionManager(connMgr *service.ConnectionManager) {
+	bb.connMgr = connMgr
 }
 
 func (bb *BatchBuffer) Add(record *model.UpsertRecord) {
@@ -100,53 +106,63 @@ func (bb *BatchBuffer) flush() {
 	bb.lastFlush = time.Now()
 	bb.mu.Unlock()
 
-	// Group by table
+	// Group by connection + schema + table
 	byTable := make(map[string][]*model.UpsertRecord)
 	for _, r := range batch {
-		byTable[r.TableName] = append(byTable[r.TableName], r)
+		byTable[bb.groupKey(r)] = append(byTable[bb.groupKey(r)], r)
 	}
 
-	for tableName, records := range byTable {
-		if err := bb.batchUpsert(tableName, records); err != nil {
+	for groupKey, records := range byTable {
+		if err := bb.batchUpsert(records); err != nil {
 			bb.logger.Error("batch upsert failed",
-				zap.String("table", tableName),
+				zap.String("group", groupKey),
 				zap.Int("count", len(records)),
 				zap.Error(err),
 			)
 		} else {
 			bb.logger.Info("batch upsert ok",
-				zap.String("table", tableName),
+				zap.String("group", groupKey),
 				zap.Int("count", len(records)),
 			)
 		}
 	}
 }
 
-func (bb *BatchBuffer) batchUpsert(tableName string, records []*model.UpsertRecord) error {
+func (bb *BatchBuffer) batchUpsert(records []*model.UpsertRecord) error {
 	if len(records) == 0 {
 		return nil
 	}
+	first := records[0]
+	tableName := first.TableName
+	schemaName := bb.recordSchema(first)
+	db := bb.resolveDB(first)
+	schemaAdapter := bb.resolveSchemaAdapter(first, db)
 
 	// Prepare table once via SchemaAdapter (CDC columns, NOT NULL, UNIQUE — all dynamic)
-	pk := records[0].PrimaryKeyField
-	if err := bb.schemaAdapter.PrepareForCDCInsert(tableName, pk); err != nil {
-		bb.logger.Error("prepare table failed", zap.String("table", tableName), zap.Error(err))
+	pk := first.PrimaryKeyField
+	if err := schemaAdapter.PrepareForCDCInsertInSchema(schemaName, tableName, pk); err != nil {
+		bb.logger.Error("prepare table failed",
+			zap.String("schema", schemaName),
+			zap.String("table", tableName),
+			zap.Error(err),
+		)
 		return err
 	}
 
-	schema := bb.schemaAdapter.GetSchema(tableName)
+	schema := schemaAdapter.GetSchemaInSchema(schemaName, tableName)
 	if schema == nil {
-		return fmt.Errorf("schema not found for %s", tableName)
+		return fmt.Errorf("schema not found for %s.%s", schemaName, tableName)
 	}
 
 	for _, r := range records {
-		query, values := bb.schemaAdapter.BuildUpsertSQL(
-			schema, tableName, r.PrimaryKeyField,
+		query, values := schemaAdapter.BuildUpsertSQLInSchema(
+			schema, bb.recordSchema(r), r.TableName, r.PrimaryKeyField,
 			r.PrimaryKeyValue, r.MappedData,
 			r.RawData, r.Source, r.Hash, r.SourceTsMs,
 		)
-		if err := bb.db.Exec(query, values...).Error; err != nil {
+		if err := db.Exec(query, values...).Error; err != nil {
 			bb.logger.Error("upsert failed",
+				zap.String("schema", bb.recordSchema(r)),
 				zap.String("table", tableName),
 				zap.String("pk", r.PrimaryKeyValue),
 				zap.Error(err),
@@ -159,6 +175,60 @@ func (bb *BatchBuffer) batchUpsert(tableName string, records []*model.UpsertReco
 		}
 	}
 	return nil
+}
+
+func (bb *BatchBuffer) groupKey(record *model.UpsertRecord) string {
+	return fmt.Sprintf("%s|%s|%s|%s",
+		strings.TrimSpace(record.ConnectionRole),
+		strings.TrimSpace(record.ConnectionKey),
+		bb.recordSchema(record),
+		strings.TrimSpace(record.TableName),
+	)
+}
+
+func (bb *BatchBuffer) recordSchema(record *model.UpsertRecord) string {
+	if record == nil || strings.TrimSpace(record.SchemaName) == "" {
+		return "public"
+	}
+	return strings.TrimSpace(record.SchemaName)
+}
+
+func (bb *BatchBuffer) resolveDB(record *model.UpsertRecord) *gorm.DB {
+	if bb.connMgr == nil || record == nil {
+		return bb.db
+	}
+	role := strings.TrimSpace(record.ConnectionRole)
+	key := strings.TrimSpace(record.ConnectionKey)
+	if role == "shadow" && key != "" {
+		if db, err := bb.connMgr.GetShadowDB(context.Background(), key); err == nil {
+			return db
+		}
+	}
+	if role == "master" && key != "" {
+		if db, err := bb.connMgr.GetMasterDB(context.Background(), key); err == nil {
+			return db
+		}
+	}
+	return bb.db
+}
+
+func (bb *BatchBuffer) resolveSchemaAdapter(record *model.UpsertRecord, db *gorm.DB) *service.SchemaAdapter {
+	if db == nil {
+		return bb.schemaAdapter
+	}
+	cacheKey := "legacy"
+	if record != nil {
+		cacheKey = strings.TrimSpace(record.ConnectionRole) + ":" + strings.TrimSpace(record.ConnectionKey)
+		if cacheKey == ":" || cacheKey == "" {
+			cacheKey = "legacy"
+		}
+	}
+	if cached, ok := bb.adapters.Load(cacheKey); ok {
+		return cached.(*service.SchemaAdapter)
+	}
+	adapter := service.NewSchemaAdapter(db, bb.logger)
+	bb.adapters.Store(cacheKey, adapter)
+	return adapter
 }
 
 func (bb *BatchBuffer) buildFailedSyncLog(tableName string, record *model.UpsertRecord, err error) *model.FailedSyncLog {

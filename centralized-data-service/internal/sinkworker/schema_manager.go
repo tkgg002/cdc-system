@@ -26,7 +26,7 @@ type financialCacheEntry struct {
 }
 
 // SchemaManager is idempotent: repeated calls for the same record are cheap.
-// It protects cdc_internal from the two well-known Mongo-schema-drift risks
+// It protects shadow_<source_db> schemas from the two well-known Mongo-schema-drift risks
 // flagged in plan §7.7:
 //  1. Rate limit: MongoDB schema-less => Debezium can push many new fields
 //     per minute. Cap per-table ALTER to 100/day — headroom enough for a
@@ -34,7 +34,7 @@ type financialCacheEntry struct {
 //     drift. Beyond the cap we log+skip (the extra field round-trips via
 //     _raw_data; schema catches up on the next day or via manual ALTER).
 //  2. Financial audit: tables marked is_financial=true in
-//     cdc_internal.table_registry have auto-ALTER refused until an admin
+//     cdc_system.shadow_binding/source metadata have auto-ALTER refused until an admin
 //     flips the flag via CMS (PATCH /api/v1/tables/:name).
 //
 // The financial classification is REGISTRY-DRIVEN — no regex on field names.
@@ -62,7 +62,7 @@ func NewSchemaManager(db *gorm.DB, logger *zap.Logger) *SchemaManager {
 	}
 }
 
-// EnsureShadowTable guarantees that cdc_internal.<table> exists and carries
+// EnsureShadowTable guarantees that shadow_default.<table> exists and carries
 // every key in `record` as a column. It only ever grows the schema — we
 // never drop columns. It attaches `tg_fencing_guard` the first time a
 // shadow table is created (T1.3 requirement).
@@ -73,10 +73,15 @@ func NewSchemaManager(db *gorm.DB, logger *zap.Logger) *SchemaManager {
 // value is never lost because `_raw_data` already preserves the full
 // envelope, so a later backfill / admin-approved ALTER can recover it.
 func (s *SchemaManager) EnsureShadowTable(ctx context.Context, table string, record map[string]any) error {
+	return s.EnsureShadowTableInSchema(ctx, "shadow_default", table, record)
+}
+
+func (s *SchemaManager) EnsureShadowTableInSchema(ctx context.Context, schemaName, table string, record map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	existing, err := s.loadColumnSet(ctx, table)
+	cacheKey := shadowCacheKey(schemaName, table)
+	existing, err := s.loadColumnSet(ctx, schemaName, table)
 	if err != nil {
 		return err
 	}
@@ -84,12 +89,12 @@ func (s *SchemaManager) EnsureShadowTable(ctx context.Context, table string, rec
 	if len(existing) == 0 {
 		// Brand-new shadow. Build columns from the *current* record so the
 		// first message's business fields land in the CREATE statement.
-		if err := s.createShadowTable(ctx, table, record); err != nil {
-			return fmt.Errorf("create shadow %s: %w", table, err)
+		if err := s.createShadowTable(ctx, schemaName, table, record); err != nil {
+			return fmt.Errorf("create shadow %s.%s: %w", schemaName, table, err)
 		}
 		// Drop stale cache (empty set from pre-CREATE read) before refresh.
-		delete(s.cols, table)
-		existing, err = s.loadColumnSet(ctx, table)
+		delete(s.cols, cacheKey)
+		existing, err = s.loadColumnSet(ctx, schemaName, table)
 		if err != nil {
 			return err
 		}
@@ -99,7 +104,7 @@ func (s *SchemaManager) EnsureShadowTable(ctx context.Context, table string, rec
 	}
 
 	// Incremental ALTER for any new field not in the shadow.
-	isFinancial := s.isFinancial(ctx, table)
+	isFinancial := s.isFinancial(ctx, schemaName, table)
 	for k, v := range record {
 		if _, has := existing[k]; has {
 			continue
@@ -107,36 +112,36 @@ func (s *SchemaManager) EnsureShadowTable(ctx context.Context, table string, rec
 		sqlType := inferSQLType(v)
 		if isFinancial {
 			s.logger.Warn("financial table has new field — auto-ALTER blocked, proposal filed",
-				zap.String("table", table),
+				zap.String("table", schemaName+"."+table),
 				zap.String("field", k),
 			)
-			s.recordProposal(ctx, table, k, sqlType, v, "financial_block")
+			s.recordProposal(ctx, schemaName, table, k, sqlType, v, "financial_block")
 			delete(record, k) // leave the raw value in _raw_data only
 			continue
 		}
-		if !s.allowAlter(table) {
+		if !s.allowAlter(cacheKey) {
 			s.logger.Warn("ALTER rate limit hit, proposal filed (field stays in _raw_data)",
-				zap.String("table", table),
+				zap.String("table", schemaName+"."+table),
 				zap.String("field", k),
 			)
-			s.recordProposal(ctx, table, k, sqlType, v, "rate_limit")
+			s.recordProposal(ctx, schemaName, table, k, sqlType, v, "rate_limit")
 			delete(record, k)
 			continue
 		}
-		stmt := fmt.Sprintf(`ALTER TABLE cdc_internal.%s ADD COLUMN IF NOT EXISTS %s %s`,
-			quoteIdent(table), quoteIdent(k), sqlType)
+		stmt := fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`,
+			quoteIdent(schemaName), quoteIdent(table), quoteIdent(k), sqlType)
 		if err := s.db.WithContext(ctx).Exec(stmt).Error; err != nil {
-			return fmt.Errorf("ALTER %s ADD %s %s: %w", table, k, sqlType, err)
+			return fmt.Errorf("ALTER %s.%s ADD %s %s: %w", schemaName, table, k, sqlType, err)
 		}
 		existing[k] = struct{}{}
-		s.recordAlter(table)
+		s.recordAlter(cacheKey)
 		s.logger.Info("auto-ALTER added column",
-			zap.String("table", table),
+			zap.String("table", schemaName+"."+table),
 			zap.String("field", k),
 			zap.String("type", sqlType),
 		)
 	}
-	s.cols[table] = existing
+	s.cols[cacheKey] = existing
 	return nil
 }
 
@@ -147,7 +152,7 @@ func (s *SchemaManager) EnsureShadowTable(ctx context.Context, table string, rec
 // Uniqueness: (table_name, table_layer, column_name, status). We skip
 // if a pending row already exists for this (table, column) pair — no
 // spam if the same new field arrives on every message.
-func (s *SchemaManager) recordProposal(ctx context.Context, table, column, sqlType string, sampleValue any, reason string) {
+func (s *SchemaManager) recordProposal(ctx context.Context, schemaName, table, column, sqlType string, sampleValue any, reason string) {
 	// Guard column name — defence-in-depth against shadow-to-DB injection.
 	if !identRE.MatchString(column) {
 		s.logger.Warn("recordProposal: invalid column name — skip",
@@ -155,19 +160,20 @@ func (s *SchemaManager) recordProposal(ctx context.Context, table, column, sqlTy
 		return
 	}
 
-	// Pull 2 extra sample rows (best-effort) from cdc_internal.<table>
+	// Pull 2 extra sample rows (best-effort) from shadow_<db>.<table>
 	// so admin can eyeball real values. Best-effort + short timeout via ctx.
 	samples := []any{sampleValue}
 	sampleBytes, _ := jsonMarshal(map[string]any{
 		"values":         samples,
 		"proposed_by":    "sinkworker-auto",
 		"reason":         reason,
+		"source_schema":  schemaName,
 		"source_table":   table,
 		"proposed_field": column,
 	})
 
 	err := s.db.WithContext(ctx).Exec(
-		`INSERT INTO cdc_internal.schema_proposal
+		`INSERT INTO cdc_system.schema_proposal
 		    (table_name, table_layer, column_name, proposed_data_type,
 		     proposed_is_nullable, sample_values, status, submitted_by)
 		 VALUES (?, 'shadow', ?, ?, true, ?::jsonb, 'pending', 'sinkworker-auto')
@@ -191,27 +197,28 @@ func jsonMarshal(v any) ([]byte, error) {
 // loadColumnSet reads information_schema for an existing shadow. Returns
 // an empty map (len==0) when the table does not yet exist. The cache is
 // refreshed lazily so a SinkWorker restart always learns the live shape.
-func (s *SchemaManager) loadColumnSet(ctx context.Context, table string) (map[string]struct{}, error) {
-	if c, ok := s.cols[table]; ok {
+func (s *SchemaManager) loadColumnSet(ctx context.Context, schemaName, table string) (map[string]struct{}, error) {
+	cacheKey := shadowCacheKey(schemaName, table)
+	if c, ok := s.cols[cacheKey]; ok {
 		return c, nil
 	}
 	var cols []string
 	err := s.db.WithContext(ctx).Raw(
 		`SELECT column_name FROM information_schema.columns
-		  WHERE table_schema = 'cdc_internal' AND table_name = ?`, table,
+		  WHERE table_schema = ? AND table_name = ?`, schemaName, table,
 	).Scan(&cols).Error
 	if err != nil {
-		return nil, fmt.Errorf("read columns for %s: %w", table, err)
+		return nil, fmt.Errorf("read columns for %s.%s: %w", schemaName, table, err)
 	}
 	set := make(map[string]struct{}, len(cols))
 	for _, c := range cols {
 		set[c] = struct{}{}
 	}
-	s.cols[table] = set
+	s.cols[cacheKey] = set
 	return set, nil
 }
 
-func (s *SchemaManager) createShadowTable(ctx context.Context, table string, record map[string]any) error {
+func (s *SchemaManager) createShadowTable(ctx context.Context, schemaName, table string, record map[string]any) error {
 	// 10 system columns are always declared explicitly with correct SQL types.
 	// Business columns inferred from the first message — subsequent messages
 	// extend the schema via ALTER (handled by the EnsureShadowTable caller).
@@ -236,10 +243,14 @@ func (s *SchemaManager) createShadowTable(ctx context.Context, table string, rec
 		cols = append(cols, fmt.Sprintf(`%s %s`, quoteIdent(k), inferSQLType(v)))
 	}
 
+	if err := s.db.WithContext(ctx).Exec(fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdent(schemaName))).Error; err != nil {
+		return fmt.Errorf("CREATE SCHEMA: %w", err)
+	}
+
 	create := fmt.Sprintf(
-		`CREATE TABLE IF NOT EXISTS cdc_internal.%s (
+		`CREATE TABLE IF NOT EXISTS %s.%s (
 %s
-)`, quoteIdent(table), "  "+strings.Join(cols, ",\n  "))
+)`, quoteIdent(schemaName), quoteIdent(table), "  "+strings.Join(cols, ",\n  "))
 
 	if err := s.db.WithContext(ctx).Exec(create).Error; err != nil {
 		return fmt.Errorf("CREATE TABLE: %w", err)
@@ -250,9 +261,10 @@ func (s *SchemaManager) createShadowTable(ctx context.Context, table string, rec
 	// to a plain INSERT and duplicate on re-consume.
 	idx := fmt.Sprintf(
 		`CREATE UNIQUE INDEX IF NOT EXISTS %s
-		   ON cdc_internal.%s (_gpay_source_id)
+		   ON %s.%s (_gpay_source_id)
 		   WHERE NOT _gpay_deleted`,
 		quoteIdent("ux_"+table+"_source_id_active"),
+		quoteIdent(schemaName),
 		quoteIdent(table),
 	)
 	if err := s.db.WithContext(ctx).Exec(idx).Error; err != nil {
@@ -263,24 +275,26 @@ func (s *SchemaManager) createShadowTable(ctx context.Context, table string, rec
 	trigName := "trg_" + table + "_fencing"
 	// DROP-then-CREATE is idempotent even after partial previous runs.
 	drop := fmt.Sprintf(
-		`DROP TRIGGER IF EXISTS %s ON cdc_internal.%s`,
-		quoteIdent(trigName), quoteIdent(table),
+		`DROP TRIGGER IF EXISTS %s ON %s.%s`,
+		quoteIdent(trigName),
+		quoteIdent(schemaName),
+		quoteIdent(table),
 	)
 	if err := s.db.WithContext(ctx).Exec(drop).Error; err != nil {
 		return fmt.Errorf("DROP TRIGGER: %w", err)
 	}
 	trg := fmt.Sprintf(
 		`CREATE TRIGGER %s
-		   BEFORE INSERT OR UPDATE ON cdc_internal.%s
-		   FOR EACH ROW EXECUTE FUNCTION cdc_internal.tg_fencing_guard()`,
-		quoteIdent(trigName), quoteIdent(table),
+		   BEFORE INSERT OR UPDATE ON %s.%s
+		   FOR EACH ROW EXECUTE FUNCTION cdc_system.tg_fencing_guard()`,
+		quoteIdent(trigName), quoteIdent(schemaName), quoteIdent(table),
 	)
 	if err := s.db.WithContext(ctx).Exec(trg).Error; err != nil {
 		return fmt.Errorf("CREATE TRIGGER: %w", err)
 	}
 
 	s.logger.Info("created shadow table with fencing trigger",
-		zap.String("table", "cdc_internal."+table),
+		zap.String("table", schemaName+"."+table),
 		zap.String("trigger", trigName),
 	)
 	return nil
@@ -304,26 +318,31 @@ func (s *SchemaManager) recordAlter(table string) {
 	s.alterLog[table] = append(s.alterLog[table], time.Now())
 }
 
-// isFinancial reads the registry flag from cdc_internal.table_registry and
+// isFinancial reads the registry flag from V2 metadata and
 // memoises it for financialTTL. An unregistered table is treated as
 // is_financial=true (fail-safe for unknown shapes). Admin toggles are
 // picked up within the TTL window without a restart.
-func (s *SchemaManager) isFinancial(ctx context.Context, table string) bool {
-	if e, ok := s.financialCache[table]; ok && time.Since(e.loadedAt) < s.financialTTL {
+func (s *SchemaManager) isFinancial(ctx context.Context, schemaName, table string) bool {
+	cacheKey := shadowCacheKey(schemaName, table)
+	if e, ok := s.financialCache[cacheKey]; ok && time.Since(e.loadedAt) < s.financialTTL {
 		return e.isFinancial
 	}
 	var flag bool
 	err := s.db.WithContext(ctx).Raw(
-		`SELECT is_financial FROM cdc_internal.table_registry WHERE target_table = ? LIMIT 1`,
-		table,
+		`SELECT COALESCE(NULLIF(sor.source_locator_json->>'is_financial', '')::boolean, true)
+		   FROM cdc_system.shadow_binding sb
+		   JOIN cdc_system.source_object_registry sor ON sor.id = sb.source_object_id
+		  WHERE sb.shadow_schema = ? AND sb.shadow_table = ?
+		  LIMIT 1`,
+		schemaName, table,
 	).Scan(&flag).Error
 	if err != nil {
 		s.logger.Warn("registry lookup failed, defaulting to is_financial=true (fail-safe)",
-			zap.String("table", table), zap.Error(err))
-		s.financialCache[table] = financialCacheEntry{isFinancial: true, loadedAt: time.Now()}
+			zap.String("table", schemaName+"."+table), zap.Error(err))
+		s.financialCache[cacheKey] = financialCacheEntry{isFinancial: true, loadedAt: time.Now()}
 		return true
 	}
-	s.financialCache[table] = financialCacheEntry{isFinancial: flag, loadedAt: time.Now()}
+	s.financialCache[cacheKey] = financialCacheEntry{isFinancial: flag, loadedAt: time.Now()}
 	return flag
 }
 
@@ -333,6 +352,10 @@ func (s *SchemaManager) invalidateFinancialCache(table string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.financialCache, table)
+}
+
+func shadowCacheKey(schemaName, table string) string {
+	return schemaName + "." + table
 }
 
 // inferSQLType picks a conservative SQL type. We deliberately over-size:

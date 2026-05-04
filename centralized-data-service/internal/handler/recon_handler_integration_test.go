@@ -49,7 +49,7 @@ func TestReconHandlerRetryUsesSanitizedSQLArgs(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		db.Exec(`DROP TABLE IF EXISTS "it_recon_retry_sanitize"`)
-		db.Exec(`DELETE FROM cdc_table_registry WHERE target_table = ?`, targetTable)
+		db.Exec(`DELETE FROM cdc_system.cdc_table_registry WHERE target_table = ?`, targetTable)
 	})
 
 	sensitiveFields, _ := json.Marshal([]string{"phone", "email"})
@@ -63,7 +63,7 @@ func TestReconHandlerRetryUsesSanitizedSQLArgs(t *testing.T) {
 		IsActive:        true,
 		SensitiveFields: sensitiveFields,
 	}
-	db.Exec(`DELETE FROM cdc_table_registry WHERE target_table = ?`, targetTable)
+	db.Exec(`DELETE FROM cdc_system.cdc_table_registry WHERE target_table = ?`, targetTable)
 	if err := db.Create(&registry).Error; err != nil {
 		t.Fatalf("create registry row: %v", err)
 	}

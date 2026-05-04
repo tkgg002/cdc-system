@@ -1,6 +1,6 @@
 // Package sinkworker implements the v1.25 Debezium sink pipeline:
 //
-//	MongoDB -> Debezium -> Kafka -> SinkWorker -> cdc_internal.<table>
+//	MongoDB -> Debezium -> Kafka -> SinkWorker -> shadow_<source_db>.<table>
 //
 // (Phase 1 parallel independence contract — see plan v7.2 §10). It does
 // NOT share code with the legacy handler to avoid accidental coupling.

@@ -163,7 +163,7 @@ func (a *AuditLogger) writeBatch(parent context.Context, batch []AuditEvent) err
 		sb   strings.Builder
 		args []interface{}
 	)
-	sb.WriteString("INSERT INTO admin_actions ")
+	sb.WriteString("INSERT INTO cdc_system.admin_actions ")
 	sb.WriteString("(user_id, action, target, payload, reason, result, idempotency_key, ip_address, user_agent, created_at) VALUES ")
 	for i, ev := range batch {
 		if i > 0 {

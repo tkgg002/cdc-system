@@ -11,7 +11,7 @@ type CDCEvent struct {
 }
 
 type CDCEventData struct {
-	Op     string                 `json:"op"`     // "c" create, "u" update, "d" delete
+	Op     string                 `json:"op"` // "c" create, "u" update, "d" delete
 	Before map[string]interface{} `json:"before"`
 	After  map[string]interface{} `json:"after"`
 	// SourceTsMs carries the Debezium `payload.source.ts_ms` value
@@ -22,13 +22,17 @@ type CDCEventData struct {
 
 // UpsertRecord is the internal representation for batch buffer
 type UpsertRecord struct {
-	TableName       string
-	PrimaryKeyField string
-	PrimaryKeyValue string
-	MappedData      map[string]interface{}
-	RawData         string
-	Source          string
-	Hash            string
+	TableName        string
+	SchemaName       string
+	ConnectionRole   string
+	ConnectionKey    string
+	PhysicalTableFQN string
+	PrimaryKeyField  string
+	PrimaryKeyValue  string
+	MappedData       map[string]interface{}
+	RawData          string
+	Source           string
+	Hash             string
 	// SourceTsMs is the Debezium source ts_ms (milliseconds since epoch).
 	// Zero means "unknown" — the UPSERT SQL MUST then skip the OCC
 	// guard on _source_ts to keep legacy / bridge inserts working.

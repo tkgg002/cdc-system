@@ -1,24 +1,46 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
 type AppConfig struct {
-	Server  ServerConfig  `mapstructure:"server"`
-	DB      DBConfig      `mapstructure:"db"`
-	Nats    NatsConfig    `mapstructure:"nats"`
-	Redis   RedisConfig   `mapstructure:"redis"`
-	Worker  WorkerConfig  `mapstructure:"worker"`
-	JWT     JWTConfig     `mapstructure:"jwt"`
-	Kafka   KafkaConfig   `mapstructure:"kafka"`
-	Otel    OtelConfig    `mapstructure:"otel"`
-	MongoDB MongoDBConfig `mapstructure:"mongodb"`
-	Debezium DebeziumConfig `mapstructure:"debezium"`
+	Server   ServerConfig   `mapstructure:"server"`
+	DB       DBConfig       `mapstructure:"db"`
+	SystemDB SingleDBTarget `mapstructure:"systemDb"`
+	ShadowDB MultiDBTargets `mapstructure:"shadowDb"`
+	MasterDB MultiDBTargets `mapstructure:"masterDb"`
+	// Sources — connection_code → external source DSN. Used by Debezium
+	// connector registration (Track D/E) and source_object_registry
+	// resolution. Keys match `connection_registry.connection_code` in
+	// cdc_system.
+	Sources map[string]string `mapstructure:"sources"`
+	// Phase 01 split E2E (T-C1) — control-plane physical DSN.
+	//
+	//   ControlPlane → gpay-postgres-cdc / cdc_dw
+	//                  Worker reads cdc_system.mapping_rule_v2 +
+	//                  writes shadow_<src>.* against this DSN.
+	//
+	// The destination DSN (gpay-postgres-dest / goopay_dest) is
+	// derived from MasterDB.URLs[MasterDB.DefaultKey] — single source
+	// of truth, no separate `destination:` block. See DestinationURL().
+	ControlPlane SingleDBTarget `mapstructure:"controlPlane"`
+	Nats         NatsConfig     `mapstructure:"nats"`
+	Redis        RedisConfig    `mapstructure:"redis"`
+	Worker       WorkerConfig   `mapstructure:"worker"`
+	JWT          JWTConfig      `mapstructure:"jwt"`
+	Kafka        KafkaConfig    `mapstructure:"kafka"`
+	Otel         OtelConfig     `mapstructure:"otel"`
+	MongoDB      MongoDBConfig  `mapstructure:"mongodb"`
+	Debezium     DebeziumConfig `mapstructure:"debezium"`
 }
 
 type MongoDBConfig struct {
@@ -44,10 +66,10 @@ type DebeziumConfig struct {
 }
 
 type OtelConfig struct {
-	Enabled     bool       `mapstructure:"enabled"`
-	ServiceName string     `mapstructure:"serviceName"`
-	Endpoint    string     `mapstructure:"endpoint"`
-	SampleRatio float64    `mapstructure:"sampleRatio"`
+	Enabled     bool        `mapstructure:"enabled"`
+	ServiceName string      `mapstructure:"serviceName"`
+	Endpoint    string      `mapstructure:"endpoint"`
+	SampleRatio float64     `mapstructure:"sampleRatio"`
 	Logs        OtelLogsCfg `mapstructure:"logs"`
 }
 
@@ -73,10 +95,16 @@ type OtelLogFallbackCfg struct {
 	RecoverAfter        time.Duration `mapstructure:"recoverAfter"`
 }
 
+// KafkaConfig — Phase multi_engine_unified.
+// TopicPrefix accepts both YAML scalar (`topicPrefix: cdc.gpay`) for
+// backward-compat AND list (`topicPrefix: [cdc.gpay, cdc.goopay]`).
+// Alias `topicPrefixes` is also accepted (merged via Load()) so a
+// fresh config can use the more idiomatic plural form without losing
+// older `topicPrefix:` deployments.
 type KafkaConfig struct {
 	Brokers           []string `mapstructure:"brokers"`
 	GroupID           string   `mapstructure:"groupId"`
-	TopicPrefix       string   `mapstructure:"topicPrefix"`
+	TopicPrefix       []string `mapstructure:"topicPrefix"`
 	SchemaRegistryURL string   `mapstructure:"schemaRegistryUrl"`
 	Enabled           bool     `mapstructure:"enabled"`
 }
@@ -87,6 +115,15 @@ type ServerConfig struct {
 	Mode string `mapstructure:"mode"` // "worker" or "cms"
 }
 
+type SingleDBTarget struct {
+	URL string `mapstructure:"url"`
+}
+
+type MultiDBTargets struct {
+	DefaultKey string            `mapstructure:"defaultKey"`
+	URLs       map[string]string `mapstructure:"urls"`
+}
+
 type DBConfig struct {
 	Host            string        `mapstructure:"host"`
 	Port            int           `mapstructure:"port"`
@@ -94,6 +131,7 @@ type DBConfig struct {
 	Password        string        `mapstructure:"password"`
 	Database        string        `mapstructure:"database"`
 	SSLMode         string        `mapstructure:"sslMode"`
+	URL             string        `mapstructure:"url"`
 	MaxOpenConn     int           `mapstructure:"maxOpenConn"`
 	MaxIdleConn     int           `mapstructure:"maxIdleConn"`
 	ConnMaxLifetime time.Duration `mapstructure:"connMaxLifetime"`
@@ -102,6 +140,26 @@ type DBConfig struct {
 	// the primary connection with SET TRANSACTION READ ONLY guard.
 	// Format: postgres://user:pass@host:port/db?sslmode=disable
 	ReadReplicaDSN string `mapstructure:"readReplicaDsn"`
+}
+
+func (cfg DBConfig) DSN() string {
+	if strings.TrimSpace(cfg.URL) != "" {
+		return strings.TrimSpace(cfg.URL)
+	}
+	return fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.UserName, cfg.Password, cfg.Database, cfg.SSLMode,
+	)
+}
+
+func (cfg DBConfig) PgxDSN() string {
+	if strings.TrimSpace(cfg.URL) != "" {
+		return strings.TrimSpace(cfg.URL)
+	}
+	return fmt.Sprintf(
+		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		cfg.UserName, cfg.Password, cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode,
+	)
 }
 
 type NatsConfig struct {
@@ -152,23 +210,127 @@ func NewConfig() (*AppConfig, error) {
 		return nil, err
 	}
 
-	if err := v.Unmarshal(cfg); err != nil {
+	decodeHook := viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+		stringToStringSliceHookFunc(),
+	))
+	if err := v.Unmarshal(cfg, decodeHook); err != nil {
 		return nil, err
 	}
 
+	mergeTopicPrefixAlias(v, cfg)
 	applyEnvOverrides(cfg)
 
 	return cfg, nil
 }
 
+// stringToStringSliceHookFunc lets mapstructure accept a YAML scalar
+// where the target field is []string. Without this hook,
+// `topicPrefix: cdc.gpay` (scalar) errors when the struct field is
+// `[]string`. With it, the scalar is wrapped as a singleton.
+func stringToStringSliceHookFunc() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
+		if f.Kind() != reflect.String {
+			return data, nil
+		}
+		if t.Kind() != reflect.Slice || t.Elem().Kind() != reflect.String {
+			return data, nil
+		}
+		s, _ := data.(string)
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return []string{}, nil
+		}
+		return []string{s}, nil
+	}
+}
+
+// mergeTopicPrefixAlias unions kafka.topicPrefixes (alias) into
+// kafka.topicPrefix so both YAML keys are accepted. Order preserved,
+// duplicates dropped, blanks skipped.
+func mergeTopicPrefixAlias(v *viper.Viper, cfg *AppConfig) {
+	extras := v.GetStringSlice("kafka.topicPrefixes")
+	if len(extras) == 0 && len(cfg.Kafka.TopicPrefix) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(extras)+len(cfg.Kafka.TopicPrefix))
+	merged := make([]string, 0, len(extras)+len(cfg.Kafka.TopicPrefix))
+	for _, p := range append(append([]string{}, cfg.Kafka.TopicPrefix...), extras...) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		merged = append(merged, p)
+	}
+	cfg.Kafka.TopicPrefix = merged
+}
+
 func applyEnvOverrides(cfg *AppConfig) {
 	if v := os.Getenv("DB_SINK_URL"); v != "" {
-		// Parse DSN format: postgres://user:pass@host:port/db?sslmode=disable
-		// Keep config struct for GORM, but allow DSN env override
+		cfg.DB.URL = v
 		cfg.DB.SSLMode = "disable"
 	}
 	if v := os.Getenv("DB_READ_REPLICA_DSN"); v != "" {
 		cfg.DB.ReadReplicaDSN = v
+	}
+	if v := os.Getenv("CDC_SYSTEM_DB_URL"); v != "" {
+		cfg.SystemDB.URL = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("CDC_CONTROL_PLANE_URL"); v != "" {
+		cfg.ControlPlane.URL = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("CDC_DESTINATION_URL"); v != "" {
+		// Consolidated: destination is masterDb.default. The legacy env
+		// var keeps working but writes to MasterDB instead of a separate
+		// Destination block.
+		if cfg.MasterDB.URLs == nil {
+			cfg.MasterDB.URLs = make(map[string]string)
+		}
+		cfg.MasterDB.URLs["default"] = strings.TrimSpace(v)
+		if strings.TrimSpace(cfg.MasterDB.DefaultKey) == "" {
+			cfg.MasterDB.DefaultKey = "default"
+		}
+	}
+	if v := os.Getenv("CDC_SHADOW_DB_URL"); v != "" {
+		if cfg.ShadowDB.URLs == nil {
+			cfg.ShadowDB.URLs = make(map[string]string)
+		}
+		cfg.ShadowDB.URLs["default"] = strings.TrimSpace(v)
+		if strings.TrimSpace(cfg.ShadowDB.DefaultKey) == "" {
+			cfg.ShadowDB.DefaultKey = "default"
+		}
+	}
+	if v := os.Getenv("CDC_MASTER_DB_URL"); v != "" {
+		if cfg.MasterDB.URLs == nil {
+			cfg.MasterDB.URLs = make(map[string]string)
+		}
+		cfg.MasterDB.URLs["default"] = strings.TrimSpace(v)
+		if strings.TrimSpace(cfg.MasterDB.DefaultKey) == "" {
+			cfg.MasterDB.DefaultKey = "default"
+		}
+	}
+	if v := os.Getenv("CDC_SHADOW_DB_URLS"); v != "" {
+		cfg.ShadowDB.URLs = parseNamedURLs(v)
+		if strings.TrimSpace(cfg.ShadowDB.DefaultKey) == "" {
+			cfg.ShadowDB.DefaultKey = pickDefaultKey(cfg.ShadowDB.URLs)
+		}
+	}
+	if v := os.Getenv("CDC_MASTER_DB_URLS"); v != "" {
+		cfg.MasterDB.URLs = parseNamedURLs(v)
+		if strings.TrimSpace(cfg.MasterDB.DefaultKey) == "" {
+			cfg.MasterDB.DefaultKey = pickDefaultKey(cfg.MasterDB.URLs)
+		}
+	}
+	if v := os.Getenv("CDC_SHADOW_DB_DEFAULT_KEY"); v != "" {
+		cfg.ShadowDB.DefaultKey = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("CDC_MASTER_DB_DEFAULT_KEY"); v != "" {
+		cfg.MasterDB.DefaultKey = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("NATS_URL"); v != "" {
 		cfg.Nats.URL = v
@@ -185,4 +347,187 @@ func applyEnvOverrides(cfg *AppConfig) {
 	if v := os.Getenv("DEBEZIUM_CONNECTOR_NAME"); v != "" {
 		cfg.Debezium.ConnectorName = v
 	}
+	if v := os.Getenv("KAFKA_BROKERS"); v != "" {
+		cfg.Kafka.Brokers = strings.Split(v, ",")
+	}
+	if v := os.Getenv("KAFKA_SCHEMA_REGISTRY_URL"); v != "" {
+		cfg.Kafka.SchemaRegistryURL = v
+	}
+	// G4 — Docker env override for MongoDB URL. Must run BEFORE applyDBFallbacks
+	// so that the fallback bridge (sources → cfg.MongoDB.URL) sees the correct value.
+	if v := os.Getenv("MONGODB_URL"); v != "" {
+		cfg.MongoDB.URL = strings.TrimSpace(v)
+		if cfg.Sources == nil {
+			cfg.Sources = make(map[string]string)
+		}
+		cfg.Sources["mongodb_primary"] = strings.TrimSpace(v)
+	}
+	applyDBFallbacks(cfg)
+}
+
+func applyDBFallbacks(cfg *AppConfig) {
+	legacy := cfg.DB.PgxDSN()
+
+	if strings.TrimSpace(cfg.SystemDB.URL) == "" {
+		cfg.SystemDB.URL = legacy
+	}
+	if cfg.ShadowDB.URLs == nil || len(cfg.ShadowDB.URLs) == 0 {
+		cfg.ShadowDB.URLs = map[string]string{"default": legacy}
+	}
+	if strings.TrimSpace(cfg.ShadowDB.DefaultKey) == "" {
+		cfg.ShadowDB.DefaultKey = pickDefaultKey(cfg.ShadowDB.URLs)
+	}
+	if cfg.MasterDB.URLs == nil || len(cfg.MasterDB.URLs) == 0 {
+		cfg.MasterDB.URLs = map[string]string{"default": legacy}
+	}
+	if strings.TrimSpace(cfg.MasterDB.DefaultKey) == "" {
+		cfg.MasterDB.DefaultKey = pickDefaultKey(cfg.MasterDB.URLs)
+	}
+
+	// Phase 01 split E2E (T-C1) — control-plane fallback only.
+	// Destination is no longer a standalone field; DestinationURL()
+	// derives from MasterDB.URLs[MasterDB.DefaultKey] at read time.
+	if strings.TrimSpace(cfg.ControlPlane.URL) == "" {
+		cfg.ControlPlane.URL = strings.TrimSpace(cfg.SystemDB.URL)
+	}
+
+	// Sources consolidation — bridge legacy `mongodb.url` to the new
+	// `sources:` block. If yaml ships only `sources.mongodb_primary`,
+	// hydrate cfg.MongoDB.URL so existing callers (worker_server) keep
+	// working without an explicit migration.
+	if strings.TrimSpace(cfg.MongoDB.URL) == "" && len(cfg.Sources) > 0 {
+		if v, ok := cfg.Sources["mongodb_primary"]; ok {
+			cfg.MongoDB.URL = strings.TrimSpace(v)
+		}
+	}
+	// Inverse bridge: if legacy `mongodb.url` was set but `sources` is
+	// empty, expose it under the canonical key so connection_registry
+	// lookups still resolve.
+	if cfg.Sources == nil {
+		cfg.Sources = make(map[string]string)
+	}
+	if _, ok := cfg.Sources["mongodb_primary"]; !ok && strings.TrimSpace(cfg.MongoDB.URL) != "" {
+		cfg.Sources["mongodb_primary"] = strings.TrimSpace(cfg.MongoDB.URL)
+	}
+}
+
+func parseNamedURLs(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[string]string{}
+	}
+
+	out := make(map[string]string)
+
+	// Preferred format: JSON object {"default":"postgres://...","finance":"postgres://..."}
+	if strings.HasPrefix(raw, "{") {
+		if err := json.Unmarshal([]byte(raw), &out); err == nil {
+			return cleanURLMap(out)
+		}
+	}
+
+	// Fallback format: default=postgres://...;finance=postgres://...
+	for _, pair := range strings.Split(raw, ";") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		if key == "" || val == "" {
+			continue
+		}
+		out[key] = val
+	}
+
+	return cleanURLMap(out)
+}
+
+func cleanURLMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		key := strings.TrimSpace(k)
+		val := strings.TrimSpace(v)
+		if key == "" || val == "" {
+			continue
+		}
+		out[key] = val
+	}
+	return out
+}
+
+func pickDefaultKey(items map[string]string) string {
+	if len(items) == 0 {
+		return "default"
+	}
+	if _, ok := items["default"]; ok {
+		return "default"
+	}
+	for k := range items {
+		return k
+	}
+	return "default"
+}
+
+func (cfg *AppConfig) SystemDBURL() string {
+	return strings.TrimSpace(cfg.SystemDB.URL)
+}
+
+// ControlPlaneURL returns the DSN for the cdc_dw instance (control
+// plane registry + shadow_<src>). Phase 01 split E2E.
+func (cfg *AppConfig) ControlPlaneURL() string {
+	return strings.TrimSpace(cfg.ControlPlane.URL)
+}
+
+// DestinationURL returns the DSN for the goopay_dest instance
+// (master + dw_<binding>). Phase 01 split E2E. Single source of
+// truth: derives from MasterDB.URLs[MasterDB.DefaultKey].
+func (cfg *AppConfig) DestinationURL() string {
+	key := strings.TrimSpace(cfg.MasterDB.DefaultKey)
+	if key == "" {
+		key = "default"
+	}
+	if cfg.MasterDB.URLs == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.MasterDB.URLs[key])
+}
+
+// SourceURL returns the DSN registered under `sources.<name>` in
+// config-local.yml. Returns empty string if the name is unknown.
+// Used by Debezium connector registration and source resolution.
+func (cfg *AppConfig) SourceURL(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || cfg.Sources == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Sources[name])
+}
+
+func (cfg *AppConfig) ShadowDBURLs() map[string]string {
+	return cloneURLMap(cfg.ShadowDB.URLs)
+}
+
+func (cfg *AppConfig) MasterDBURLs() map[string]string {
+	return cloneURLMap(cfg.MasterDB.URLs)
+}
+
+func (cfg *AppConfig) ShadowDBDefaultKey() string {
+	return strings.TrimSpace(cfg.ShadowDB.DefaultKey)
+}
+
+func (cfg *AppConfig) MasterDBDefaultKey() string {
+	return strings.TrimSpace(cfg.MasterDB.DefaultKey)
+}
+
+func cloneURLMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

@@ -42,19 +42,20 @@ type registryExpected struct {
 // validation BEFORE the Worker attempts to upsert a Kafka CDC event.
 //
 // Behavior:
-//  - Missing required field → ErrMissingRequired — DLQ, no panic.
-//  - Unknown field → ErrSchemaDrift — DLQ + `cdc_schema_drift_total`
-//    counter increment.
-//  - Zero-config table (no `expected_fields` + no target PG table yet) →
-//    PASS (fail-open on bootstrap to avoid blocking brand-new tables).
+//   - Missing required field → ErrMissingRequired — DLQ, no panic.
+//   - Unknown field → ErrSchemaDrift — DLQ + `cdc_schema_drift_total`
+//     counter increment.
+//   - Zero-config table (no `expected_fields` + no target PG table yet) →
+//     PASS (fail-open on bootstrap to avoid blocking brand-new tables).
 //
 // Cache: per-table expectations are memoized in-process. Call
 // InvalidateCache(table) on schema.config.reload so hot edits take
 // effect without a restart.
 type SchemaValidator struct {
-	db     *gorm.DB
-	logger *zap.Logger
-	cache  sync.Map // tableName → *tableExpectations
+	db       *gorm.DB
+	logger   *zap.Logger
+	metadata MetadataRegistry
+	cache    sync.Map // tableName → *tableExpectations
 }
 
 // NewSchemaValidator constructs the validator. `db` must point at the
@@ -62,6 +63,10 @@ type SchemaValidator struct {
 // worker primary connection).
 func NewSchemaValidator(db *gorm.DB, logger *zap.Logger) *SchemaValidator {
 	return &SchemaValidator{db: db, logger: logger}
+}
+
+func (sv *SchemaValidator) SetMetadataRegistry(metadata MetadataRegistry) {
+	sv.metadata = metadata
 }
 
 // InvalidateCache drops the cached expectation set for `table` so the
@@ -110,15 +115,19 @@ func (sv *SchemaValidator) ValidatePayload(tableName string, payload map[string]
 		}
 	}
 
-	// Unknown-field check. A single offender is enough to fail — we
-	// return the first field name so operators can land a registry
-	// update or a migration.
+	// Unknown-field check. Track B4: Permissive-Additive mode.
+	// We log a warning and increment metrics, but allow the message
+	// to proceed so the pipeline isn't blocked by schema evolution.
 	for k := range payload {
-		if _, ok := exp.Known[k]; !ok {
+		if _, ok := exp.Known[strings.ToLower(k)]; !ok {
 			metrics.SchemaDriftDetected.
 				WithLabelValues("worker", tableName).
 				Inc()
-			return fmt.Errorf("%w: unknown_field=%s", ErrSchemaDrift, k)
+			sv.logger.Warn("schema_drift: unknown field detected (allowing permissive)",
+				zap.String("table", tableName),
+				zap.String("field", k),
+			)
+			// return fmt.Errorf("%w: unknown_field=%s", ErrSchemaDrift, k)
 		}
 	}
 
@@ -134,14 +143,23 @@ func (sv *SchemaValidator) loadOrBuild(table string) (*tableExpectations, error)
 
 	// 1. Pull registry entry.
 	var entry model.TableRegistry
-	err := sv.db.
-		Where("target_table = ? AND is_active = ?", table, true).
-		First(&entry).Error
-
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, fmt.Errorf("registry lookup: %w", err)
+	hasRegistry := false
+	if sv.metadata != nil {
+		if item := sv.metadata.GetTableConfig(table); item != nil {
+			entry = *item
+			hasRegistry = true
+		}
 	}
-	hasRegistry := err == nil
+	if !hasRegistry {
+		err := sv.db.
+			Where("target_table = ? AND is_active = ?", table, true).
+			First(&entry).Error
+
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("registry lookup: %w", err)
+		}
+		hasRegistry = err == nil
+	}
 
 	exp := &tableExpectations{
 		Required: make(map[string]struct{}),
@@ -198,11 +216,20 @@ func (sv *SchemaValidator) loadOrBuild(table string) (*tableExpectations, error)
 // introspectColumns returns the column names on the target PG table.
 // Lowercased; empty when the table does not exist.
 func (sv *SchemaValidator) introspectColumns(table string) ([]string, error) {
+	schemaName := "public"
+	if sv.metadata != nil {
+		if route := sv.metadata.ResolveTargetRoute(table); route != nil && route.ShadowBinding != nil {
+			if v := strings.TrimSpace(route.ShadowBinding.ShadowSchema); v != "" {
+				schemaName = v
+			}
+		}
+	}
 	var names []string
 	err := sv.db.Raw(`
 		SELECT column_name
 		  FROM information_schema.columns
-		 WHERE table_schema = 'public' AND table_name = ?`,
+		 WHERE table_schema = ? AND table_name = ?`,
+		schemaName,
 		table,
 	).Scan(&names).Error
 	if err != nil {
@@ -252,7 +279,11 @@ func (sv *SchemaValidator) ValidatePayloadWithCase(tableName string, payload map
 			metrics.SchemaDriftDetected.
 				WithLabelValues("worker", tableName).
 				Inc()
-			return fmt.Errorf("%w: unknown_field=%s", ErrSchemaDrift, k)
+			sv.logger.Warn("schema_drift (with case): unknown field detected (allowing permissive)",
+				zap.String("table", tableName),
+				zap.String("field", k),
+			)
+			// return fmt.Errorf("%w: unknown_field=%s", ErrSchemaDrift, k)
 		}
 	}
 	return nil

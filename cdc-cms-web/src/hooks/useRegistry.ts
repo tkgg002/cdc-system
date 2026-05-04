@@ -5,9 +5,17 @@
  */
 import { useAsyncDispatch } from './useAsyncDispatch';
 
-export function useScanFields(registryId: number, targetTable?: string) {
+export function useScanFields(sourceObjectId?: number | null, registryId?: number | null, targetTable?: string) {
+  const canUseV2 = sourceObjectId != null && sourceObjectId > 0;
+  const endpoint = canUseV2
+    ? `/api/v1/source-objects/${sourceObjectId}/scan-fields`
+    : `/api/v1/source-objects/registry/${registryId ?? 0}/scan-fields`;
+  const statusEndpoint = canUseV2
+    ? `/api/v1/source-objects/${sourceObjectId}/dispatch-status`
+    : `/api/v1/source-objects/registry/${registryId ?? 0}/dispatch-status`;
   return useAsyncDispatch({
-    endpoint: `/api/registry/${registryId}/scan-fields`,
+    endpoint,
+    statusEndpoint,
     operation: 'scan-fields',
     targetTable,
   });

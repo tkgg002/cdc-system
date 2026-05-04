@@ -27,6 +27,7 @@ type CommandHandler struct {
 	mappingRepo  *repository.MappingRuleRepo
 	registryRepo *repository.RegistryRepo
 	pendingRepo  *repository.PendingFieldRepo
+	metadata     service.MetadataRegistry
 	logger       *zap.Logger
 	// kafkaConnectURL — base URL for Kafka Connect REST (boundary
 	// refactor). Empty disables the Debezium-specific handlers.
@@ -50,6 +51,10 @@ func (h *CommandHandler) SetKafkaConnectURL(url string) {
 // so unit tests can swap a mock.
 func (h *CommandHandler) SetNATSConn(conn *nats.Conn) {
 	h.natsConn = conn
+}
+
+func (h *CommandHandler) SetMetadataRegistry(metadata service.MetadataRegistry) {
+	h.metadata = metadata
 }
 
 // CommandResult is the admin-facing result envelope. It must stay
@@ -76,10 +81,32 @@ func NewCommandHandler(db *gorm.DB, mappingRepo *repository.MappingRuleRepo, reg
 
 // Returns error if table doesn't exist. Safe to call multiple times (ADD COLUMN IF NOT EXISTS).
 func (h *CommandHandler) ensureCDCColumns(tableName string) error {
+	return h.ensureCDCColumnsInSchema("public", tableName)
+}
+
+func quoteCommandIdent(v string) string {
+	return `"` + strings.ReplaceAll(v, `"`, `""`) + `"`
+}
+
+func quoteCommandQualifiedTable(schemaName, tableName string) string {
+	if strings.TrimSpace(schemaName) == "" {
+		schemaName = "public"
+	}
+	return quoteCommandIdent(schemaName) + "." + quoteCommandIdent(tableName)
+}
+
+func (h *CommandHandler) ensureCDCColumnsInSchema(schemaName, tableName string) error {
+	if strings.TrimSpace(schemaName) == "" {
+		schemaName = "public"
+	}
 	var exists bool
-	h.db.Raw("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = 'public')", tableName).Scan(&exists)
+	h.db.Raw(
+		"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = ?)",
+		tableName,
+		schemaName,
+	).Scan(&exists)
 	if !exists {
-		return fmt.Errorf("table %s does not exist", tableName)
+		return fmt.Errorf("table %s.%s does not exist", schemaName, tableName)
 	}
 
 	cdcColumns := []struct{ name, def string }{
@@ -93,41 +120,72 @@ func (h *CommandHandler) ensureCDCColumns(tableName string) error {
 		{"_updated_at", "TIMESTAMP DEFAULT NOW()"},
 	}
 	for _, col := range cdcColumns {
-		h.db.Exec(fmt.Sprintf(`ALTER TABLE "%s" ADD COLUMN IF NOT EXISTS %s %s`, tableName, col.name, col.def))
+		h.db.Exec(fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`, quoteCommandIdent(schemaName), quoteCommandIdent(tableName), col.name, col.def))
 	}
+	indexName := fmt.Sprintf("idx_%s_raw", tableName)
+	h.db.Exec(fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s.%s USING GIN(_raw_data)`, quoteCommandIdent(indexName), quoteCommandIdent(schemaName), quoteCommandIdent(tableName)))
 	return nil
 }
 
 // hasColumn checks if a column exists in a table
 func (h *CommandHandler) hasColumn(tableName, columnName string) bool {
+	return h.hasColumnInSchema(h.resolveTargetSchema(tableName), tableName, columnName)
+}
+
+func (h *CommandHandler) hasColumnInSchema(schemaName, tableName, columnName string) bool {
+	if strings.TrimSpace(schemaName) == "" {
+		schemaName = "public"
+	}
 	var exists bool
-	h.db.Raw("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?)", tableName, columnName).Scan(&exists)
+	h.db.Raw(
+		"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?)",
+		schemaName,
+		tableName,
+		columnName,
+	).Scan(&exists)
 	return exists
 }
 
 // tableExists checks if a table exists
 func (h *CommandHandler) tableExists(tableName string) bool {
+	return h.tableExistsInSchema(h.resolveTargetSchema(tableName), tableName)
+}
+
+func (h *CommandHandler) tableExistsInSchema(schemaName, tableName string) bool {
+	if strings.TrimSpace(schemaName) == "" {
+		schemaName = "public"
+	}
 	var exists bool
-	h.db.Raw("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = 'public')", tableName).Scan(&exists)
+	h.db.Raw(
+		"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = ?)",
+		tableName,
+		schemaName,
+	).Scan(&exists)
 	return exists
 }
 
 // HandleStandardize subscribes to "cdc.cmd.standardize" and runs standardize_cdc_table() on the DW DB.
 func (h *CommandHandler) HandleStandardize(msg *nats.Msg) {
 	var payload struct {
-		RegistryID  uint   `json:"registry_id"`
-		TargetTable string `json:"target_table"`
+		RegistryID   uint   `json:"registry_id"`
+		TargetTable  string `json:"target_table"`
+		ShadowSchema string `json:"shadow_schema"`
 	}
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		h.logger.Error("cdc.cmd.standardize: invalid payload", zap.Error(err))
 		return
 	}
 
-	h.logger.Info("standardizing table", zap.String("table", payload.TargetTable))
+	schemaName := strings.TrimSpace(payload.ShadowSchema)
+	if schemaName == "" {
+		schemaName = "public"
+	}
 
-	if err := h.db.WithContext(context.Background()).
-		Exec("SELECT standardize_cdc_table(?)", payload.TargetTable).Error; err != nil {
+	h.logger.Info("standardizing table", zap.String("schema", schemaName), zap.String("table", payload.TargetTable))
+
+	if err := h.ensureCDCColumnsInSchema(schemaName, payload.TargetTable); err != nil {
 		h.logger.Error("standardize failed",
+			zap.String("schema", schemaName),
 			zap.String("table", payload.TargetTable),
 			zap.Error(err),
 		)
@@ -141,7 +199,7 @@ func (h *CommandHandler) HandleStandardize(msg *nats.Msg) {
 		return
 	}
 
-	h.logger.Info("standardize complete", zap.String("table", payload.TargetTable))
+	h.logger.Info("standardize complete", zap.String("schema", schemaName), zap.String("table", payload.TargetTable))
 	h.publishResult(msg, CommandResult{
 		Command:     "standardize",
 		RegistryID:  payload.RegistryID,
@@ -155,30 +213,69 @@ func (h *CommandHandler) HandleStandardize(msg *nats.Msg) {
 // Subject: "cdc.cmd.create-default-columns"
 func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 	var payload struct {
-		RegistryID  uint   `json:"registry_id"`
-		TargetTable string `json:"target_table"`
-		SourceTable string `json:"source_table"`
-		PKField     string `json:"primary_key_field"`
-		PKType      string `json:"primary_key_type"`
+		RegistryID     uint   `json:"registry_id"`
+		SourceObjectID int64  `json:"source_object_id"`
+		ShadowSchema   string `json:"shadow_schema"`
+		TargetTable    string `json:"target_table"`
+		SourceTable    string `json:"source_table"`
+		PKField        string `json:"primary_key_field"`
+		PKType         string `json:"primary_key_type"`
 	}
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		h.publishResult(msg, CommandResult{Command: "create-default-columns", Status: "error", Error: "invalid payload"})
 		return
 	}
 
-	h.logger.Info("creating default columns", zap.String("table", payload.TargetTable))
+	schemaName := strings.TrimSpace(payload.ShadowSchema)
+	if schemaName == "" {
+		schemaName = "public"
+	}
 
-	tableAlreadyExists := h.tableExists(payload.TargetTable)
+	h.logger.Info("creating default columns", zap.String("schema", schemaName), zap.String("table", payload.TargetTable))
+
+	tableAlreadyExists := h.tableExistsInSchema(schemaName, payload.TargetTable)
 	columnsAdded := 0
 
 	if !tableAlreadyExists {
-		// Table chưa tồn tại → tạo mới với create_cdc_table (CDC schema + approved fields)
+		if err := h.db.Exec(fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteCommandIdent(schemaName))).Error; err != nil {
+			h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: "create schema: " + err.Error()})
+			return
+		}
+
+		pkField := payload.PKField
+		if strings.TrimSpace(pkField) == "" {
+			pkField = "id"
+		}
+		if pkField == "_id" {
+			pkField = "id"
+		}
 		pkType := payload.PKType
 		if pkType == "" {
 			pkType = "BIGINT"
 		}
-		if err := h.db.Exec("SELECT create_cdc_table(?, ?, ?)", payload.TargetTable, payload.PKField, pkType).Error; err != nil {
+		createSQL := fmt.Sprintf(
+			`CREATE TABLE IF NOT EXISTS %s.%s (
+				%s %s PRIMARY KEY,
+				_raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+				_source VARCHAR(20) NOT NULL DEFAULT 'debezium',
+				_synced_at TIMESTAMP NOT NULL DEFAULT NOW(),
+				_version BIGINT NOT NULL DEFAULT 1,
+				_hash VARCHAR(64),
+				_deleted BOOLEAN DEFAULT FALSE,
+				_created_at TIMESTAMP DEFAULT NOW(),
+				_updated_at TIMESTAMP DEFAULT NOW()
+			)`,
+			quoteCommandIdent(schemaName),
+			quoteCommandIdent(payload.TargetTable),
+			quoteCommandIdent(pkField),
+			pkType,
+		)
+		if err := h.db.Exec(createSQL).Error; err != nil {
 			h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: "create table: " + err.Error()})
+			return
+		}
+		if err := h.ensureCDCColumnsInSchema(schemaName, payload.TargetTable); err != nil {
+			h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: err.Error()})
 			return
 		}
 
@@ -189,8 +286,8 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 				if !rule.IsActive {
 					continue
 				}
-				alterSQL := fmt.Sprintf(`ALTER TABLE "%s" ADD COLUMN IF NOT EXISTS "%s" %s`,
-					payload.TargetTable, rule.TargetColumn, rule.DataType)
+				alterSQL := fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`,
+					quoteCommandIdent(schemaName), quoteCommandIdent(payload.TargetTable), quoteCommandIdent(rule.TargetColumn), rule.DataType)
 				if err := h.db.Exec(alterSQL).Error; err != nil {
 					h.logger.Warn("failed to add column", zap.String("column", rule.TargetColumn), zap.Error(err))
 					continue
@@ -199,24 +296,36 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 			}
 		}
 
-		// Update registry
+		// Update legacy bridge state when present
 		h.db.Model(&model.TableRegistry{}).Where("target_table = ?", payload.TargetTable).Update("is_table_created", true)
+		if payload.SourceObjectID > 0 {
+			h.db.Table("cdc_system.shadow_binding").
+				Where("source_object_id = ?", payload.SourceObjectID).
+				Updates(map[string]interface{}{"ddl_status": "created", "updated_at": gorm.Expr("NOW()")})
+		}
 
 		h.logger.Info("table created with default columns",
+			zap.String("schema", schemaName),
 			zap.String("table", payload.TargetTable),
 			zap.Int("approved_fields", columnsAdded),
 		)
 	} else {
-		if err := h.ensureCDCColumns(payload.TargetTable); err != nil {
+		if err := h.ensureCDCColumnsInSchema(schemaName, payload.TargetTable); err != nil {
 			h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: err.Error()})
 			return
 		}
 		columnsAdded = 8 // 8 CDC columns
 
-		// Update registry
+		// Update states
 		h.db.Model(&model.TableRegistry{}).Where("target_table = ?", payload.TargetTable).Update("is_table_created", true)
+		if payload.SourceObjectID > 0 {
+			h.db.Table("cdc_system.shadow_binding").
+				Where("source_object_id = ?", payload.SourceObjectID).
+				Updates(map[string]interface{}{"ddl_status": "created", "updated_at": gorm.Expr("NOW()")})
+		}
 
 		h.logger.Info("CDC system columns added to existing legacy table",
+			zap.String("schema", schemaName),
 			zap.String("table", payload.TargetTable),
 		)
 	}
@@ -231,21 +340,46 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 
 // HandleDiscover subscribes to "cdc.cmd.discover" and auto-generates mapping rules
 // by scanning DW table columns via information_schema.
+//
+// Phase D — when payload carries Provisioning=true + SourceID, this
+// handler also publishes cdc.evt.provisioning.step_completed (success
+// or failure) so the orchestrator can finalize mapping_pending →
+// mapping_ready and fan-out the next Advance.
 func (h *CommandHandler) HandleDiscover(msg *nats.Msg) {
 	var payload struct {
-		RegistryID  uint   `json:"registry_id"`
-		TargetTable string `json:"target_table"`
-		SourceTable string `json:"source_table"`
+		RegistryID    uint   `json:"registry_id"`
+		TargetTable   string `json:"target_table"`
+		SourceTable   string `json:"source_table"`
+		Provisioning  bool   `json:"provisioning,omitempty"`
+		SourceID      int64  `json:"source_id,omitempty"`
+		CorrelationID string `json:"correlation_id,omitempty"`
+		TraceID       string `json:"trace_id,omitempty"`
+		SpanID        string `json:"span_id,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		h.logger.Error("cdc.cmd.discover: invalid payload", zap.Error(err))
 		return
 	}
 
+	// Phase D (Q4): defer emit so panic/early-return paths still
+	// signal the orchestrator. Only fires for provisioning flow.
+	var stepErr error
+	defer func() {
+		if !payload.Provisioning {
+			return
+		}
+		emitStepCompleted(h.natsConn, h.logger,
+			payload.SourceID, "discover", stepErr,
+			payload.CorrelationID, "discover_handler",
+			payload.TraceID, payload.SpanID)
+	}()
+
 	h.logger.Info("discovering mappings",
 		zap.String("target", payload.TargetTable),
 		zap.String("source", payload.SourceTable),
+		zap.Bool("provisioning", payload.Provisioning),
 	)
+	schemaName := h.resolveTargetSchema(payload.TargetTable)
 
 	// 1. Get columns from DW information_schema
 	type ColInfo struct {
@@ -256,9 +390,10 @@ func (h *CommandHandler) HandleDiscover(msg *nats.Msg) {
 	if err := h.db.WithContext(context.Background()).Raw(`
 		SELECT column_name, data_type
 		FROM information_schema.columns
-		WHERE table_name = ? AND table_schema = 'public'
+		WHERE table_name = ? AND table_schema = ?
 		ORDER BY ordinal_position
-	`, payload.TargetTable).Scan(&cols).Error; err != nil {
+	`, payload.TargetTable, schemaName).Scan(&cols).Error; err != nil {
+		stepErr = fmt.Errorf("get columns: %w", err)
 		h.logger.Error("discover: failed to get columns", zap.Error(err))
 		h.publishResult(msg, CommandResult{
 			Command:     "discover",
@@ -294,16 +429,62 @@ func (h *CommandHandler) HandleDiscover(msg *nats.Msg) {
 			SourceTable:  payload.SourceTable,
 			SourceField:  col.ColumnName,
 			TargetColumn: col.ColumnName,
-			DataType:     col.DataType,
-			IsActive:     true,
-			IsEnriched:   false,
-			IsNullable:   true,
+			// data_type stored in cdc_mapping_rules has a strict CHECK
+			// constraint (see migration mapping_rules_data_type_chk).
+			// information_schema returns lowercase verbose names like
+			// "timestamp without time zone" / "numeric" — those fail
+			// the regex. Normalize to the canonical uppercase form
+			// before INSERT.
+			DataType:   normalizeMappingRuleDataType(col.DataType),
+			IsActive:   true,
+			IsEnriched: false,
+			IsNullable: true,
 		}
 		if err := h.mappingRepo.Create(context.Background(), rule); err != nil {
 			h.logger.Error("discover: failed to create rule", zap.String("field", col.ColumnName), zap.Error(err))
 			continue
 		}
 		count++
+	}
+
+	// Phase multi_engine_unified — Cascade Liability gate (lesson L1399).
+	// If the shadow table holds NO business columns (only `_*` cdc meta)
+	// AND no rule existed already, the discover step is silently empty:
+	// pipeline would advance mapping_pending → mapping_ready → running
+	// with zero mapping coverage, master would land empty rows, user
+	// catches it after a day. Refuse to cascade — fail the step so the
+	// orchestrator pins state to `failed` with last_step_error set.
+	totalRules := count + len(existing)
+	if totalRules == 0 {
+		stepErr = fmt.Errorf("discover: 0 mapping rules — shadow table %q has no business columns (cdc meta only). Likely cause: source schema not yet projected into shadow (e.g. Mongo schemaless without sample, or shadow_bind ran before any source row landed). Refusing to cascade", payload.TargetTable)
+		h.logger.Error("discover: zero rules — break cascade",
+			zap.String("target", payload.TargetTable),
+			zap.Int("cdc_only_columns", len(cols)))
+		h.publishResult(msg, CommandResult{
+			Command:     "discover",
+			RegistryID:  payload.RegistryID,
+			TargetTable: payload.TargetTable,
+			Status:      "error",
+			Error:       stepErr.Error(),
+		})
+		return
+	}
+
+	// V2 bridge — V1 cdc_mapping_rules feeds the legacy shadow ingest
+	// path; mapping_rule_v2 is the sole truth for the shadow→master
+	// transmute path (transmuter.go:loadRules). Auto cascade must seed V2
+	// or the master table stays empty even when shadow is hot.
+	if payload.Provisioning && payload.SourceID > 0 {
+		if v2Created, v2Err := h.bridgeMappingRulesToV2(context.Background(), payload.SourceID, payload.SourceTable); v2Err != nil {
+			h.logger.Warn("discover: V2 bridge encountered errors",
+				zap.Int64("source_id", payload.SourceID),
+				zap.Int("v2_created", v2Created),
+				zap.Error(v2Err))
+		} else {
+			h.logger.Info("discover: V2 bridge done",
+				zap.Int64("source_id", payload.SourceID),
+				zap.Int("v2_created", v2Created))
+		}
 	}
 
 	h.logger.Info("discover complete", zap.Int("new_rules", count), zap.String("table", payload.TargetTable))
@@ -314,6 +495,115 @@ func (h *CommandHandler) HandleDiscover(msg *nats.Msg) {
 		RowsAffected: count,
 		Status:       "success",
 	})
+}
+
+// bridgeMappingRulesToV2 mirrors V1 cdc_mapping_rules into V2 mapping_rule_v2
+// for the given source object so the transmute path (shadow→master) has rules
+// to apply. Idempotent via the ux_v2_mapping_rule_identity unique index.
+//
+// V2 source_format CHECK only allows {raw,jsonpath,expression}; transmuter.go
+// reads source_path first when present, falling back to source_field. For
+// Debezium-envelope shadows (PG/MariaDB connectors) we set source_path =
+// "after.<field>". For Mongo we leave source_path NULL — the connector emits
+// `after` as a JSON-encoded string so gjson cannot dereference; transmuter
+// will fall back to the bare source_field path which mirrors the field name
+// at the top-level of _raw_data once flattened by the ingest path.
+func (h *CommandHandler) bridgeMappingRulesToV2(ctx context.Context, sourceID int64, sourceTable string) (int, error) {
+	type ctxRow struct {
+		Engine          string
+		MasterBindingID *int64
+	}
+	var ctxr ctxRow
+	if err := h.db.WithContext(ctx).Raw(`
+		SELECT sor.source_engine_type AS engine,
+		       mb.id AS master_binding_id
+		  FROM cdc_system.source_object_registry sor
+		  LEFT JOIN cdc_system.master_binding mb
+		    ON mb.source_object_id = sor.id
+		   AND mb.is_active = TRUE
+		 WHERE sor.id = ?
+		 ORDER BY mb.updated_at DESC NULLS LAST
+		 LIMIT 1
+	`, sourceID).Scan(&ctxr).Error; err != nil {
+		return 0, fmt.Errorf("v2 bridge: resolve context: %w", err)
+	}
+	if ctxr.MasterBindingID == nil {
+		return 0, fmt.Errorf("v2 bridge: source %d has no active master_binding", sourceID)
+	}
+
+	v1Rules, err := h.mappingRepo.GetByTable(ctx, sourceTable)
+	if err != nil {
+		return 0, fmt.Errorf("v2 bridge: fetch v1 rules: %w", err)
+	}
+
+	useEnvelope := strings.EqualFold(ctxr.Engine, "postgresql") ||
+		strings.EqualFold(ctxr.Engine, "mariadb") ||
+		strings.EqualFold(ctxr.Engine, "mysql")
+
+	created := 0
+	var lastErr error
+	for _, r := range v1Rules {
+		if !r.IsActive {
+			continue
+		}
+		var sourcePath any
+		if useEnvelope {
+			sourcePath = "after." + r.SourceField
+		} else {
+			sourcePath = nil
+		}
+		// ON CONFLICT matches ux_v2_mapping_rule_identity (migration 033).
+		// status='approved' so transmuter immediately picks up the rule.
+		res := h.db.WithContext(ctx).Exec(`
+			INSERT INTO cdc_system.mapping_rule_v2
+			  (source_object_id, master_binding_id, source_field, source_path,
+			   target_column, data_type, source_format,
+			   is_nullable, is_active, status, created_by, updated_by,
+			   created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, 'raw',
+			        TRUE, TRUE, 'approved', 'discover_handler', 'discover_handler',
+			        NOW(), NOW())
+			ON CONFLICT (source_object_id, COALESCE(master_binding_id, 0), target_column)
+			DO NOTHING
+		`,
+			sourceID, *ctxr.MasterBindingID,
+			r.SourceField, sourcePath,
+			r.TargetColumn, r.DataType,
+		)
+		if res.Error != nil {
+			lastErr = res.Error
+			continue
+		}
+		if res.RowsAffected > 0 {
+			created++
+		}
+	}
+
+	// master_bind ran BEFORE V2 was seeded (orchestrator step order is
+	// master_bind → discover), so the master table on disk holds only
+	// `_*` cdc meta cols at this point. Republish cdc.cmd.master-create
+	// so MasterDDLGenerator.Apply runs the additive ALTER ADD COLUMN
+	// pass for the rules just bridged. Best-effort — failure here is
+	// logged by HandleMasterCreate and the schedule_enable step will
+	// proceed regardless; the gap surfaces later as a transmute upsert
+	// error rather than a silent cascade.
+	if created > 0 && h.natsConn != nil {
+		var masterTable string
+		if err := h.db.WithContext(ctx).Raw(`
+			SELECT master_table FROM cdc_system.master_binding WHERE id = ?
+		`, *ctxr.MasterBindingID).Scan(&masterTable).Error; err == nil && masterTable != "" {
+			payload, _ := json.Marshal(map[string]any{
+				"master_table":   masterTable,
+				"correlation_id": fmt.Sprintf("v2bridge-src-%d", sourceID),
+				"triggered_by":   "v2_bridge",
+			})
+			if perr := h.natsConn.Publish("cdc.cmd.master-create", payload); perr != nil {
+				h.logger.Warn("v2 bridge: republish master-create failed",
+					zap.String("master", masterTable), zap.Error(perr))
+			}
+		}
+	}
+	return created, lastErr
 }
 
 // HandleBackfill subscribes to "cdc.cmd.backfill" and populates target columns from _raw_data.
@@ -335,14 +625,18 @@ func (h *CommandHandler) HandleBackfill(msg *nats.Msg) {
 		zap.String("field", payload.SourceField),
 		zap.String("column", payload.TargetColumn),
 	)
+	schemaName := h.resolveTargetSchema(payload.TargetTable)
 
 	// Build type-aware extraction expression
 	castExpr := buildCastExpr(payload.SourceField, payload.DataType)
 
 	// Update NULL target column values from _raw_data JSONB
 	sql := fmt.Sprintf(
-		`UPDATE "%s" SET %s = %s WHERE %s IS NULL AND _raw_data IS NOT NULL`,
-		payload.TargetTable, payload.TargetColumn, castExpr, payload.TargetColumn,
+		`UPDATE %s SET %s = %s WHERE %s IS NULL AND _raw_data IS NOT NULL`,
+		quoteCommandQualifiedTable(schemaName, payload.TargetTable),
+		quoteCommandIdent(payload.TargetColumn),
+		castExpr,
+		quoteCommandIdent(payload.TargetColumn),
 	)
 	result := h.db.WithContext(context.Background()).Exec(sql)
 	if result.Error != nil {
@@ -385,6 +679,7 @@ func (h *CommandHandler) HandleBackfill(msg *nats.Msg) {
 func (h *CommandHandler) HandleBatchTransform(msg *nats.Msg) {
 	targetTable := string(msg.Data)
 	h.logger.Info("batch transforming table", zap.String("table", targetTable))
+	schemaName := h.resolveTargetSchema(targetTable)
 
 	// 0. Check table exists + has _raw_data column
 	if !h.tableExists(targetTable) {
@@ -397,7 +692,7 @@ func (h *CommandHandler) HandleBatchTransform(msg *nats.Msg) {
 	}
 
 	// 1. Find source_table from registry
-	reg, _ := h.registryRepo.GetByTargetTable(context.Background(), targetTable)
+	reg := h.resolveTargetTableConfig(context.Background(), targetTable)
 	var sourceTable string
 	if reg != nil {
 		sourceTable = reg.SourceTable
@@ -442,8 +737,8 @@ func (h *CommandHandler) HandleBatchTransform(msg *nats.Msg) {
 	setClauses = append(setClauses, "_updated_at = NOW()")
 
 	// 4. Execute transform
-	transformSQL := fmt.Sprintf(`UPDATE "%s" SET %s WHERE _raw_data IS NOT NULL AND (%s)`,
-		targetTable,
+	transformSQL := fmt.Sprintf(`UPDATE %s SET %s WHERE _raw_data IS NOT NULL AND (%s)`,
+		quoteCommandQualifiedTable(schemaName, targetTable),
 		strings.Join(setClauses, ", "),
 		strings.Join(whereClauses, " OR "),
 	)
@@ -476,6 +771,7 @@ func (h *CommandHandler) HandleBatchTransform(msg *nats.Msg) {
 func (h *CommandHandler) HandleScanRawData(msg *nats.Msg) {
 	targetTable := string(msg.Data)
 	h.logger.Info("scanning _raw_data for unmapped fields", zap.String("table", targetTable))
+	schemaName := h.resolveTargetSchema(targetTable)
 
 	// 0. Check table + _raw_data exists
 	if !h.tableExists(targetTable) || !h.hasColumn(targetTable, "_raw_data") {
@@ -491,10 +787,10 @@ func (h *CommandHandler) HandleScanRawData(msg *nats.Msg) {
 	sql := fmt.Sprintf(
 		`SELECT DISTINCT key FROM (
 			SELECT jsonb_object_keys(_raw_data) AS key
-			FROM "%s"
+			FROM %s
 			WHERE _raw_data IS NOT NULL AND _raw_data != '{}'::jsonb
 			LIMIT 1000
-		) sub ORDER BY key`, targetTable)
+		) sub ORDER BY key`, quoteCommandQualifiedTable(schemaName, targetTable))
 	if err := h.db.Raw(sql).Scan(&rawKeys).Error; err != nil {
 		res := map[string]interface{}{
 			"status": "error",
@@ -506,7 +802,7 @@ func (h *CommandHandler) HandleScanRawData(msg *nats.Msg) {
 	}
 
 	// 2. Get existing mapping rules for this table
-	reg, _ := h.registryRepo.GetByTargetTable(context.Background(), targetTable)
+	reg := h.resolveTargetTableConfig(context.Background(), targetTable)
 	var sourceTable string
 	if reg != nil {
 		sourceTable = reg.SourceTable
@@ -559,14 +855,15 @@ func (h *CommandHandler) HandleScanRawData(msg *nats.Msg) {
 // HandlePeriodicScan scans _raw_data for all active tables and auto-creates pending mapping rules.
 // Subject: "cdc.cmd.periodic-scan" (pub/sub, triggered by scheduler)
 func (h *CommandHandler) HandlePeriodicScan(msg *nats.Msg) {
-	entries, err := h.registryRepo.GetAllActive(context.Background())
-	if err != nil {
-		h.logger.Error("periodic scan: failed to get active registries", zap.Error(err))
+	entries := h.listActiveTableConfigs(context.Background())
+	if len(entries) == 0 {
+		h.logger.Warn("periodic scan: no active table configs available")
 		return
 	}
 
 	totalNew := 0
 	for _, entry := range entries {
+		schemaName := h.resolveTargetSchema(entry.TargetTable)
 		// Skip tables that don't exist or don't have _raw_data
 		if !h.tableExists(entry.TargetTable) || !h.hasColumn(entry.TargetTable, "_raw_data") {
 			continue
@@ -576,9 +873,9 @@ func (h *CommandHandler) HandlePeriodicScan(msg *nats.Msg) {
 		var rawKeys []string
 		sql := fmt.Sprintf(
 			`SELECT DISTINCT key FROM (
-				SELECT jsonb_object_keys(_raw_data) AS key FROM "%s"
+				SELECT jsonb_object_keys(_raw_data) AS key FROM %s
 				WHERE _raw_data IS NOT NULL AND _raw_data != '{}'::jsonb LIMIT 1000
-			) sub`, entry.TargetTable)
+			) sub`, quoteCommandQualifiedTable(schemaName, entry.TargetTable))
 		if err := h.db.Raw(sql).Scan(&rawKeys).Error; err != nil {
 			continue
 		}
@@ -676,6 +973,7 @@ func (h *CommandHandler) publishResult(msg *nats.Msg, result CommandResult) {
 func (h *CommandHandler) HandleDropGINIndex(msg *nats.Msg) {
 	targetTable := string(msg.Data)
 	h.logger.Info("checking GIN index cleanup eligibility", zap.String("table", targetTable))
+	schemaName := h.resolveTargetSchema(targetTable)
 
 	if !h.tableExists(targetTable) {
 		h.publishResult(msg, CommandResult{Command: "drop-gin-index", TargetTable: targetTable, Status: "skipped", Error: "table does not exist"})
@@ -684,7 +982,7 @@ func (h *CommandHandler) HandleDropGINIndex(msg *nats.Msg) {
 
 	// 1. Check if table is fully transformed (no pending rows)
 	var pendingRows int64
-	reg, _ := h.registryRepo.GetByTargetTable(context.Background(), targetTable)
+	reg := h.resolveTargetTableConfig(context.Background(), targetTable)
 	if reg == nil {
 		h.publishResult(msg, CommandResult{Command: "drop-gin-index", TargetTable: targetTable, Status: "error", Error: "registry entry not found"})
 		return
@@ -710,7 +1008,10 @@ func (h *CommandHandler) HandleDropGINIndex(msg *nats.Msg) {
 		return
 	}
 
-	h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE _raw_data IS NOT NULL AND "%s" IS NULL`, targetTable, firstCol)).Scan(&pendingRows)
+	h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE _raw_data IS NOT NULL AND %s IS NULL`,
+		quoteCommandQualifiedTable(schemaName, targetTable),
+		quoteCommandIdent(firstCol),
+	)).Scan(&pendingRows)
 	if pendingRows > 0 {
 		h.publishResult(msg, CommandResult{
 			Command:     "drop-gin-index",
@@ -723,7 +1024,7 @@ func (h *CommandHandler) HandleDropGINIndex(msg *nats.Msg) {
 
 	// 2. Drop GIN index
 	indexName := "idx_" + targetTable + "_raw"
-	result := h.db.Exec(fmt.Sprintf(`DROP INDEX IF EXISTS "%s"`, indexName))
+	result := h.db.Exec(fmt.Sprintf(`DROP INDEX IF EXISTS %s.%s`, quoteCommandIdent(schemaName), quoteCommandIdent(indexName)))
 	if result.Error != nil {
 		h.publishResult(msg, CommandResult{Command: "drop-gin-index", TargetTable: targetTable, Status: "error", Error: result.Error.Error()})
 		return
@@ -794,6 +1095,7 @@ func inferSQLTypeFromLegacyCatalogProp(prop interface{}) string {
 // scanFieldsDebezium samples _raw_data JSONB (last 100 rows) to infer
 // new fields for Debezium-backed tables.
 func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, targetTable, sourceTable string) (int, int, error) {
+	schemaName := h.resolveTargetSchema(targetTable)
 	if !h.tableExists(targetTable) || !h.hasColumn(targetTable, "_raw_data") {
 		return 0, 0, fmt.Errorf("table %s has no _raw_data column", targetTable)
 	}
@@ -801,7 +1103,7 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, targetTable, so
 		Raw json.RawMessage `gorm:"column:_raw_data"`
 	}
 	var rows []sampleRow
-	sql := fmt.Sprintf(`SELECT _raw_data FROM "%s" WHERE _raw_data IS NOT NULL AND _raw_data != '{}'::jsonb ORDER BY _synced_at DESC LIMIT 100`, targetTable)
+	sql := fmt.Sprintf(`SELECT _raw_data FROM %s WHERE _raw_data IS NOT NULL AND _raw_data != '{}'::jsonb ORDER BY _synced_at DESC LIMIT 100`, quoteCommandQualifiedTable(schemaName, targetTable))
 	if err := h.db.WithContext(ctx).Raw(sql).Scan(&rows).Error; err != nil {
 		return 0, 0, fmt.Errorf("sample raw_data: %w", err)
 	}
@@ -990,8 +1292,8 @@ func (h *CommandHandler) HandleSyncState(msg *nats.Msg) {
 		return
 	}
 	ctx := context.Background()
-	entry, err := h.registryRepo.GetByID(ctx, payload.RegistryID)
-	if err != nil {
+	entry := h.resolveTableConfigByID(ctx, payload.RegistryID)
+	if entry == nil {
 		h.publishResultWithSubject(msg, "cdc.result.sync-state", CommandResult{Command: "sync-state", Status: "error", Error: "registry not found"})
 		return
 	}
@@ -1350,4 +1652,126 @@ func sanitizeAdminFields(value interface{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func (h *CommandHandler) resolveTargetTableConfig(ctx context.Context, targetTable string) *model.TableRegistry {
+	if h.metadata != nil {
+		if item := h.metadata.GetTableConfig(targetTable); item != nil {
+			return item
+		}
+	}
+	if h.registryRepo == nil {
+		return nil
+	}
+	item, err := h.registryRepo.GetByTargetTable(ctx, targetTable)
+	if err != nil {
+		return nil
+	}
+	return item
+}
+
+func (h *CommandHandler) resolveTargetRoute(targetTable string) *service.ResolvedSourceRoute {
+	if h.metadata == nil {
+		return nil
+	}
+	return h.metadata.ResolveTargetRoute(targetTable)
+}
+
+// normalizeMappingRuleDataType maps raw PG information_schema.data_type
+// values into the canonical uppercase form accepted by the
+// `mapping_rules_data_type_chk` CHECK constraint. Anything outside the
+// safe-list lands as TEXT (lossless fallback that always passes the
+// regex). Caller has already filtered `_*` cdc meta cols.
+func normalizeMappingRuleDataType(dt string) string {
+	switch strings.ToLower(strings.TrimSpace(dt)) {
+	case "smallint", "int2":
+		return "SMALLINT"
+	case "integer", "int", "int4":
+		return "INTEGER"
+	case "bigint", "int8":
+		return "BIGINT"
+	case "real", "float4":
+		return "REAL"
+	case "double precision", "float8":
+		return "DOUBLE PRECISION"
+	case "boolean", "bool":
+		return "BOOLEAN"
+	case "date":
+		return "DATE"
+	case "time", "time without time zone", "time with time zone":
+		return "TIME"
+	case "timestamp", "timestamp without time zone":
+		return "TIMESTAMP"
+	case "timestamptz", "timestamp with time zone":
+		return "TIMESTAMPTZ"
+	case "interval":
+		return "INTERVAL"
+	case "json":
+		return "JSON"
+	case "jsonb":
+		return "JSONB"
+	case "uuid":
+		return "UUID"
+	case "inet":
+		return "INET"
+	case "cidr":
+		return "CIDR"
+	case "macaddr":
+		return "MACADDR"
+	case "bytea":
+		return "BYTEA"
+	case "text", "character varying", "varchar", "character", "char":
+		// information_schema strips length for CHARACTER VARYING — we
+		// can't recover (P,N) shapes without querying
+		// character_maximum_length. TEXT is a safe upcast for both.
+		return "TEXT"
+	case "numeric", "decimal":
+		// No precision available from raw lookup — store as TEXT to
+		// pass the constraint (NUMERIC(P,S) is required by the regex).
+		return "TEXT"
+	default:
+		return "TEXT"
+	}
+}
+
+func (h *CommandHandler) resolveTargetSchema(targetTable string) string {
+	if route := h.resolveTargetRoute(targetTable); route != nil && route.ShadowBinding != nil {
+		if v := strings.TrimSpace(route.ShadowBinding.ShadowSchema); v != "" {
+			return v
+		}
+	}
+	return "public"
+}
+
+func (h *CommandHandler) resolveTableConfigByID(ctx context.Context, id uint) *model.TableRegistry {
+	if h.metadata != nil {
+		if item := h.metadata.GetTableConfigByID(id); item != nil {
+			return item
+		}
+	}
+	if h.registryRepo == nil {
+		return nil
+	}
+	item, err := h.registryRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil
+	}
+	return item
+}
+
+func (h *CommandHandler) listActiveTableConfigs(ctx context.Context) []model.TableRegistry {
+	if h.metadata != nil {
+		items := h.metadata.ListTableConfigs()
+		if len(items) > 0 {
+			return items
+		}
+	}
+	if h.registryRepo == nil {
+		return nil
+	}
+	items, err := h.registryRepo.GetAllActive(ctx)
+	if err != nil {
+		return nil
+	}
+	return items
 }

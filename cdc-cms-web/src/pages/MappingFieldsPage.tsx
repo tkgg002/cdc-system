@@ -4,14 +4,27 @@ import { Table, Tag, Button, Space, Switch, message, Spin, Typography, Card, Row
 import { ArrowLeftOutlined, PlusOutlined, SearchOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, SyncOutlined, EyeOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { cmsApi } from '../services/api';
-import type { MappingRule, TableRegistry } from '../types';
+import type { MappingRule, SourceObjectMappingContext } from '../types';
 import AddMappingModal from '../components/AddMappingModal';
 
 const { Title, Text } = Typography;
 
+function normalizeShadowSchema(sourceDB: string) {
+  const normalized = sourceDB
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `shadow_${normalized || 'unknown'}`;
+}
+
+function getShadowFqn(registry: Pick<SourceObjectMappingContext, 'source_db' | 'target_table' | 'shadow_schema' | 'physical_table_fqn'>) {
+  if (registry.physical_table_fqn) return registry.physical_table_fqn;
+  return `${registry.shadow_schema || normalizeShadowSchema(registry.source_db)}.${registry.target_table}`;
+}
+
 const SYSTEM_DEFAULT_FIELDS = [
   { field: '_raw_data', type: 'JSONB', description: 'Full raw event data from source' },
-  { field: '_source', type: 'VARCHAR', description: 'Data source identifier (airbyte/debezium)' },
+  { field: '_source', type: 'VARCHAR', description: 'Data source identifier (debezium)' },
   { field: '_synced_at', type: 'TIMESTAMP', description: 'When the record was last synced' },
   { field: '_version', type: 'BIGINT', description: 'Record version for conflict resolution' },
   { field: '_hash', type: 'VARCHAR', description: 'SHA256 hash for dedup detection' },
@@ -23,13 +36,13 @@ const SYSTEM_DEFAULT_FIELDS = [
 export default function MappingFieldsPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [registry, setRegistry] = useState<TableRegistry | null>(null);
+  const [registry, setRegistry] = useState<SourceObjectMappingContext | null>(null);
   const [rules, setRules] = useState<MappingRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [newFields, setNewFields] = useState<string[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
-  const [modalInitial, setModalInitial] = useState({ source_table: '', source_field: '' });
+  const [modalInitial, setModalInitial] = useState({ source_database: '', source_table: '', shadow_schema: '', shadow_table: '', source_field: '' });
   const [togglingId, setTogglingId] = useState<number | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [batchLoading, setBatchLoading] = useState(false);
@@ -52,6 +65,7 @@ export default function MappingFieldsPage() {
     setPreviewError(null);
     try {
       const { data: res } = await cmsApi.post('/api/v1/mapping-rules/preview', {
+        shadow_schema: registry.shadow_schema || normalizeShadowSchema(registry.source_db),
         shadow_table: registry.target_table,
         jsonpath: previewPath,
         sample_limit: 3,
@@ -87,11 +101,14 @@ export default function MappingFieldsPage() {
 
   const [syncFieldsLoading, setSyncFieldsLoading] = useState(false);
   const handleSyncFields = async () => {
-    if (!id) return;
+    if (!registry) return;
     setSyncFieldsLoading(true);
     try {
-      await cmsApi.post(`/api/registry/${id}/create-default-columns`);
-      message.success('Đang cập nhật field vào table đích...');
+      const endpoint = registry.registry_id
+        ? `/api/v1/source-objects/registry/${registry.registry_id}/create-default-columns`
+        : `/api/v1/source-objects/${registry.id}/create-default-columns`;
+      await cmsApi.post(endpoint);
+      message.success('Đang cập nhật field vào shadow table...');
     } catch (err: any) {
       message.error(err.response?.data?.error || 'Cập nhật field thất bại');
     } finally {
@@ -100,11 +117,10 @@ export default function MappingFieldsPage() {
   };
 
   const fetchRegistry = useCallback(async () => {
+    if (!id) return;
     try {
-      const { data: res } = await cmsApi.get('/api/registry');
-      const all: TableRegistry[] = res.data || [];
-      const entry = all.find((r: TableRegistry) => r.id === Number(id));
-      if (entry) setRegistry(entry);
+      const { data } = await cmsApi.get<SourceObjectMappingContext>(`/api/v1/source-objects/registry/${id}`);
+      setRegistry(data);
     } catch { /* ignore */ }
   }, [id]);
 
@@ -113,7 +129,13 @@ export default function MappingFieldsPage() {
     setLoading(true);
     try {
       const { data: res } = await cmsApi.get('/api/mapping-rules', {
-        params: { table: registry.source_table, page_size: 200 }
+        params: {
+          source_database: registry.source_db,
+          source_table: registry.source_table,
+          shadow_schema: registry.shadow_schema || normalizeShadowSchema(registry.source_db),
+          shadow_table: registry.target_table,
+          page_size: 200,
+        }
       });
       setRules(res.data || []);
     } catch {
@@ -162,10 +184,10 @@ export default function MappingFieldsPage() {
         if ((res.new_fields || []).length === 0) {
           message.info('All fields are mapped.');
         } else {
-          message.success(`Found ${res.new_fields.length} unmapped fields via Airbyte!`);
+          message.success(`Found ${res.new_fields.length} unmapped fields via fallback scan!`);
         }
       } catch (err2: any) {
-        message.error(err2.response?.data?.error || 'Scan failed — both _raw_data and Airbyte methods failed');
+        message.error(err2.response?.data?.error || 'Scan failed — both raw-payload and fallback scan methods failed');
       }
     } finally {
       setScanning(false);
@@ -184,7 +206,12 @@ export default function MappingFieldsPage() {
   const handleReload = async () => {
     try {
       await cmsApi.post('/api/mapping-rules/reload', null, {
-        params: { table: registry?.source_table }
+        params: {
+          source_database: registry?.source_db,
+          source_table: registry?.source_table,
+          shadow_schema: registry?.shadow_schema || (registry ? normalizeShadowSchema(registry.source_db) : undefined),
+          shadow_table: registry?.target_table,
+        }
       });
       message.success('Reload signal sent to workers');
     } catch (err: any) {
@@ -194,7 +221,13 @@ export default function MappingFieldsPage() {
 
   const handleAddNew = (field?: string) => {
     if (!registry) return;
-    setModalInitial({ source_table: registry.source_table, source_field: field || '' });
+    setModalInitial({
+      source_database: registry.source_db,
+      source_table: registry.source_table,
+      shadow_schema: registry.shadow_schema || normalizeShadowSchema(registry.source_db),
+      shadow_table: registry.target_table,
+      source_field: field || '',
+    });
     setModalVisible(true);
   };
 
@@ -272,27 +305,42 @@ export default function MappingFieldsPage() {
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/registry')}>Back to Registry</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/registry')}>Back to Source Objects</Button>
       </Space>
 
       <Title level={4}>
-        Mapping Fields: <code>{registry.source_table}</code> → <code>{registry.target_table}</code>
+        Mapping Rules: <code>{registry.source_table}</code> → <code>{registry.target_table}</code>
       </Title>
+
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="Source object context"
+        description={
+          <span>
+            Source object: <Text code>{registry.source_db}.{registry.source_table}</Text>. Shadow target hiện hành: <Text code>{getShadowFqn(registry)}</Text>.
+            Context header của page này giờ đã đọc từ read-model V2 theo bridge registry hiện tại; các action sync/create-default-columns bên dưới vẫn giữ compatibility path legacy để không làm gãy operator-flow.
+          </span>
+        }
+      />
 
       {/* Table Info */}
       <Card size="small" style={{ marginBottom: 16 }}>
         <Descriptions size="small" column={4}>
           <Descriptions.Item label="Source DB">{registry.source_db}</Descriptions.Item>
+          <Descriptions.Item label="Shadow Schema"><Text code>{registry.shadow_schema || normalizeShadowSchema(registry.source_db)}</Text></Descriptions.Item>
           <Descriptions.Item label="Source Type"><Tag>{registry.source_type}</Tag></Descriptions.Item>
           <Descriptions.Item label="Sync Engine"><Tag color="blue">{registry.sync_engine}</Tag></Descriptions.Item>
           <Descriptions.Item label="Priority"><Tag color={registry.priority === 'critical' ? 'red' : 'default'}>{registry.priority}</Tag></Descriptions.Item>
+          <Descriptions.Item label="Shadow Target"><Text code>{getShadowFqn(registry)}</Text></Descriptions.Item>
           <Descriptions.Item label="PK Field"><code>{registry.primary_key_field}</code></Descriptions.Item>
           <Descriptions.Item label="Active">{registry.is_active ? <Tag color="green">Yes</Tag> : <Tag color="red">No</Tag>}</Descriptions.Item>
         </Descriptions>
       </Card>
 
       {/* System Default Fields */}
-      <Card title="System Default Fields (auto-created)" size="small" style={{ marginBottom: 16 }}>
+      <Card title="System Default Fields (auto-created on shadow table)" size="small" style={{ marginBottom: 16 }}>
         <Row gutter={[8, 8]}>
           {SYSTEM_DEFAULT_FIELDS.map(f => (
             <Col key={f.field} span={6}>
@@ -308,7 +356,7 @@ export default function MappingFieldsPage() {
 
       {/* Actions */}
       <Space style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
-        <Text strong>Custom Mapping Rules ({rules.length})</Text>
+        <Text strong>Mapping Rules ({rules.length})</Text>
         <Space>
           <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => handleAddNew()}>Add Mapping</Button>
           <Button icon={<SearchOutlined />} size="small" loading={scanning} onClick={handleScan}>Scan Unmapped Fields</Button>
@@ -321,7 +369,7 @@ export default function MappingFieldsPage() {
         <Alert
           type="warning"
           showIcon
-          message={`${newFields.length} unmapped fields found in _raw_data`}
+          message={`${newFields.length} unmapped fields found in shadow raw payload`}
           description={
             <Space wrap style={{ marginTop: 8 }}>
               {newFields.map(f => (
@@ -340,7 +388,7 @@ export default function MappingFieldsPage() {
       {/* Action Bar */}
       <Space style={{ marginBottom: 12 }}>
         <Button type="primary" icon={<SyncOutlined />} loading={syncFieldsLoading}
-          onClick={handleSyncFields}>Cập nhật Field vào Table</Button>
+          onClick={handleSyncFields}>Sync Fields to Shadow</Button>
         {selectedRowKeys.length > 0 && (
           <>
             <Text strong>{selectedRowKeys.length} đã chọn</Text>
@@ -365,7 +413,7 @@ export default function MappingFieldsPage() {
           selectedRowKeys,
           onChange: setSelectedRowKeys,
         }}
-        locale={{ emptyText: 'No mapping rules. Data is stored in _raw_data column only.' }}
+        locale={{ emptyText: 'No mapping rules yet. Data is currently preserved in _raw_data on the shadow table.' }}
       />
 
       <AddMappingModal
@@ -390,8 +438,8 @@ export default function MappingFieldsPage() {
       >
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
           <div>
-            <Text type="secondary">Shadow table: </Text>
-            <Text code>{registry.target_table}</Text>
+            <Text type="secondary">Shadow target: </Text>
+            <Text code>{getShadowFqn(registry)}</Text>
           </div>
           <Input
             placeholder="JsonPath (gjson syntax) — e.g. after.amount, after.user._id"
@@ -410,7 +458,7 @@ export default function MappingFieldsPage() {
           )}
           {!previewLoading && previewResult.length === 0 && !previewError && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              Nhấn "Run Preview" để gọi <code>POST /api/v1/mapping-rules/preview</code> với gjson engine lấy 3 sample từ shadow table.
+              Nhấn "Run Preview" để gọi <code>POST /api/v1/mapping-rules/preview</code> với gjson engine lấy 3 sample từ shadow target hiện tại.
             </Text>
           )}
         </Space>

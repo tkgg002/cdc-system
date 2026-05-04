@@ -23,13 +23,13 @@ type MappedData struct {
 // DynamicMapper handles config-driven field mapping from CDC events to PostgreSQL columns.
 // Uses RegistryService for cached mapping rules (no duplicate cache).
 type DynamicMapper struct {
-	registry      *RegistryService
+	registry      MetadataRegistry
 	schemaAdapter *SchemaAdapter
 	masking       *MaskingService
 	logger        *zap.Logger
 }
 
-func NewDynamicMapper(registry *RegistryService, logger *zap.Logger, adapters ...*SchemaAdapter) *DynamicMapper {
+func NewDynamicMapper(registry MetadataRegistry, logger *zap.Logger, adapters ...*SchemaAdapter) *DynamicMapper {
 	dm := &DynamicMapper{
 		registry: registry,
 		logger:   logger,

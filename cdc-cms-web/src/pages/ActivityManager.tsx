@@ -1,10 +1,11 @@
-import { useEffect, useState, useCallback } from 'react';
-import { Table, Switch, InputNumber, Button, Space, Tag, message, Typography, Tooltip, Modal, Form, Select, Input } from 'antd';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Table, Switch, InputNumber, Button, Space, Tag, message, Typography, Tooltip, Modal, Form, Select, Input, Alert } from 'antd';
 import { ReloadOutlined, PlusOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { cmsApi } from '../services/api';
+import type { SourceObjectRow } from '../types';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 interface Schedule {
   id: number;
@@ -17,14 +18,24 @@ interface Schedule {
   run_count: number;
   last_error: string | null;
   notes: string | null;
+  scope?: {
+    source_object_id?: number;
+    source_database?: string | null;
+    source_schema?: string | null;
+    source_namespace?: string | null;
+    source_table?: string | null;
+    shadow_binding_id?: number;
+    shadow_schema?: string | null;
+    shadow_table?: string | null;
+    physical_table_fqn?: string | null;
+    scope_ambiguous?: boolean;
+  };
 }
 
 const ALL_OPERATIONS = [
-  { value: 'bridge', label: 'Đồng bộ dữ liệu (Bridge)' },
   { value: 'transform', label: 'Chuyển đổi field (Transform)' },
   { value: 'field-scan', label: 'Quét field mới (Field Scan)' },
   { value: 'partition-check', label: 'Kiểm tra partition' },
-  { value: 'airbyte-sync', label: 'Quét stream Airbyte' },
   { value: 'drop-gin-index', label: 'Xoá GIN Index' },
   { value: 'create-default-columns', label: 'Tạo field mặc định' },
 ];
@@ -33,11 +44,9 @@ const opLabels: Record<string, string> = {};
 ALL_OPERATIONS.forEach(o => { opLabels[o.value] = o.label; });
 
 const opColors: Record<string, string> = {
-  'bridge': 'cyan',
   'transform': 'purple',
   'field-scan': 'geekblue',
   'partition-check': 'lime',
-  'airbyte-sync': 'blue',
   'drop-gin-index': 'volcano',
   'create-default-columns': 'magenta',
 };
@@ -48,8 +57,11 @@ export default function ActivityManager() {
   const [updatingId, setUpdatingId] = useState<number | null>(null);
   const [createVisible, setCreateVisible] = useState(false);
   const [createLoading, setCreateLoading] = useState(false);
-  const [tables, setTables] = useState<string[]>([]);
+  const [sourceObjects, setSourceObjects] = useState<SourceObjectRow[]>([]);
   const [form] = Form.useForm();
+
+  const normalizeShadowSchema = (sourceDB: string) =>
+    `shadow_${sourceDB.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown'}`;
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -60,14 +72,14 @@ export default function ActivityManager() {
     finally { setLoading(false); }
   }, []);
 
-  const fetchTables = useCallback(async () => {
+  const fetchSourceObjects = useCallback(async () => {
     try {
-      const { data: res } = await cmsApi.get('/api/registry', { params: { page_size: 200 } });
-      setTables((res.data || []).map((r: any) => r.target_table));
+      const { data: res } = await cmsApi.get('/api/v1/source-objects', { params: { page_size: 500 } });
+      setSourceObjects(res.data || []);
     } catch { /* */ }
   }, []);
 
-  useEffect(() => { fetchData(); fetchTables(); }, [fetchData, fetchTables]);
+  useEffect(() => { fetchData(); fetchSourceObjects(); }, [fetchData, fetchSourceObjects]);
 
   const updateSchedule = async (id: number, updates: any) => {
     setUpdatingId(id);
@@ -85,9 +97,14 @@ export default function ActivityManager() {
   const handleCreate = async (values: any) => {
     setCreateLoading(true);
     try {
+      const selected = tableOptions.find((option) => option.value === values.scope_key);
       await cmsApi.post('/api/worker-schedule', {
         operation: values.operation,
-        target_table: values.target_table || null,
+        target_table: selected?.targetTable || null,
+        source_database: selected?.sourceDB || null,
+        source_table: selected?.sourceTable || null,
+        shadow_schema: selected?.shadowSchema || null,
+        shadow_table: selected?.shadowTable || null,
         interval_minutes: values.interval_minutes,
         is_enabled: true,
         notes: values.notes || null,
@@ -103,6 +120,26 @@ export default function ActivityManager() {
     }
   };
 
+  const registryByTarget = useMemo(() => {
+    const map = new Map<string, SourceObjectRow>();
+    sourceObjects.forEach((row) => map.set(row.target_table, row));
+    return map;
+  }, [sourceObjects]);
+
+  const tableOptions = useMemo(
+    () =>
+      sourceObjects.map((row) => ({
+        value: `${row.source_db}::${row.source_table}::${row.target_table}`,
+        label: `${row.source_db}.${row.source_table} -> ${(row.shadow_schema || normalizeShadowSchema(row.source_db))}.${row.target_table}`,
+        sourceDB: row.source_db,
+        sourceTable: row.source_table,
+        shadowSchema: row.shadow_schema || normalizeShadowSchema(row.source_db),
+        shadowTable: row.target_table,
+        targetTable: row.target_table,
+      })),
+    [sourceObjects],
+  );
+
   const columns: ColumnsType<Schedule> = [
     {
       title: 'Tác vụ', dataIndex: 'operation', width: 200,
@@ -114,8 +151,30 @@ export default function ActivityManager() {
       ),
     },
     {
-      title: 'Bảng đích', dataIndex: 'target_table', width: 180,
-      render: (v) => v ? <strong>{v}</strong> : <Tag color="blue">Tất cả</Tag>,
+      title: 'Scope', dataIndex: 'target_table', width: 320,
+      render: (v, record) => {
+        if (!v) return <Tag color="blue">Tất cả source objects active</Tag>;
+        const scope = record.scope;
+        if (scope?.source_database && scope?.source_table && scope?.shadow_schema && scope?.shadow_table) {
+          return (
+            <Space direction="vertical" size={0}>
+              <Text>{scope.source_database}.{scope.source_table}</Text>
+              <Space size={6}>
+                <Text type="secondary" code>{scope.shadow_schema}.{scope.shadow_table}</Text>
+                {scope.scope_ambiguous ? <Tag color="orange">Ambiguous</Tag> : null}
+              </Space>
+            </Space>
+          );
+        }
+        const meta = registryByTarget.get(v);
+        if (!meta) return <Text code>{v}</Text>;
+        return (
+          <Space direction="vertical" size={0}>
+            <Text>{meta.source_db}.{meta.source_table}</Text>
+            <Text type="secondary" code>{normalizeShadowSchema(meta.source_db)}.{meta.target_table}</Text>
+          </Space>
+        );
+      },
     },
     {
       title: 'Chu kỳ (phút)', dataIndex: 'interval_minutes', width: 130,
@@ -163,7 +222,14 @@ export default function ActivityManager() {
 
   return (
     <div>
-      <Title level={4} style={{ marginBottom: 16 }}>Quản lý tác vụ Worker</Title>
+      <Title level={4} style={{ marginBottom: 16 }}>Operations</Title>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="Operational scope"
+        description="Hệ CMS hiện chạy theo luồng Debezium-only. Các lịch trình được giữ lại chỉ cho transform, field scan, partition check và default-column maintenance; những operation kiểu bridge/Airbyte đã bị loại khỏi UI."
+      />
 
       <Space style={{ marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateVisible(true)}>Tạo lịch trình</Button>
@@ -195,9 +261,13 @@ export default function ActivityManager() {
               ))}
             </Select>
           </Form.Item>
-          <Form.Item name="target_table" label="Bảng đích (để trống = tất cả)">
+          <Form.Item
+            name="scope_key"
+            label="Source Object / Shadow Scope (để trống = tất cả)"
+            tooltip="API worker-schedule giờ sẽ cố resolve scope theo source/shadow metadata V2. UI vẫn gửi target_table compatibility để không làm gãy dữ liệu cũ."
+          >
             <Select placeholder="Tất cả bảng" allowClear>
-              {tables.map(t => <Select.Option key={t} value={t}>{t}</Select.Option>)}
+              {tableOptions.map((t) => <Select.Option key={t.value} value={t.value}>{t.label}</Select.Option>)}
             </Select>
           </Form.Item>
           <Form.Item name="interval_minutes" label="Chu kỳ (phút)" rules={[{ required: true }]} initialValue={5}>

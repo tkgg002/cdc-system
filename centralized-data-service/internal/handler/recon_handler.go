@@ -23,6 +23,7 @@ type ReconHandler struct {
 	db          *gorm.DB
 	mongoClient *mongo.Client
 	schema      *service.SchemaAdapter
+	metadata    service.MetadataRegistry
 	masking     *service.MaskingService
 	backfill    *service.BackfillSourceTsService
 	tsDetector  *service.TimestampDetector // Migration 017 — manual re-detect
@@ -71,6 +72,11 @@ func (h *ReconHandler) WithTimestampDetector(td *service.TimestampDetector) *Rec
 	return h
 }
 
+func (h *ReconHandler) WithMetadataRegistry(metadata service.MetadataRegistry) *ReconHandler {
+	h.metadata = metadata
+	return h
+}
+
 // HandleReconCheck — subscribe "cdc.cmd.recon-check"
 func (h *ReconHandler) HandleReconCheck(msg *nats.Msg) {
 	var payload struct {
@@ -95,8 +101,8 @@ func (h *ReconHandler) HandleReconCheck(msg *nats.Msg) {
 	}
 
 	// Single table
-	var entry model.TableRegistry
-	if err := h.db.Where("target_table = ?", payload.Table).First(&entry).Error; err != nil {
+	entry := h.resolveTargetTableConfig(payload.Table)
+	if entry == nil {
 		h.logActivity("recon-check", payload.Table, "error", 0, fmt.Errorf("registry not found: %s", payload.Table))
 		return
 	}
@@ -104,11 +110,11 @@ func (h *ReconHandler) HandleReconCheck(msg *nats.Msg) {
 	var report *model.ReconciliationReport
 	switch payload.Tier {
 	case "2":
-		report = h.reconCore.RunTier2(ctx, entry)
+		report = h.reconCore.RunTier2(ctx, *entry)
 	case "3":
-		report = h.reconCore.RunTier3(ctx, entry)
+		report = h.reconCore.RunTier3(ctx, *entry)
 	default:
-		report = h.reconCore.RunTier1(ctx, entry)
+		report = h.reconCore.RunTier1(ctx, *entry)
 	}
 
 	h.logActivity("recon-check", payload.Table, report.Status, report.Diff, nil)
@@ -151,8 +157,8 @@ func (h *ReconHandler) HandleReconHeal(msg *nats.Msg) {
 		return
 	}
 
-	var entry model.TableRegistry
-	if err := h.db.Where("target_table = ?", payload.Table).First(&entry).Error; err != nil {
+	entry := h.resolveTargetTableConfig(payload.Table)
+	if entry == nil {
 		h.logActivity("recon-heal", payload.Table, "error", 0, fmt.Errorf("registry not found"))
 		return
 	}
@@ -163,7 +169,7 @@ func (h *ReconHandler) HandleReconHeal(msg *nats.Msg) {
 		Order("checked_at DESC").First(&report).Error; err != nil {
 		// No Tier 2 report → run Tier 2 first
 		h.logger.Info("no tier 2 report, running tier 2 first", zap.String("table", payload.Table))
-		newReport := h.reconCore.RunTier2(ctx, entry)
+		newReport := h.reconCore.RunTier2(ctx, *entry)
 		if newReport.MissingCount == 0 {
 			h.logActivity("recon-heal", payload.Table, "success", 0, nil)
 			return
@@ -183,7 +189,7 @@ func (h *ReconHandler) HandleReconHeal(msg *nats.Msg) {
 	}
 	tLo := tHi.Add(-7 * 24 * time.Hour)
 
-	res, healErr := h.healer.HealWindow(ctx, entry, tLo, tHi, missingIDs)
+	res, healErr := h.healer.HealWindow(ctx, *entry, tLo, tHi, missingIDs)
 	var healedCount int
 	if res != nil {
 		healedCount = res.Upserted
@@ -231,8 +237,8 @@ func (h *ReconHandler) HandleRetryFailed(msg *nats.Msg) {
 	}
 
 	// Get registry for PK field
-	var entry model.TableRegistry
-	if err := h.db.Where("target_table = ?", payload.TargetTable).First(&entry).Error; err != nil {
+	entry := h.resolveTargetTableConfig(payload.TargetTable)
+	if entry == nil {
 		h.updateFailedLog(payload.FailedLogID, "failed", "registry not found")
 		return
 	}
@@ -277,8 +283,7 @@ func (h *ReconHandler) HandleDebeziumSignal(msg *nats.Msg) {
 	collection := payload.Collection
 	if payload.Table != "" && db == "" {
 		// Lookup from registry
-		var entry model.TableRegistry
-		if err := h.db.Where("target_table = ?", payload.Table).First(&entry).Error; err == nil {
+		if entry := h.resolveTargetTableConfig(payload.Table); entry != nil {
 			db = entry.SourceDB
 			collection = entry.SourceTable
 		}
@@ -418,12 +423,11 @@ func (h *ReconHandler) HandleDetectTimestampField(msg *nats.Msg) {
 	}
 
 	ctx := context.Background()
-	var entry model.TableRegistry
-	q := h.db.WithContext(ctx)
+	var entry *model.TableRegistry
 	if payload.RegistryID > 0 {
-		q = q.Where("id = ?", payload.RegistryID)
+		entry = h.resolveTableConfigByID(payload.RegistryID)
 	} else if payload.TargetTable != "" {
-		q = q.Where("target_table = ?", payload.TargetTable)
+		entry = h.resolveTargetTableConfig(payload.TargetTable)
 	} else {
 		h.logger.Warn("detect-timestamp-field: missing registry_id and target_table")
 		if msg.Reply != "" {
@@ -432,11 +436,10 @@ func (h *ReconHandler) HandleDetectTimestampField(msg *nats.Msg) {
 		}
 		return
 	}
-	if err := q.First(&entry).Error; err != nil {
+	if entry == nil {
 		h.logger.Warn("detect-timestamp-field: registry lookup failed",
 			zap.Uint("registry_id", payload.RegistryID),
-			zap.String("target_table", payload.TargetTable),
-			zap.Error(err))
+			zap.String("target_table", payload.TargetTable))
 		if msg.Reply != "" {
 			resp, _ := json.Marshal(map[string]interface{}{"error": "registry not found"})
 			msg.Respond(resp)
@@ -494,6 +497,32 @@ func (h *ReconHandler) HandleDetectTimestampField(msg *nats.Msg) {
 		})
 		msg.Respond(resp)
 	}
+}
+
+func (h *ReconHandler) resolveTargetTableConfig(targetTable string) *model.TableRegistry {
+	if h.metadata != nil {
+		if item := h.metadata.GetTableConfig(targetTable); item != nil {
+			return item
+		}
+	}
+	var entry model.TableRegistry
+	if err := h.db.Where("target_table = ?", targetTable).First(&entry).Error; err != nil {
+		return nil
+	}
+	return &entry
+}
+
+func (h *ReconHandler) resolveTableConfigByID(id uint) *model.TableRegistry {
+	if h.metadata != nil {
+		if item := h.metadata.GetTableConfigByID(id); item != nil {
+			return item
+		}
+	}
+	var entry model.TableRegistry
+	if err := h.db.Where("id = ?", id).First(&entry).Error; err != nil {
+		return nil
+	}
+	return &entry
 }
 
 func (h *ReconHandler) updateFailedLog(id uint64, status, errMsg string) {

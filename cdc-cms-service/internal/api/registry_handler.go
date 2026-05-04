@@ -10,6 +10,7 @@ import (
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
 	"cdc-cms-service/internal/repository"
+	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"github.com/gofiber/fiber/v2"
@@ -22,15 +23,19 @@ type RegistryHandler struct {
 	mappingRepo *repository.MappingRuleRepo
 	db          *gorm.DB
 	natsClient  *natsconn.NatsClient
+	automator   *service.ShadowAutomator
+	v2sync      *service.SourceObjectV2SyncService
 	logger      *zap.Logger
 }
 
-func NewRegistryHandler(repo *repository.RegistryRepo, mappingRepo *repository.MappingRuleRepo, db *gorm.DB, nats *natsconn.NatsClient, logger *zap.Logger) *RegistryHandler {
+func NewRegistryHandler(repo *repository.RegistryRepo, mappingRepo *repository.MappingRuleRepo, db *gorm.DB, nats *natsconn.NatsClient, automator *service.ShadowAutomator, v2sync *service.SourceObjectV2SyncService, logger *zap.Logger) *RegistryHandler {
 	return &RegistryHandler{
 		repo:        repo,
 		mappingRepo: mappingRepo,
 		db:          db,
 		natsClient:  nats,
+		automator:   automator,
+		v2sync:      v2sync,
 		logger:      logger,
 	}
 }
@@ -55,20 +60,8 @@ func (h *RegistryHandler) logAction(operation, targetTable, status string, detai
 	})
 }
 
-// List godoc
-// @Summary      List table registry
-// @Description  Returns all registered CDC tables with pagination and filters
-// @Tags         Table Registry
-// @Produce      json
-// @Param        source_db    query string false "Filter by source database"
-// @Param        priority     query string false "Filter by priority" Enums(critical, high, normal, low)
-// @Param        is_active    query string false "Filter by active status" Enums(true, false)
-// @Param        page         query int    false "Page number" default(1)
-// @Param        page_size    query int    false "Page size"   default(20)
-// @Success      200 {object} map[string]interface{}
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry [get]
+// List is kept as a compatibility delegate for V2 read models and internal
+// operator-flow bridges. It is intentionally no longer mounted directly.
 func (h *RegistryHandler) List(c *fiber.Ctx) error {
 	filter := repository.RegistryFilter{
 		Page:     intQuery(c, "page", 1),
@@ -99,18 +92,8 @@ func (h *RegistryHandler) List(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": entries, "total": total, "page": filter.Page})
 }
 
-// Register godoc
-// @Summary      Register a new CDC table
-// @Description  Registers a new table in the registry and auto-creates the CDC table in PostgreSQL
-// @Tags         Table Registry
-// @Accept       json
-// @Produce      json
-// @Param        body body model.TableRegistry true "Table registration details"
-// @Success      201 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry [post]
+// Register is kept as a compatibility delegate behind the V2
+// /api/v1/source-objects/register facade.
 func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 	var entry model.TableRegistry
 	if err := c.BodyParser(&entry); err != nil {
@@ -120,6 +103,21 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 	// (discover schema + update connection) được dispatch async qua NATS.
 	if err := h.repo.Create(c.Context(), &entry); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to register table: " + err.Error()})
+	}
+
+	// Systematic Flow (F-2.1): synchronous shadow DDL. Rollback registry
+	// on failure so the DB never holds a row whose shadow doesn't exist.
+	// Legacy NATS path still fires below but will no-op when the Worker
+	// finds is_table_created=true.
+	if h.automator != nil {
+		shadowSchema := "shadow_" + normalizeShadowIdent(entry.SourceDB)
+		if err := h.automator.EnsureShadowTable(c.Context(), &entry, shadowSchema); err != nil {
+			if delErr := h.db.Delete(&model.TableRegistry{}, entry.ID).Error; delErr != nil {
+				h.logger.Error("registry rollback failed after shadow err",
+					zap.Uint("id", entry.ID), zap.Error(delErr))
+			}
+			return c.Status(500).JSON(fiber.Map{"error": "shadow DDL failed: " + err.Error()})
+		}
 	}
 
 	dispatched := []string{}
@@ -138,13 +136,19 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 	}
 
 	// Legacy sync-register dispatch removed post-Sprint 4 — Debezium-native
-	// flow registers via cdc_internal.table_registry + Master Registry UI.
+	// flow registers via cdc_system.cdc_table_registry + Master Registry UI.
 
 	h.natsClient.PublishReload(entry.TargetTable, middleware.GetUsername(c), "register", "")
 	h.logAction("register", entry.TargetTable, "accepted", map[string]interface{}{
 		"user":       middleware.GetUsername(c),
 		"dispatched": dispatched,
 	}, "")
+
+	if h.v2sync != nil {
+		if err := h.v2sync.SyncFromLegacy(c.Context(), &entry); err != nil {
+			h.logger.Error("post-register v2 sync failed", zap.Uint("registry_id", entry.ID), zap.Error(err))
+		}
+	}
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":    "table registered — external sync dispatched",
@@ -153,21 +157,8 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 	})
 }
 
-
-// Update godoc
-// @Summary      Update table registry entry
-// @Description  Updates sync_engine, sync_interval, priority, or is_active for a registered table
-// @Tags         Table Registry
-// @Accept       json
-// @Produce      json
-// @Param        id   path int true "Registry entry ID"
-// @Param        body body object true "Fields to update" SchemaExample({"sync_engine":"debezium","priority":"critical"})
-// @Success      200 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/{id} [patch]
+// Update is kept as a compatibility delegate behind the V2
+// /api/v1/source-objects/registry/:id facade.
 func (h *RegistryHandler) Update(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
@@ -273,6 +264,11 @@ func (h *RegistryHandler) Update(c *fiber.Ctx) error {
 	})
 
 	h.natsClient.PublishReload(existing.TargetTable, middleware.GetUsername(c), "update", "")
+	if h.v2sync != nil {
+		if err := h.v2sync.SyncFromLegacy(c.Context(), existing); err != nil {
+			h.logger.Error("post-update v2 sync failed", zap.Uint("registry_id", existing.ID), zap.Error(err))
+		}
+	}
 	return c.Status(202).JSON(fiber.Map{
 		"message":    "updated — external state dispatched",
 		"entry":      existing,
@@ -280,18 +276,8 @@ func (h *RegistryHandler) Update(c *fiber.Ctx) error {
 	})
 }
 
-// BulkRegister godoc
-// @Summary      Bulk register tables
-// @Description  Registers multiple tables at once and creates their CDC tables
-// @Tags         Table Registry
-// @Accept       json
-// @Produce      json
-// @Param        body body []model.TableRegistry true "Array of table registrations"
-// @Success      201 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/batch [post]
+// BulkRegister is kept as a compatibility delegate behind the V2
+// /api/v1/source-objects/register-batch facade.
 func (h *RegistryHandler) BulkRegister(c *fiber.Ctx) error {
 	var entries []model.TableRegistry
 	if err := c.BodyParser(&entries); err != nil {
@@ -326,6 +312,11 @@ func (h *RegistryHandler) BulkRegister(c *fiber.Ctx) error {
 			continue
 		}
 		dispatched++
+		if h.v2sync != nil {
+			if err := h.v2sync.SyncFromLegacy(c.Context(), &e); err != nil {
+				h.logger.Error("bulk register v2 sync failed", zap.Uint("registry_id", e.ID), zap.Error(err))
+			}
+		}
 	}
 
 	h.natsClient.PublishReload("*", middleware.GetUsername(c), "bulk_register", "")
@@ -342,15 +333,8 @@ func (h *RegistryHandler) BulkRegister(c *fiber.Ctx) error {
 	})
 }
 
-// GetStats godoc
-// @Summary      Get registry statistics
-// @Description  Returns summary stats: total tables, by source_db, by sync_engine, by priority
-// @Tags         Table Registry
-// @Produce      json
-// @Success      200 {object} repository.RegistryStats
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/stats [get]
+// GetStats is kept as a compatibility delegate for internal callers; the
+// public CMS read surface now uses /api/v1/source-objects/stats.
 func (h *RegistryHandler) GetStats(c *fiber.Ctx) error {
 	stats, err := h.repo.GetStats(c.Context())
 	if err != nil {
@@ -359,46 +343,8 @@ func (h *RegistryHandler) GetStats(c *fiber.Ctx) error {
 	return c.JSON(stats)
 }
 
-// GetStatus godoc
-// @Tags         Table Registry
-// @Produce      json
-// @Param        id   path int true "Registry entry ID"
-// @Success      200 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/{id}/status [get]
-func (h *RegistryHandler) GetStatus(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
-	}
-
-	entry, err := h.repo.GetByID(c.Context(), uint(id))
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not found"})
-	}
-
-	return c.Status(410).JSON(fiber.Map{
-		"error":       "legacy status endpoint retired",
-		"sync_engine": entry.SyncEngine,
-		"hint":        "use GET /api/v1/system/connectors[/:name] for Debezium connector status",
-	})
-}
-
-// Standardize godoc
-// @Summary      Standardize table metadata columns
-// @Description  Adds missing metadata columns (_raw_data, _source, etc.) to an existing table
-// @Tags         Table Registry
-// @Produce      json
-// @Param        id   path int true "Registry entry ID"
-// @Success      200 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/{id}/standardize [post]
+// Standardize is kept as a compatibility delegate behind the V2
+// /api/v1/source-objects/registry/:id/standardize facade.
 func (h *RegistryHandler) Standardize(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
@@ -426,149 +372,13 @@ func (h *RegistryHandler) Standardize(c *fiber.Ctx) error {
 	})
 }
 
-// Discover godoc
-// @Summary      Discover field mappings from database
-// @Description  Scans database columns and populates cdc_mapping_rules for the table
-// @Tags         Table Registry
-// @Produce      json
-// @Param        id   path int true "Registry entry ID"
-// @Success      200 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/{id}/discover [post]
-func (h *RegistryHandler) Discover(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
-	}
-
-	entry, err := h.repo.GetByID(c.Context(), uint(id))
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "registry entry not found"})
-	}
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":  entry.ID,
-		"target_table": entry.TargetTable,
-		"source_table": entry.SourceTable,
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.discover", payload); err != nil {
-		h.logAction("discover", entry.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch discover command: " + err.Error()})
-	}
-
-	h.logAction("discover", entry.TargetTable, "success", map[string]interface{}{"user": middleware.GetUsername(c)}, "")
-	return c.Status(202).JSON(fiber.Map{
-		"message":      "discover command accepted",
-		"target_table": entry.TargetTable,
-		"source_table": entry.SourceTable,
-	})
-}
-
-
-// RefreshCatalog godoc
+// RefreshCatalog retired.
 //
-//	Use this when a stream was accidentally removed from catalog or when new tables are added to the source DB.
-//
-// @Tags         Table Registry
-// @Produce      json
-// @Param        id   path int true "Registry entry ID"
-// @Success      202 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/{id}/refresh-catalog [post]
+// Route intentionally unmounted in Debezium-only mode. Keep this marker so
+// future maintainers know the old Swagger entry was removed on purpose.
 
-// Sync godoc
-// @Tags         Table Registry
-// @Produce      json
-// @Param        id   path int true "Registry entry ID"
-// @Success      200 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/{id}/sync [post]
-func (h *RegistryHandler) Sync(c *fiber.Ctx) error {
-	return c.Status(410).JSON(fiber.Map{
-		"error": "sync endpoint retired — use Debezium Command Center",
-	})
-}
-
-// GetJobs godoc
-// @Description  Returns the 10 most recent sync jobs for the connection associated with this table
-// @Tags         Table Registry
-// @Produce      json
-// @Param        id   path int true "Registry entry ID"
-// @Success      200 {object} []map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/{id}/jobs [get]
-func (h *RegistryHandler) GetJobs(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
-	}
-
-	entry, err := h.repo.GetByID(c.Context(), uint(id))
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not found"})
-	}
-
-	_ = entry
-	return c.Status(410).JSON(fiber.Map{
-		"error": "legacy jobs endpoint retired — use Debezium Command Center",
-	})
-}
-
-// ScanSource godoc
-// @Tags         Table Registry
-// @Produce      json
-// @Success      200 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/scan-source [post]
-func (h *RegistryHandler) ScanSource(c *fiber.Ctx) error {
-	sourceID := c.Query("source_id")
-	if sourceID == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "source_id is required"})
-	}
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"legacy_source_id": sourceID,
-		"triggered_by":      middleware.GetUsername(c),
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.scan-source", payload); err != nil {
-		h.logAction("scan-source", sourceID, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
-	}
-
-	h.logAction("scan-source", sourceID, "accepted", map[string]interface{}{
-		"user":              middleware.GetUsername(c),
-		"legacy_source_id": sourceID,
-	}, "")
-
-	return c.Status(202).JSON(fiber.Map{
-		"message":           "scan-source command accepted",
-		"legacy_source_id": sourceID,
-	})
-}
-
-// ScanFields godoc
-// @Summary      Scan source fields for a registered table
-// @Tags         Table Registry
-// @Produce      json
-// @Param        id   path int true "Registry entry ID"
-// @Success      200 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/{id}/scan-fields [post]
+// ScanFields is kept as a compatibility delegate behind the V2
+// /api/v1/source-objects/registry/:id/scan-fields facade.
 func (h *RegistryHandler) ScanFields(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
@@ -641,15 +451,6 @@ func intQuery(c *fiber.Ctx, key string, defaultVal int) int {
 
 // (removed: inferDataTypeFromSchema) — moved to Worker
 
-
-// Bridge retired per Sprint 4 4A.2 — legacy pipeline removed. Use
-// Debezium Command Center + Transmuter (plan v2 §R6) instead.
-func (h *RegistryHandler) Bridge(c *fiber.Ctx) error {
-	return c.Status(410).JSON(fiber.Map{
-		"error": "bridge endpoint retired — use POST /api/v1/tables/:name/transmute",
-	})
-}
-
 // Transform triggers batch transformation of _raw_data → typed columns
 func (h *RegistryHandler) Transform(c *fiber.Ctx) error {
 	id, _ := c.ParamsInt("id")
@@ -712,16 +513,6 @@ func (h *RegistryHandler) TransformStatus(c *fiber.Ctx) error {
 	})
 }
 
-// Reconciliation retired per Sprint 4 4A.2 — compared rows of legacy raw
-// tables vs CDC tables. Modern reconciliation lives at
-// /api/v1/tables + /api/v1/system/connectors (Debezium Command Center)
-// and the Transmuter's last_stats field on cdc_internal.transmute_schedule.
-func (h *RegistryHandler) Reconciliation(c *fiber.Ctx) error {
-	return c.Status(410).JSON(fiber.Map{
-		"error": "reconciliation endpoint retired — use /api/v1/tables + Command Center",
-	})
-}
-
 // CreateDefaultColumns creates CDC table + adds all approved mapping rule columns in one step.
 // This is the "tạo field default" action for Luồng 1.
 func (h *RegistryHandler) CreateDefaultColumns(c *fiber.Ctx) error {
@@ -732,9 +523,9 @@ func (h *RegistryHandler) CreateDefaultColumns(c *fiber.Ctx) error {
 	}
 
 	payload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":      entry.ID,
-		"target_table":     entry.TargetTable,
-		"source_table":     entry.SourceTable,
+		"registry_id":       entry.ID,
+		"target_table":      entry.TargetTable,
+		"source_table":      entry.SourceTable,
 		"primary_key_field": entry.PrimaryKeyField,
 		"primary_key_type":  entry.PrimaryKeyType,
 	})
@@ -756,38 +547,8 @@ func (h *RegistryHandler) CreateDefaultColumns(c *fiber.Ctx) error {
 	})
 }
 
-// DropGINIndex triggers dropping the GIN index on _raw_data for a fully-transformed table.
-func (h *RegistryHandler) DropGINIndex(c *fiber.Ctx) error {
-	id, _ := c.ParamsInt("id")
-	entry, err := h.repo.GetByID(c.Context(), uint(id))
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "registry entry not found"})
-	}
-
-	if err := h.natsClient.Conn.Publish("cdc.cmd.drop-gin-index", []byte(entry.TargetTable)); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + err.Error()})
-	}
-
-	return c.Status(202).JSON(fiber.Map{
-		"message":      "drop-gin-index command accepted",
-		"target_table": entry.TargetTable,
-	})
-}
-
-// DispatchStatus godoc
-// @Summary      Poll status of a dispatched async command
-// @Description  Reads cdc_activity_log entries for a registry entry filtered by operation/subject.
-//               Returns list of status transitions (accepted, running, success, error).
-// @Tags         Table Registry
-// @Produce      json
-// @Param        id      path  int    true  "Registry entry ID"
-// @Param        subject query string false "NATS subject or operation filter (e.g. cdc.cmd.scan-fields)"
-// @Param        since   query string false "RFC3339 timestamp; only entries after this are returned"
-// @Success      200 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/registry/{id}/dispatch-status [get]
+// DispatchStatus is kept as a compatibility delegate behind the V2
+// /api/v1/source-objects/registry/:id/dispatch-status facade.
 func (h *RegistryHandler) DispatchStatus(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
@@ -842,8 +603,8 @@ func (h *RegistryHandler) DispatchStatus(c *fiber.Ctx) error {
 // Flow: CMS publishes → worker consumes cdc.cmd.detect-timestamp-field →
 // worker updates registry row → next recon tick uses the new field.
 //
-// POST /api/registry/:id/detect-timestamp-field
-// Response: 202 Accepted with the target_table so FE can poll.
+// The public CMS route now lives under
+// /api/v1/source-objects/registry/:id/detect-timestamp-field.
 func (h *RegistryHandler) DetectTimestampField(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
@@ -875,6 +636,27 @@ func (h *RegistryHandler) DetectTimestampField(c *fiber.Ctx) error {
 		"message":      "timestamp field detection dispatched",
 		"target_table": entry.TargetTable,
 	})
+}
+
+// normalizeShadowIdent converts an arbitrary source_db value into a
+// Postgres-safe identifier suffix used to derive shadow_<src> schema
+// names. Lowercases letters; non-alphanumeric/underscore → underscore.
+// No length cap here — caller's validateIdent enforces 63-byte limit
+// at the schema layer.
+func normalizeShadowIdent(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			out = append(out, c+32)
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	return string(out)
 }
 
 // isValidTimestampField returns true when the name is a safe Mongo field

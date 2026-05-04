@@ -143,37 +143,9 @@ func (r *RegistryRepo) GetStats(ctx context.Context) (*RegistryStats, error) {
 	return stats, nil
 }
 
-func (r *RegistryRepo) ScanRawKeys(ctx context.Context, targetTable string) ([]string, error) {
-	var keys []string
-	// SQL injection protection: targetTable comes from registry, but we should be careful.
-	// Since targetTable is an identifier, we don't use parameter binding for it.
-	query := `SELECT DISTINCT jsonb_object_keys(_raw_data) as key FROM "` + targetTable + `" LIMIT 100`
-	err := r.db.WithContext(ctx).Raw(query).Scan(&keys).Error
-	return keys, err
-}
-
-func (r *RegistryRepo) PerformBackfill(ctx context.Context, targetTable, sourceField, targetColumn, dataType string) (int64, error) {
-	// Use Raw SQL for complex JSONB casting
-	// Caution: targetTable and targetColumn should be validated against registry before calling this
-	query := `UPDATE "` + targetTable + `" SET ` + targetColumn + ` = (_raw_data->>'` + sourceField + `')::` + dataType + ` WHERE ` + targetColumn + ` IS NULL`
-	result := r.db.WithContext(ctx).Exec(query)
-	return result.RowsAffected, result.Error
-}
-
 type DBColumn struct {
 	ColumnName string `gorm:"column:column_name"`
 	DataType   string `gorm:"column:data_type"`
-}
-
-func (r *RegistryRepo) GetDBColumns(ctx context.Context, tableName string) ([]DBColumn, error) {
-	var columns []DBColumn
-	query := `
-		SELECT column_name, data_type 
-		FROM information_schema.columns 
-		WHERE table_name = ? AND table_schema = 'public'
-	`
-	err := r.db.WithContext(ctx).Raw(query, tableName).Scan(&columns).Error
-	return columns, err
 }
 
 func (r *RegistryRepo) UpdateActiveStatusByTable(ctx context.Context, sourceTable string, isActive bool) error {

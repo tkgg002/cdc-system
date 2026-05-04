@@ -55,25 +55,33 @@ func (r *PendingFieldRepo) Update(ctx context.Context, pf *model.PendingField) e
 // UpsertPendingField inserts or increments detection_count
 func (r *PendingFieldRepo) UpsertPendingField(ctx context.Context, tableName, sourceDB, fieldName, sampleValue, suggestedType string) error {
 	sql := `
-		INSERT INTO pending_fields (table_name, source_db, field_name, sample_value, suggested_type, detected_at, status, detection_count)
+		INSERT INTO cdc_system.pending_fields (table_name, source_db, field_name, sample_value, suggested_type, detected_at, status, detection_count)
 		VALUES (?, ?, ?, ?, ?, NOW(), 'pending', 1)
 		ON CONFLICT (table_name, field_name) DO UPDATE SET
-			detection_count = pending_fields.detection_count + 1,
+			detection_count = cdc_system.pending_fields.detection_count + 1,
 			sample_value = EXCLUDED.sample_value,
 			suggested_type = CASE
-				WHEN pending_fields.detection_count < 5 THEN EXCLUDED.suggested_type
-				ELSE pending_fields.suggested_type
+				WHEN cdc_system.pending_fields.detection_count < 5 THEN EXCLUDED.suggested_type
+				ELSE cdc_system.pending_fields.suggested_type
 			END
-		WHERE pending_fields.status = 'pending'
+		WHERE cdc_system.pending_fields.status = 'pending'
 	`
 	return r.db.WithContext(ctx).Exec(sql, tableName, sourceDB, fieldName, sampleValue, suggestedType).Error
 }
 
 // GetTableColumns returns column names from information_schema
 func (r *PendingFieldRepo) GetTableColumns(ctx context.Context, tableName string) (map[string]bool, error) {
+	return r.GetTableColumnsInSchema(ctx, "public", tableName)
+}
+
+func (r *PendingFieldRepo) GetTableColumnsInSchema(ctx context.Context, schemaName, tableName string) (map[string]bool, error) {
+	if schemaName == "" {
+		schemaName = "public"
+	}
 	var columns []string
 	err := r.db.WithContext(ctx).Raw(
-		"SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
+		"SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?",
+		schemaName,
 		tableName,
 	).Scan(&columns).Error
 	if err != nil {

@@ -17,4 +17,4 @@ type WorkerSchedule struct {
 	UpdatedAt       time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
-func (WorkerSchedule) TableName() string { return "cdc_worker_schedule" }
+func (WorkerSchedule) TableName() string { return "cdc_system.cdc_worker_schedule" }

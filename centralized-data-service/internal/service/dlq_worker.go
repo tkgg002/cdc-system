@@ -164,7 +164,7 @@ func (w *DLQWorker) RunOnce(ctx context.Context) {
 
 	var rows []model.FailedSyncLog
 	err := w.db.WithContext(cycleCtx).
-		Raw(`SELECT * FROM failed_sync_logs
+		Raw(`SELECT * FROM cdc_system.failed_sync_logs
 			 WHERE status IN ('pending','failed','retrying')
 			   AND (next_retry_at IS NULL OR next_retry_at < NOW())
 			   AND retry_count < ?
@@ -199,7 +199,7 @@ func (w *DLQWorker) retryOne(ctx context.Context, r model.FailedSyncLog) {
 	// will try again (with incremented retry_count after successful
 	// UPDATE below; the crash-before-UPDATE case is idempotent).
 	if err := w.db.WithContext(ctx).Exec(
-		`UPDATE failed_sync_logs SET status='retrying', last_retry_at=? WHERE id=?`,
+		`UPDATE cdc_system.failed_sync_logs SET status='retrying', last_retry_at=? WHERE id=?`,
 		now, r.ID,
 	).Error; err != nil {
 		w.logger.Warn("dlq worker: mark retrying failed", zap.Uint64("id", r.ID), zap.Error(err))
@@ -212,7 +212,7 @@ func (w *DLQWorker) retryOne(ctx context.Context, r model.FailedSyncLog) {
 	if err == nil {
 		// resolved
 		w.db.WithContext(ctx).Exec(
-			`UPDATE failed_sync_logs
+			`UPDATE cdc_system.failed_sync_logs
 			   SET status='resolved', resolved_at=?, retry_count=?, next_retry_at=NULL
 			 WHERE id=?`,
 			now, retryCount, r.ID,
@@ -230,7 +230,7 @@ func (w *DLQWorker) retryOne(ctx context.Context, r model.FailedSyncLog) {
 	if retryCount >= w.cfg.MaxRetries {
 		errMsg := truncate(err.Error(), 2000)
 		w.db.WithContext(ctx).Exec(
-			`UPDATE failed_sync_logs
+			`UPDATE cdc_system.failed_sync_logs
 			   SET status='dead_letter', retry_count=?, last_error=?, next_retry_at=NULL
 			 WHERE id=?`,
 			retryCount, errMsg, r.ID,
@@ -248,7 +248,7 @@ func (w *DLQWorker) retryOne(ctx context.Context, r model.FailedSyncLog) {
 	next := now.Add(BackoffDelay(retryCount))
 	errMsg := truncate(err.Error(), 2000)
 	w.db.WithContext(ctx).Exec(
-		`UPDATE failed_sync_logs
+		`UPDATE cdc_system.failed_sync_logs
 		   SET status='retrying', retry_count=?, next_retry_at=?, last_error=?
 		 WHERE id=?`,
 		retryCount, next, errMsg, r.ID,
@@ -379,7 +379,7 @@ func (w *DLQWorker) refreshStuckGauge(ctx context.Context) {
 	}
 	var rows []row
 	err := w.db.WithContext(ctx).Raw(
-		`SELECT status, COUNT(*) AS cnt FROM failed_sync_logs GROUP BY status`,
+		`SELECT status, COUNT(*) AS cnt FROM cdc_system.failed_sync_logs GROUP BY status`,
 	).Scan(&rows).Error
 	if err != nil {
 		return

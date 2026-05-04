@@ -20,4 +20,4 @@ type ActivityLog struct {
 	CreatedAt    time.Time       `gorm:"column:created_at" json:"created_at"`
 }
 
-func (ActivityLog) TableName() string { return "cdc_activity_log" }
+func (ActivityLog) TableName() string { return "cdc_system.cdc_activity_log" }

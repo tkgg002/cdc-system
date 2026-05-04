@@ -65,3 +65,47 @@ func TestRegistryService_GetMappingRules(t *testing.T) {
 	none := rs.GetMappingRules("unknown")
 	assert.Nil(t, none)
 }
+
+// Phase multi_engine_unified — T1.3 DoD.
+// Three rows seeded across postgresql + mongodb + mysql, each with
+// sync_engine ∈ {debezium, both}. GetDebeziumNamespaces returns 3
+// tuples with the correct (engine, db, namespace, object).
+func TestRegistryNamespaces_ThreeEnginesDebezium(t *testing.T) {
+	rs := &RegistryService{
+		logger:        zap.NewNop(),
+		registryCache: make(map[string]*model.TableRegistry),
+	}
+	entries := []model.TableRegistry{
+		{TargetTable: "shadow_orders", SourceTable: "orders", SourceDB: "goopay_source", SourceType: "postgresql", SyncEngine: "debezium"},
+		{TargetTable: "shadow_payment_bills", SourceTable: "payment-bills", SourceDB: "payment-bill-service", SourceType: "mongodb", SyncEngine: "debezium"},
+		{TargetTable: "shadow_legacy_orders", SourceTable: "legacy_orders", SourceDB: "goopay_legacy_maria", SourceType: "mysql", SyncEngine: "both"},
+		// Should be filtered out — sync_engine=airbyte.
+		{TargetTable: "shadow_skip", SourceTable: "skip_table", SourceDB: "x", SourceType: "postgresql", SyncEngine: "airbyte"},
+	}
+	for i := range entries {
+		rs.registryCache[entries[i].TargetTable] = &entries[i]
+	}
+
+	got := rs.GetDebeziumNamespaces()
+	assert.Len(t, got, 3, "expected 3 namespaces (skip airbyte)")
+
+	byEngine := map[string]DebeziumNamespace{}
+	for _, n := range got {
+		byEngine[n.Engine] = n
+	}
+
+	pg := byEngine["postgresql"]
+	assert.Equal(t, "goopay_source", pg.Database)
+	assert.Equal(t, "public", pg.Namespace, "PG synthesises namespace=public")
+	assert.Equal(t, "orders", pg.Object)
+
+	mg := byEngine["mongodb"]
+	assert.Equal(t, "payment-bill-service", mg.Database)
+	assert.Equal(t, "payment-bill-service", mg.Namespace, "Mongo: namespace==database")
+	assert.Equal(t, "payment-bills", mg.Object)
+
+	my := byEngine["mysql"]
+	assert.Equal(t, "goopay_legacy_maria", my.Database)
+	assert.Equal(t, "goopay_legacy_maria", my.Namespace, "MySQL/MariaDB: namespace==database")
+	assert.Equal(t, "legacy_orders", my.Object)
+}

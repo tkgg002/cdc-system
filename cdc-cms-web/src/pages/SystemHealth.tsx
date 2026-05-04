@@ -210,7 +210,6 @@ function InfrastructureBody({ data, pipeline }: { data: unknown; pipeline: unkno
     { key: 'nats', label: 'NATS', data: infra.nats },
     { key: 'postgres', label: 'PostgreSQL', data: infra.postgres },
     { key: 'redis', label: 'Redis', data: infra.redis },
-    { key: 'airbyte', label: 'Airbyte', data: infra.airbyte },
     { key: 'debezium', label: 'Debezium', data: debezium },
     { key: 'worker', label: 'Worker', data: worker },
   ];

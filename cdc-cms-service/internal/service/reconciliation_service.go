@@ -10,7 +10,7 @@ import (
 )
 
 // pipeline was retired (plan v2 §R3). The CDC v1.25 architecture uses
-// cdc_internal.table_registry + Debezium Connect REST for source-side
+// cdc_system.cdc_table_registry + Debezium Connect REST for source-side
 // reconciliation — see Command Center at /api/v1/system/connectors.
 //
 // Future work: reimplement reconcile() against Debezium connector status

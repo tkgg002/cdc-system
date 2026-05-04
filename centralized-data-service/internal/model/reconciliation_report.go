@@ -6,9 +6,9 @@ import (
 )
 
 type ReconciliationReport struct {
-	ID           uint64          `gorm:"primaryKey" json:"id"`
-	TargetTable  string          `gorm:"column:target_table;not null" json:"target_table"`
-	SourceDB     string          `gorm:"column:source_db" json:"source_db"`
+	ID          uint64 `gorm:"primaryKey" json:"id"`
+	TargetTable string `gorm:"column:target_table;not null" json:"target_table"`
+	SourceDB    string `gorm:"column:source_db" json:"source_db"`
 	// Migration 017 — SourceCount is pointer/nullable so we can distinguish
 	// query failure (NULL) from actual empty window (0). Old call sites
 	// that set 0 continue to work; NULL is only written when an error
@@ -27,10 +27,10 @@ type ReconciliationReport struct {
 	ErrorMessage *string         `gorm:"column:error_message" json:"error_message"`
 	// Migration 017 — structured error category (SRC_TIMEOUT, SRC_CONNECTION,
 	// SRC_FIELD_MISSING, etc.). Empty string / NULL for success rows.
-	ErrorCode    string          `gorm:"column:error_code" json:"error_code"`
-	CheckedAt    time.Time       `gorm:"column:checked_at" json:"checked_at"`
-	HealedAt     *time.Time      `gorm:"column:healed_at" json:"healed_at"`
-	HealedCount  int             `gorm:"column:healed_count;default:0" json:"healed_count"`
+	ErrorCode   string     `gorm:"column:error_code" json:"error_code"`
+	CheckedAt   time.Time  `gorm:"column:checked_at" json:"checked_at"`
+	HealedAt    *time.Time `gorm:"column:healed_at" json:"healed_at"`
+	HealedCount int        `gorm:"column:healed_count;default:0" json:"healed_count"`
 }
 
-func (ReconciliationReport) TableName() string { return "cdc_reconciliation_report" }
+func (ReconciliationReport) TableName() string { return "cdc_system.cdc_reconciliation_report" }

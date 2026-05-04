@@ -38,15 +38,38 @@ func (h *MappingPreviewHandler) Preview(c *fiber.Ctx) error {
 		limit = 3
 	}
 
+	// Phase 39 — resolve shadow_schema từ binding (schema-aware).
+	// Miss → 404 binding_not_found (caller chưa register hoặc binding inactive).
+	var shadowSchema string
+	if err := h.db.WithContext(c.Context()).Raw(
+		`SELECT shadow_schema FROM cdc_system.shadow_binding
+		  WHERE shadow_table = ? AND is_active = true LIMIT 1`,
+		req.ShadowTable,
+	).Scan(&shadowSchema).Error; err != nil {
+		h.logger.Error("preview: binding lookup failed",
+			zap.String("table", req.ShadowTable), zap.Error(err))
+		return c.Status(500).JSON(fiber.Map{"error": "binding_lookup_failed"})
+	}
+	if shadowSchema == "" {
+		return c.Status(404).JSON(fiber.Map{
+			"error":        "binding_not_found",
+			"shadow_table": req.ShadowTable,
+		})
+	}
+	if !propIdentRe.MatchString(shadowSchema) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_shadow_schema"})
+	}
+
 	// Fetch shadow sample rows — _raw_data + _gpay_source_id.
 	var rows []struct {
 		GpayID   int64  `gorm:"column:_gpay_id"`
 		SourceID string `gorm:"column:_gpay_source_id"`
 		RawData  []byte `gorm:"column:_raw_data"`
 	}
-	q := `SELECT _gpay_id, _gpay_source_id, _raw_data FROM cdc_internal.` + `"` + req.ShadowTable + `"` + ` ORDER BY _synced_at DESC LIMIT ?`
+	q := `SELECT _gpay_id, _gpay_source_id, _raw_data FROM "` + shadowSchema + `"."` + req.ShadowTable + `" ORDER BY _synced_at DESC LIMIT ?`
 	if err := h.db.WithContext(c.Context()).Raw(q, limit).Scan(&rows).Error; err != nil {
 		h.logger.Error("preview: shadow read failed",
+			zap.String("schema", shadowSchema),
 			zap.String("table", req.ShadowTable), zap.Error(err))
 		return c.Status(500).JSON(fiber.Map{"error": "shadow_read_failed", "detail": err.Error()})
 	}

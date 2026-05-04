@@ -116,7 +116,7 @@ func (c *PartitionDropperConfig) applyDefaults() {
 // For backfill (EnsureBackfillPartitions), each rule also knows:
 //   - DefaultTable: name of the catch-all partition to scan for orphans.
 //   - Granularity:  "daily" | "monthly" — dictates partition naming +
-//                   [start, end) range when materialising a new partition.
+//     [start, end) range when materialising a new partition.
 //   - NameForDay:   given a UTC day, return the child partition name.
 //   - RangeForDay:  given a UTC day, return the partition's [start, end).
 type partitionRule struct {
@@ -285,7 +285,7 @@ func (p *PartitionDropper) sweep(ctx context.Context, rule partitionRule, now ti
 	}
 	var rows []pgTable
 	err := p.db.WithContext(ctx).Raw(
-		`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename ~ ?`,
+		`SELECT tablename FROM pg_tables WHERE schemaname = 'cdc_system' AND tablename ~ ?`,
 		pgPattern,
 	).Scan(&rows).Error
 	if err != nil {
@@ -364,7 +364,7 @@ func (p *PartitionDropper) backfillFromDefault(ctx context.Context, rule partiti
 	// partitioned parent may not exist yet; silently skip.
 	var exists bool
 	if err := p.db.WithContext(ctx).Raw(
-		`SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = ?)`,
+		`SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'cdc_system' AND tablename = ?)`,
 		rule.DefaultTable,
 	).Scan(&exists).Error; err != nil {
 		return fmt.Errorf("probe default partition: %w", err)

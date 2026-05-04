@@ -12,16 +12,15 @@ import (
 	"gorm.io/gorm"
 )
 
-// TransmuteScheduler polls cdc_internal.transmute_schedule every `interval`
+// TransmuteScheduler polls cdc_system.transmute_schedule every `interval`
 // and enqueues due rows by publishing cdc.cmd.transmute. Concurrency-safe
 // across multiple instances via:
 //
 //  1. SELECT ... FOR UPDATE SKIP LOCKED inside a transaction → at most
 //     one scheduler instance claims a given row per tick.
-//  2. Fencing: each tick SET LOCAL cdc_internal session vars with the
-//     scheduler's current machine_id + fencing_token. If the DB says
-//     a newer token exists → the cdc_internal fencing triggers RAISE
-//     EXCEPTION and the whole tick rolls back (lesson #73).
+//  2. Fencing: each tick SET LOCAL cdc.* session GUCs with the
+//     scheduler's current machine_id + fencing_token so the scheduler
+//     keeps compatibility with the existing fencing/session contract.
 //
 // The cron parser is robfig/cron/v3 with 5-field classic crontab syntax.
 type TransmuteScheduler struct {
@@ -95,9 +94,8 @@ func (s *TransmuteScheduler) tick(ctx context.Context) {
 	claimed := 0
 	start := time.Now()
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Plant fencing session vars so any cdc_internal trigger attached
-		// to the future master_table_registry row can verify this
-		// scheduler instance still owns machine_id.
+		// Plant fencing session vars so the scheduler remains aligned with
+		// the existing worker fencing/session contract.
 		if err := tx.Exec(
 			`SELECT set_config('app.fencing_machine_id', ?, true), set_config('app.fencing_token', ?, true)`,
 			fmt.Sprintf("%d", s.machineID),
@@ -107,11 +105,14 @@ func (s *TransmuteScheduler) tick(ctx context.Context) {
 		}
 
 		rows, err := tx.Raw(
-			`SELECT id, master_table, cron_expr
-			   FROM cdc_internal.transmute_schedule
-			  WHERE is_enabled = true
-			    AND mode = 'cron'
-			    AND (next_run_at IS NULL OR next_run_at <= NOW())
+			`SELECT ts.id, mb.master_table, ts.cron_expr
+			   FROM cdc_system.transmute_schedule ts
+			   JOIN cdc_system.master_binding mb ON mb.id = ts.master_binding_id
+			  WHERE ts.is_enabled = true
+			    AND ts.mode = 'cron'
+			    AND mb.is_active = true
+			    AND mb.schema_status = 'approved'
+			    AND (ts.next_run_at IS NULL OR ts.next_run_at <= NOW())
 			  FOR UPDATE SKIP LOCKED
 			  LIMIT 10`,
 		).Rows()
@@ -138,11 +139,12 @@ func (s *TransmuteScheduler) tick(ctx context.Context) {
 		for _, d := range dues {
 			// Mark running + fire.
 			_ = tx.Exec(
-				`UPDATE cdc_internal.transmute_schedule
+				`UPDATE cdc_system.transmute_schedule
 				   SET last_status='running', last_run_at=?, updated_at=NOW()
 				 WHERE id=?`, now, d.id).Error
 
 			payload, _ := json.Marshal(map[string]any{
+				"schedule_id":    d.id,
 				"master_table":   d.master,
 				"triggered_by":   "scheduler",
 				"correlation_id": fmt.Sprintf("sched-%d-%d", d.id, now.UnixNano()),
@@ -155,7 +157,7 @@ func (s *TransmuteScheduler) tick(ctx context.Context) {
 						zap.Error(err))
 					lastErr := SanitizeFreeformText(err.Error(), 2000)
 					_ = tx.Exec(
-						`UPDATE cdc_internal.transmute_schedule
+						`UPDATE cdc_system.transmute_schedule
 						   SET last_status='failed', last_error=?, updated_at=NOW()
 						 WHERE id=?`, lastErr, d.id).Error
 					continue
@@ -169,14 +171,14 @@ func (s *TransmuteScheduler) tick(ctx context.Context) {
 					zap.Int64("id", d.id), zap.String("expr", d.cronExpr), zap.Error(perr))
 				lastErr := SanitizeFreeformText("cron parse: "+perr.Error(), 2000)
 				_ = tx.Exec(
-					`UPDATE cdc_internal.transmute_schedule
+					`UPDATE cdc_system.transmute_schedule
 					   SET last_status='failed', last_error=?, updated_at=NOW()
 					 WHERE id=?`, lastErr, d.id).Error
 				continue
 			}
 			next := schedule.Next(now)
 			if err := tx.Exec(
-				`UPDATE cdc_internal.transmute_schedule
+				`UPDATE cdc_system.transmute_schedule
 				   SET next_run_at=?, updated_at=NOW()
 				 WHERE id=?`, next, d.id).Error; err != nil {
 				return fmt.Errorf("update next_run_at: %w", err)

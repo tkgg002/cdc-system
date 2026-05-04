@@ -115,6 +115,7 @@ type ReconCore struct {
 	mongoClient   *mongo.Client
 	schemaAdapter *SchemaAdapter
 	registryRepo  *repository.RegistryRepo
+	metadata      MetadataRegistry
 	redis         *rediscache.RedisCache
 	cfg           ReconCoreConfig
 	logger        *zap.Logger
@@ -132,6 +133,10 @@ func NewReconCore(
 	logger *zap.Logger,
 ) *ReconCore {
 	return NewReconCoreWithConfig(sourceAgent, destAgent, db, mongoClient, schemaAdapter, registryRepo, nil, ReconCoreConfig{}, logger)
+}
+
+func (rc *ReconCore) SetMetadataRegistry(metadata MetadataRegistry) {
+	rc.metadata = metadata
 }
 
 // NewReconCoreWithConfig gives callers full control — used by the
@@ -278,7 +283,7 @@ func (rc *ReconCore) beginRun(ctx context.Context, table string, tier int) (*rec
 		started: time.Now().UTC(),
 	}
 	err := rc.db.WithContext(ctx).Exec(
-		`INSERT INTO recon_runs
+		`INSERT INTO cdc_system.recon_runs
 			(id, table_name, tier, status, started_at, instance_id)
 		 VALUES (?, ?, ?, 'running', ?, ?)`,
 		h.id, table, tier, h.started, rc.cfg.InstanceID,
@@ -308,7 +313,7 @@ func (rc *ReconCore) finishRun(ctx context.Context, h *reconRunHandle, status, e
 		updates["error_message"] = errMsg
 	}
 	if err := rc.db.WithContext(ctx).Exec(
-		`UPDATE recon_runs
+		`UPDATE cdc_system.recon_runs
 		 SET status=?, finished_at=?, docs_scanned=?, windows_checked=?,
 		     mismatches_found=?, heal_actions=?, error_message=?
 		 WHERE id=?`,
@@ -796,9 +801,9 @@ func (rc *ReconCore) CheckAll(ctx context.Context) []*model.ReconciliationReport
 		return nil
 	}
 
-	entries, err := rc.registryRepo.GetAllActive(ctx)
-	if err != nil {
-		rc.logger.Error("recon CheckAll: registry load failed", zap.Error(err))
+	entries := rc.listActiveTableConfigs(ctx)
+	if len(entries) == 0 {
+		rc.logger.Error("recon CheckAll: registry load failed", zap.String("reason", "no active table configs"))
 		return nil
 	}
 
@@ -844,6 +849,22 @@ func (rc *ReconCore) CheckAll(ctx context.Context) []*model.ReconciliationReport
 		rc.db.Model(&model.TableRegistry{}).Where("target_table = ?", report.TargetTable).Updates(updates)
 	}
 	return reports
+}
+
+func (rc *ReconCore) listActiveTableConfigs(ctx context.Context) []model.TableRegistry {
+	if rc.metadata != nil {
+		if items := rc.metadata.ListTableConfigs(); len(items) > 0 {
+			return items
+		}
+	}
+	if rc.registryRepo == nil {
+		return nil
+	}
+	items, err := rc.registryRepo.GetAllActive(ctx)
+	if err != nil {
+		return nil
+	}
+	return items
 }
 
 // ============================================================

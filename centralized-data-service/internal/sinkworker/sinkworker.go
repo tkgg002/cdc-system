@@ -18,7 +18,7 @@ import (
 )
 
 // SinkWorker implements plan v7.2 §2 — the new pipeline that lands
-// Debezium events into cdc_internal shadow tables with 10 system fields
+// Debezium events into shadow_<source_db> shadow tables with 10 system fields
 // enforced, schema-on-read, and full fencing-trigger protection.
 //
 // Concurrency note: a single SinkWorker is *not* thread-safe for reuse
@@ -165,29 +165,29 @@ func (w *SinkWorker) HandleMessage(ctx context.Context, msg kafka.Message) error
 		record[k] = v
 	}
 
-	table := extractTableFromTopic(msg.Topic)
-	if table == "" {
+	shadowSchema, table := extractShadowTarget(msg.Topic)
+	if table == "" || shadowSchema == "" {
 		return fmt.Errorf("cannot derive table from topic %q", msg.Topic)
 	}
 
-	if err := w.schemaManager.EnsureShadowTable(ctx, table, record); err != nil {
-		return fmt.Errorf("schema ensure %s: %w", table, err)
+	if err := w.schemaManager.EnsureShadowTableInSchema(ctx, shadowSchema, table, record); err != nil {
+		return fmt.Errorf("schema ensure %s.%s: %w", shadowSchema, table, err)
 	}
 
 	snap := isSnapshotEvent(envelope)
-	if err := w.upsertWithFencing(ctx, table, record, snap); err != nil {
-		return fmt.Errorf("upsert %s: %w", table, err)
+	if err := w.upsertWithFencing(ctx, shadowSchema, table, record, snap); err != nil {
+		return fmt.Errorf("upsert %s.%s: %w", shadowSchema, table, err)
 	}
 	if snap {
 		w.logger.Debug("snapshot event upserted",
-			zap.String("table", table),
+			zap.String("table", shadowSchema+"."+table),
 			zap.String("source_id", sourceID),
 		)
 	}
 	// Post-ingest Transmute fan-out (plan v2 §R6.2). Best-effort publish —
 	// shadow write is already durable, so a NATS blip only delays master
 	// materialisation until the next scheduler tick or manual trigger.
-	w.publishTransmuteTrigger(table, sourceID)
+	w.publishTransmuteTrigger(shadowSchema, table, sourceID)
 	return nil
 }
 
@@ -195,7 +195,7 @@ func (w *SinkWorker) HandleMessage(ctx context.Context, msg kafka.Message) error
 // upsert. The Transmuter consumes cdc.cmd.transmute and incrementally
 // materialises the master rows keyed by this source_id. Fire-and-forget:
 // any publish error is logged but never bubbled up.
-func (w *SinkWorker) publishTransmuteTrigger(shadowTable, sourceID string) {
+func (w *SinkWorker) publishTransmuteTrigger(shadowSchema, shadowTable, sourceID string) {
 	if w.natsConn == nil {
 		return
 	}
@@ -203,10 +203,12 @@ func (w *SinkWorker) publishTransmuteTrigger(shadowTable, sourceID string) {
 	// hook stays cheap. We publish one message per shadow table; the
 	// Transmuter enumerates all active masters for that shadow.
 	payload, err := json.Marshal(map[string]any{
-		"shadow_table":   shadowTable,
-		"source_ids":     []string{sourceID},
-		"triggered_by":   "sinkworker",
-		"correlation_id": fmt.Sprintf("sink-%s-%d", shadowTable, time.Now().UnixNano()),
+		"shadow_table":          shadowTable,
+		"shadow_schema":         shadowSchema,
+		"shadow_connection_key": "default",
+		"source_ids":            []string{sourceID},
+		"triggered_by":          "sinkworker",
+		"correlation_id":        fmt.Sprintf("sink-%s-%d", shadowTable, time.Now().UnixNano()),
 	})
 	if err != nil {
 		w.logger.Warn("transmute trigger marshal failed", zap.Error(err))
@@ -223,7 +225,7 @@ func (w *SinkWorker) publishTransmuteTrigger(shadowTable, sourceID string) {
 // runs BEFORE INSERT OR UPDATE and will raise if the session vars are
 // missing (§7.6). When isSnapshot is true, the insert uses ON CONFLICT
 // DO NOTHING so snapshot replay cannot clobber newer streaming updates.
-func (w *SinkWorker) upsertWithFencing(ctx context.Context, table string, record map[string]any, isSnapshot bool) error {
+func (w *SinkWorker) upsertWithFencing(ctx context.Context, schemaName, table string, record map[string]any, isSnapshot bool) error {
 	return w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec(
 			`SELECT set_config('app.fencing_machine_id', ?, true), set_config('app.fencing_token', ?, true)`,
@@ -236,9 +238,9 @@ func (w *SinkWorker) upsertWithFencing(ctx context.Context, table string, record
 		var sqlText string
 		var values []any
 		if isSnapshot {
-			sqlText, values = buildUpsertSQLSnapshot(table, record)
+			sqlText, values = buildUpsertSQLSnapshotInSchema(schemaName, table, record)
 		} else {
-			sqlText, values = buildUpsertSQL(table, record)
+			sqlText, values = buildUpsertSQLInSchema(schemaName, table, record)
 		}
 		if err := tx.Exec(sqlText, values...).Error; err != nil {
 			return fmt.Errorf("exec upsert: %w", err)
@@ -267,18 +269,34 @@ func shouldSkipBusinessKey(k string) bool {
 	return false
 }
 
-// extractTableFromTopic maps a Debezium topic name to a shadow table name.
+// extractShadowTarget maps a Debezium topic name to shadow_<database>.<collection>.
 // Convention: cdc.<db-server>.<database>.<collection>. Any hyphen in the
-// collection becomes underscore (Postgres identifiers). Uppercase lowered
+// database/collection becomes underscore (Postgres identifiers). Uppercase lowered
 // for consistency.
-func extractTableFromTopic(topic string) string {
+func extractShadowTarget(topic string) (string, string) {
 	parts := strings.Split(topic, ".")
-	if len(parts) < 3 {
-		return ""
+	if len(parts) < 4 {
+		return "", ""
 	}
+	dbName := normalizeShadowSchema(parts[len(parts)-2])
 	coll := parts[len(parts)-1]
 	coll = strings.ReplaceAll(coll, "-", "_")
-	return strings.ToLower(coll)
+	return dbName, strings.ToLower(coll)
+}
+
+func extractTableFromTopic(topic string) string {
+	_, table := extractShadowTarget(topic)
+	return table
+}
+
+func normalizeShadowSchema(sourceDB string) string {
+	sourceDB = strings.ToLower(strings.TrimSpace(sourceDB))
+	sourceDB = strings.ReplaceAll(sourceDB, "-", "_")
+	sourceDB = strings.ReplaceAll(sourceDB, ".", "_")
+	if sourceDB == "" {
+		sourceDB = "default"
+	}
+	return "shadow_" + sourceDB
 }
 
 func sha256Hex(b []byte) string {

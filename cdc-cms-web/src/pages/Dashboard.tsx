@@ -9,7 +9,7 @@ import {
   AlertOutlined,
 } from '@ant-design/icons';
 import { cmsApi } from '../services/api';
-import type { RegistryStats } from '../types';
+import type { SourceObjectStats } from '../types';
 
 interface SyncHealth {
   total_streams: number;
@@ -22,7 +22,7 @@ interface SyncHealth {
 }
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<RegistryStats | null>(null);
+  const [stats, setStats] = useState<SourceObjectStats | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const [syncHealth, setSyncHealth] = useState<SyncHealth | null>(null);
   const [loading, setLoading] = useState(true);
@@ -31,7 +31,7 @@ export default function Dashboard() {
     const fetchData = async () => {
       try {
         const [statsRes, pendingRes, healthRes] = await Promise.all([
-          cmsApi.get('/api/registry/stats'),
+          cmsApi.get('/api/v1/source-objects/stats'),
           cmsApi.get('/api/schema-changes/pending?status=pending&page_size=1'),
           cmsApi.get('/api/sync/health').catch(() => ({ data: null })),
         ]);
@@ -54,12 +54,12 @@ export default function Dashboard() {
       <Row gutter={[16, 16]}>
         <Col xs={12} sm={6}>
           <Card>
-            <Statistic title="Registered Tables" value={stats?.total || 0} prefix={<DatabaseOutlined />} />
+            <Statistic title="Source Objects" value={stats?.total || 0} prefix={<DatabaseOutlined />} />
           </Card>
         </Col>
         <Col xs={12} sm={6}>
           <Card>
-            <Statistic title="Tables Created" value={stats?.tables_created || 0} prefix={<CheckCircleOutlined />} valueStyle={{ color: '#3f8600' }} />
+            <Statistic title="Shadow Ready" value={stats?.tables_created || 0} prefix={<CheckCircleOutlined />} valueStyle={{ color: '#3f8600' }} />
           </Card>
         </Col>
         <Col xs={12} sm={6}>

@@ -25,13 +25,17 @@ var immutableOnUpdate = map[string]struct{}{
 //
 // Output SQL template (with OCC guard baked in per gap-fix §7.5):
 //
-//	INSERT INTO cdc_internal."<table>" ("col1","col2",...)
+//	INSERT INTO shadow_<source_db>."<table>" ("col1","col2",...)
 //	VALUES ($1, $2, ...)
 //	ON CONFLICT (_gpay_source_id) WHERE NOT _gpay_deleted
 //	DO UPDATE SET "col1"=EXCLUDED."col1", ...
-//	WHERE cdc_internal."<table>"._source_ts IS NULL
-//	   OR EXCLUDED._source_ts > cdc_internal."<table>"._source_ts
+//	WHERE shadow_<source_db>."<table>"._source_ts IS NULL
+//	   OR EXCLUDED._source_ts > shadow_<source_db>."<table>"._source_ts
 func buildUpsertSQL(table string, record map[string]any) (sqlText string, values []any) {
+	return buildUpsertSQLInSchema("shadow_default", table, record)
+}
+
+func buildUpsertSQLInSchema(schemaName, table string, record map[string]any) (sqlText string, values []any) {
 	keys := make([]string, 0, len(record))
 	for k := range record {
 		keys = append(keys, k)
@@ -56,7 +60,7 @@ func buildUpsertSQL(table string, record map[string]any) (sqlText string, values
 			fmt.Sprintf("%s = EXCLUDED.%s", quoteIdent(k), quoteIdent(k)))
 	}
 
-	qt := "cdc_internal." + quoteIdent(table)
+	qt := quoteIdent(schemaName) + "." + quoteIdent(table)
 
 	sqlText = fmt.Sprintf(
 		`INSERT INTO %s (%s) VALUES (%s)
@@ -79,6 +83,10 @@ WHERE %s._source_ts IS NULL
 // state must never clobber a more recent streaming update of the same
 // document. Only INSERTs land; conflicts are silently skipped.
 func buildUpsertSQLSnapshot(table string, record map[string]any) (sqlText string, values []any) {
+	return buildUpsertSQLSnapshotInSchema("shadow_default", table, record)
+}
+
+func buildUpsertSQLSnapshotInSchema(schemaName, table string, record map[string]any) (sqlText string, values []any) {
 	keys := make([]string, 0, len(record))
 	for k := range record {
 		keys = append(keys, k)
@@ -94,7 +102,7 @@ func buildUpsertSQLSnapshot(table string, record map[string]any) (sqlText string
 		values = append(values, sqlBindValue(record[k]))
 	}
 
-	qt := "cdc_internal." + quoteIdent(table)
+	qt := quoteIdent(schemaName) + "." + quoteIdent(table)
 
 	sqlText = fmt.Sprintf(
 		`INSERT INTO %s (%s) VALUES (%s)

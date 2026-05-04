@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Table, Card, Typography, Space, Button, Tag, Modal, Input, Select, message, Alert,
   Descriptions, Switch,
@@ -8,14 +8,27 @@ import {
   DatabaseOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { cmsApi } from '../services/api';
 
 const { Title, Text } = Typography;
 
 interface MasterRow {
   id: number;
+  binding_code: string;
   master_name: string;
+  master_schema: string;
+  master_database?: string | null;
+  master_connection_code?: string | null;
   source_shadow: string;
+  source_database?: string | null;
+  source_schema?: string | null;
+  source_namespace?: string | null;
+  source_table?: string | null;
+  shadow_binding_id?: number | null;
+  shadow_schema?: string | null;
+  shadow_table?: string | null;
+  physical_table_fqn?: string | null;
   transform_type: string;
   spec: unknown;
   is_active: boolean;
@@ -39,15 +52,38 @@ const TRANSFORM_TYPES = ['copy_1_to_1', 'filter', 'aggregate', 'group_by', 'join
 
 export default function MasterRegistry() {
   const qc = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [createOpen, setCreateOpen] = useState(false);
   const [pending, setPending] = useState<{ row: MasterRow; op: 'approve' | 'reject' | 'toggle' } | null>(null);
   const [reason, setReason] = useState('');
   const [form, setForm] = useState({
     master_name: '',
-    source_shadow: '',
+    master_schema: 'dw_public',
+    shadow_schema: '',
+    shadow_table: '',
     transform_type: 'copy_1_to_1',
     spec: '{"pk":"_gpay_source_id"}',
   });
+  const sourceLabel = searchParams.get('source_label');
+  const sourceDB = searchParams.get('source_db');
+  const sourceTable = searchParams.get('source_table');
+  const shadowSchema = searchParams.get('shadow_schema');
+  const shadowTable = searchParams.get('shadow_table');
+
+  const normalizeMasterSchema = (value: string) =>
+    `dw_${value.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'default'}`;
+
+  useEffect(() => {
+    const sourceShadow = searchParams.get('source_shadow');
+    if (!sourceShadow && !shadowTable) return;
+    setForm((prev) => ({
+      ...prev,
+      master_schema: sourceDB ? normalizeMasterSchema(sourceDB) : prev.master_schema,
+      shadow_schema: shadowSchema || prev.shadow_schema,
+      shadow_table: shadowTable || sourceShadow || prev.shadow_table,
+    }));
+    setCreateOpen(true);
+  }, [searchParams, shadowSchema, shadowTable, sourceDB]);
 
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['master-registry'],
@@ -64,7 +100,12 @@ export default function MasterRegistry() {
         '/api/v1/masters',
         {
           master_name: args.master_name,
-          source_shadow: args.source_shadow,
+          master_schema: args.master_schema,
+          source_shadow: args.shadow_table,
+          source_database: sourceDB || undefined,
+          source_table: sourceTable || undefined,
+          shadow_schema: args.shadow_schema,
+          shadow_table: args.shadow_table,
           transform_type: args.transform_type,
           spec: JSON.parse(args.spec),
           reason: args.reason,
@@ -137,12 +178,22 @@ export default function MasterRegistry() {
     {
       title: 'Master',
       dataIndex: 'master_name',
-      render: (v: string) => <Space><DatabaseOutlined /><Text code>{v}</Text></Space>,
+      render: (v: string, r: MasterRow) => (
+        <Space direction="vertical" size={0}>
+          <Space><DatabaseOutlined /><Text code>{r.master_schema}.{v}</Text></Space>
+          {r.master_connection_code ? <Text type="secondary">{r.master_connection_code}</Text> : null}
+        </Space>
+      ),
     },
     {
-      title: 'Shadow',
+      title: 'Source / Shadow',
       dataIndex: 'source_shadow',
-      render: (v: string) => <Text type="secondary">{v}</Text>,
+      render: (v: string, r: MasterRow) => (
+        <Space direction="vertical" size={0}>
+          {r.source_database && r.source_table ? <Text>{r.source_database}.{r.source_table}</Text> : null}
+          <Text type="secondary">{v}</Text>
+        </Space>
+      ),
     },
     {
       title: 'Transform',
@@ -210,7 +261,7 @@ export default function MasterRegistry() {
   return (
     <Card bordered={false}>
       <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Title level={4} style={{ margin: 0 }}>Master Table Registry</Title>
+        <Title level={4} style={{ margin: 0 }}>Master Registry</Title>
         <Space>
           <Button icon={<ReloadOutlined />} loading={isFetching} onClick={() => refetch()}>Refresh</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
@@ -222,6 +273,21 @@ export default function MasterRegistry() {
         Sprint 5 §R8 — Approve triggers worker <code>cdc.cmd.master-create</code> → auto DDL (CREATE TABLE + indexes + RLS).
         Active gate L2: is_active chỉ flip được khi schema_status='approved'.
       </Text>
+      {sourceLabel && (
+        <Alert
+          style={{ marginTop: 16 }}
+          type="info"
+          showIcon
+          message="Source object context"
+          description={
+            <span>
+              Shadow hiện hành: <Text code>{sourceLabel}</Text>
+              {sourceDB && sourceTable ? <> từ source <Text code>{sourceDB}.{sourceTable}</Text></> : null}.
+              API hiện tại sẽ ưu tiên resolve theo <Text code>shadow_schema</Text> + <Text code>shadow_table</Text>; <Text code>source_shadow</Text> chỉ còn là compatibility fallback.
+            </span>
+          }
+        />
+      )}
 
       <Table
         style={{ marginTop: 16 }}
@@ -235,6 +301,12 @@ export default function MasterRegistry() {
             <Descriptions size="small" column={2} bordered>
               <Descriptions.Item label="Spec" span={2}>
                 <pre style={{ margin: 0, fontSize: 11 }}>{JSON.stringify(r.spec, null, 2)}</pre>
+              </Descriptions.Item>
+              <Descriptions.Item label="Master FQN">
+                <Text code>{r.master_schema}.{r.master_name}</Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="Shadow FQN">
+                <Text code>{r.source_shadow}</Text>
               </Descriptions.Item>
               {r.rejection_reason && (
                 <Descriptions.Item label="Rejection reason" span={2}>
@@ -252,7 +324,18 @@ export default function MasterRegistry() {
         open={createOpen}
         title="Create Master Table"
         onOk={submitCreate}
-        onCancel={() => { setCreateOpen(false); setReason(''); }}
+        onCancel={() => {
+          setCreateOpen(false);
+          setReason('');
+          if (searchParams.get('source_shadow')) {
+            const next = new URLSearchParams(searchParams);
+            next.delete('source_shadow');
+            next.delete('source_label');
+            next.delete('source_db');
+            next.delete('source_table');
+            setSearchParams(next, { replace: true });
+          }
+        }}
         confirmLoading={createMut.isPending}
         okText="Submit for review"
         cancelText="Cancel"
@@ -271,10 +354,25 @@ export default function MasterRegistry() {
             onChange={(e) => setForm({ ...form, master_name: e.target.value })}
           />
           <Input
-            placeholder="source_shadow (cdc_internal table)"
-            value={form.source_shadow}
-            onChange={(e) => setForm({ ...form, source_shadow: e.target.value })}
+            placeholder="master schema (e.g. dw_payment)"
+            value={form.master_schema}
+            onChange={(e) => setForm({ ...form, master_schema: e.target.value })}
           />
+          <Input
+            placeholder="shadow schema (e.g. shadow_goopay_payment)"
+            value={form.shadow_schema}
+            onChange={(e) => setForm({ ...form, shadow_schema: e.target.value })}
+          />
+          <Input
+            placeholder="shadow table (e.g. payments)"
+            value={form.shadow_table}
+            onChange={(e) => setForm({ ...form, shadow_table: e.target.value })}
+          />
+          {sourceLabel && (
+            <Text type="secondary">
+              Shadow namespace hiển thị cho operator: <Text code>{sourceLabel}</Text>. Form sẽ submit theo schema/table thực để API resolve master binding trên metadata V2.
+            </Text>
+          )}
           <Select
             style={{ width: '100%' }}
             value={form.transform_type}

@@ -53,6 +53,7 @@ type BackfillSourceTsService struct {
 	db           *gorm.DB
 	mongoClient  *mongo.Client
 	registryRepo *repository.RegistryRepo
+	metadata     MetadataRegistry
 	cfg          BackfillSourceTsConfig
 	logger       *zap.Logger
 }
@@ -74,6 +75,10 @@ func NewBackfillSourceTsService(
 	}
 }
 
+func (b *BackfillSourceTsService) SetMetadataRegistry(metadata MetadataRegistry) {
+	b.metadata = metadata
+}
+
 // BackfillResult aggregates per-table outcome for one run.
 type BackfillResult struct {
 	Table      string `json:"table"`
@@ -93,9 +98,9 @@ func (b *BackfillSourceTsService) BackfillAll(
 	tables []string,
 ) ([]BackfillResult, error) {
 	if len(tables) == 0 {
-		entries, err := b.registryRepo.GetAllActive(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("backfill: load registry: %w", err)
+		entries := b.listActiveTableConfigs(ctx)
+		if len(entries) == 0 {
+			return nil, fmt.Errorf("backfill: load registry: no active table configs")
 		}
 		for _, e := range entries {
 			tables = append(tables, e.TargetTable)
@@ -259,12 +264,33 @@ func (b *BackfillSourceTsService) lookupRegistry(
 	ctx context.Context,
 	table string,
 ) (model.TableRegistry, error) {
+	if b.metadata != nil {
+		if entry := b.metadata.GetTableConfig(table); entry != nil {
+			return *entry, nil
+		}
+	}
 	var entry model.TableRegistry
 	if err := b.db.WithContext(ctx).
 		Where("target_table = ?", table).First(&entry).Error; err != nil {
 		return entry, fmt.Errorf("registry not found for %q: %w", table, err)
 	}
 	return entry, nil
+}
+
+func (b *BackfillSourceTsService) listActiveTableConfigs(ctx context.Context) []model.TableRegistry {
+	if b.metadata != nil {
+		if items := b.metadata.ListTableConfigs(); len(items) > 0 {
+			return items
+		}
+	}
+	if b.registryRepo == nil {
+		return nil
+	}
+	items, err := b.registryRepo.GetAllActive(ctx)
+	if err != nil {
+		return nil
+	}
+	return items
 }
 
 // fetchNullBatch returns up to `limit` primary-key values with NULL
@@ -429,7 +455,7 @@ func (b *BackfillSourceTsService) beginRun(
 	}
 	instance := fmt.Sprintf("backfill:%s", correlationID)
 	err := b.db.WithContext(ctx).Exec(
-		`INSERT INTO recon_runs
+		`INSERT INTO cdc_system.recon_runs
 			(id, table_name, tier, status, started_at, instance_id)
 		 VALUES (?, ?, 4, 'running', ?, ?)`,
 		h.id, table, h.started, instance,
@@ -445,7 +471,7 @@ func (b *BackfillSourceTsService) touchRunProgress(
 	h *backfillRunHandle,
 ) {
 	_ = b.db.WithContext(ctx).Exec(
-		`UPDATE recon_runs
+		`UPDATE cdc_system.recon_runs
 		   SET docs_scanned=?, heal_actions=?
 		 WHERE id=?`,
 		h.docsScanned, h.healActions, h.id,
@@ -460,7 +486,7 @@ func (b *BackfillSourceTsService) finishRun(
 	finished := time.Now().UTC()
 	errMsg = SanitizeFreeformText(errMsg, 2000)
 	_ = b.db.WithContext(ctx).Exec(
-		`UPDATE recon_runs
+		`UPDATE cdc_system.recon_runs
 		   SET status=?, finished_at=?, docs_scanned=?, heal_actions=?, error_message=?
 		 WHERE id=?`,
 		status, finished, h.docsScanned, h.healActions, errMsg, h.id,

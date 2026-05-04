@@ -30,4 +30,4 @@ type FailedSyncLog struct {
 	LastError   *string    `gorm:"column:last_error" json:"last_error"`
 }
 
-func (FailedSyncLog) TableName() string { return "failed_sync_logs" }
+func (FailedSyncLog) TableName() string { return "cdc_system.failed_sync_logs" }

@@ -64,6 +64,34 @@ const { Text } = Typography;
 
 const { Title } = Typography;
 
+function normalizeShadowSchema(sourceDB: string) {
+  const normalized = sourceDB
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `shadow_${normalized || 'unknown'}`;
+}
+
+function getShadowFqn(record: Pick<ReconReport, 'source_db' | 'target_table'>) {
+  return `${normalizeShadowSchema(record.source_db)}.${record.target_table}`;
+}
+
+function getResolvedShadowFqn(record: Pick<ReconReport, 'source_db' | 'target_table'> & { shadow_schema?: string | null; shadow_table?: string | null }) {
+  if (record.shadow_schema && record.shadow_table) return `${record.shadow_schema}.${record.shadow_table}`;
+  return getShadowFqn(record);
+}
+
+function getFailedLogSourceLabel(record: FailedLog) {
+  const sourceDB = record.source_db || 'unknown';
+  const sourceTable = record.resolved_source_table || record.target_table;
+  return `${sourceDB}.${sourceTable}`;
+}
+
+function getFailedLogShadowFqn(record: FailedLog) {
+  if (record.shadow_schema && record.shadow_table) return `${record.shadow_schema}.${record.shadow_table}`;
+  return `${normalizeShadowSchema(record.source_db || 'unknown')}.${record.target_table}`;
+}
+
 // Status colour + VI label lookup (ADR §2.8). `error` is handled separately
 // so it can surface the structured `error_code`.
 const STATUS_COLOR: Record<ReconStatus, string> = {
@@ -88,8 +116,6 @@ const STATUS_LABEL_VI: Record<ReconStatus, string> = {
 
 const SYNC_ENGINE_COLOR: Record<string, string> = {
   debezium: 'blue',
-  airbyte: 'green',
-  both: 'purple',
 };
 
 // ---- Modal plan types ---------------------------------------------------
@@ -206,11 +232,28 @@ export default function DataIntegrity() {
         message.success('Đã kích hoạt kiểm tra — kết quả sẽ cập nhật trong vài phút.');
         setTimeout(invalidateReports, 5000);
       } else if (action.kind === 'check-table') {
-        await checkTable.mutateAsync({ table: action.table, tier: action.tier, reason });
+        const row = reportByTarget.get(action.table);
+        await checkTable.mutateAsync({
+          table: action.table,
+          tier: action.tier,
+          reason,
+          sourceDatabase: row?.source_db,
+          sourceTable: row?.source_table || undefined,
+          shadowSchema: row?.shadow_schema || undefined,
+          shadowTable: row?.shadow_table || undefined,
+        });
         message.success(`Đang kiểm tra Tier ${action.tier} cho ${action.table}…`);
         setTimeout(invalidateReports, 10000);
       } else if (action.kind === 'heal') {
-        await heal.mutateAsync({ table: action.table, reason });
+        const row = reportByTarget.get(action.table);
+        await heal.mutateAsync({
+          table: action.table,
+          reason,
+          sourceDatabase: row?.source_db,
+          sourceTable: row?.source_table || undefined,
+          shadowSchema: row?.shadow_schema || undefined,
+          shadowTable: row?.shadow_table || undefined,
+        });
         message.success(`Đang chữa lành ${action.table}…`);
         setTimeout(invalidateReports, 10000);
       } else if (action.kind === 'retry') {
@@ -252,6 +295,12 @@ export default function DataIntegrity() {
     return Array.from(set).sort();
   }, [reportList]);
 
+  const reportByTarget = useMemo(() => {
+    const map = new Map<string, ReconReport>();
+    reportList.forEach((row) => map.set(row.target_table, row));
+    return map;
+  }, [reportList]);
+
   const backfillRows = backfillStatus.data?.data ?? [];
 
   // ---- Columns ---------------------------------------------------------
@@ -261,12 +310,23 @@ export default function DataIntegrity() {
   // drift% uses the unsigned formula; errors translate to VI via
   // `lookupReconError`.
   const reportColumns: ColumnsType<ReconReport> = [
-    { title: 'Bảng', dataIndex: 'target_table', key: 'target_table' },
+    {
+      title: 'Source / Shadow',
+      key: 'source_shadow',
+      width: 280,
+      render: (_: unknown, record: ReconReport) => (
+        <Space direction="vertical" size={0}>
+          <Text>{record.source_db}.{record.target_table}</Text>
+          <Text type="secondary" code>{getResolvedShadowFqn(record)}</Text>
+          {record.scope_ambiguous ? <Tag color="orange">Ambiguous</Tag> : null}
+        </Space>
+      ),
+    },
     {
       title: (
         <Space size={4}>
           Sync Engine
-          <Tooltip title="Airbyte hoặc Debezium quản lý sync bảng này">
+          <Tooltip title="Engine đồng bộ hiện hành của bảng này. Với scope hiện tại, Debezium là luồng chuẩn.">
             <InfoCircleOutlined tabIndex={0} aria-label="Giải thích Sync Engine" />
           </Tooltip>
         </Space>
@@ -393,8 +453,12 @@ export default function DataIntegrity() {
       key: 'actions',
       render: (_: unknown, record: ReconReport) => (
         <Space>
-          {record.registry_id != null && (
-            <ReDetectButton targetTable={record.target_table} registryId={record.registry_id} />
+          {(record.source_object_id != null || record.registry_id != null) && (
+            <ReDetectButton
+              targetTable={record.target_table}
+              sourceObjectId={record.source_object_id}
+              registryId={record.registry_id}
+            />
           )}
           <Button
             size="small"
@@ -420,7 +484,21 @@ export default function DataIntegrity() {
   ];
 
   const failedColumns: ColumnsType<FailedLog> = [
-    { title: 'Bảng', dataIndex: 'target_table', width: 150 },
+    {
+      title: 'Source / Shadow',
+      width: 260,
+      render: (_: unknown, record) => {
+        const meta = reportByTarget.get(record.target_table);
+        if (!meta && !record.source_db && !record.shadow_schema) return <Text code>{record.target_table}</Text>;
+        return (
+          <Space direction="vertical" size={0}>
+            <Text>{meta ? `${meta.source_db}.${meta.source_table || meta.target_table}` : getFailedLogSourceLabel(record)}</Text>
+            <Text type="secondary" code>{meta ? getResolvedShadowFqn(meta) : getFailedLogShadowFqn(record)}</Text>
+            {record.scope_ambiguous ? <Tag color="orange">Ambiguous</Tag> : null}
+          </Space>
+        );
+      },
+    },
     { title: 'Record ID', dataIndex: 'record_id', width: 200, ellipsis: true },
     {
       title: 'Loại lỗi',
@@ -478,6 +556,13 @@ export default function DataIntegrity() {
   return (
     <div>
       <Title level={4}>Toàn vẹn dữ liệu</Title>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="Integrity scope"
+        description="Mỗi dòng đối soát được hiểu là 1 source object đang sync vào 1 shadow target. UI hiện gửi thêm source/shadow context cho action Check / Heal; target_table chỉ còn là compatibility fallback trong giai đoạn chuyển tiếp."
+      />
 
       {showReportError && (
         <Alert

@@ -11,11 +11,11 @@ import (
 // malformed topics return "" so HandleMessage can reject early.
 func TestExtractTableFromTopic(t *testing.T) {
 	cases := map[string]string{
-		"cdc.goopay.payment-bill-service.payment-bills": "payment_bills",
+		"cdc.goopay.payment-bill-service.payment-bills":     "payment_bills",
 		"cdc.goopay.centralized-export-service.export-jobs": "export_jobs",
-		"cdc.goopay.ServiceA.UserProfiles": "userprofiles",
-		"malformed":  "",
-		"a.b":        "",
+		"cdc.goopay.ServiceA.UserProfiles":                  "userprofiles",
+		"malformed":                                         "",
+		"a.b":                                               "",
 	}
 	for in, want := range cases {
 		got := extractTableFromTopic(in)
@@ -99,7 +99,7 @@ func TestBuildUpsertSQL(t *testing.T) {
 	sqlText, values := buildUpsertSQL("payment_bills", rec)
 
 	// Quoted table name
-	if !strings.Contains(sqlText, `cdc_internal."payment_bills"`) {
+	if !strings.Contains(sqlText, `"shadow_default"."payment_bills"`) {
 		t.Fatalf("table not quoted: %s", sqlText)
 	}
 	// OCC guard presence
@@ -183,10 +183,10 @@ func TestExtractSourceTsMs(t *testing.T) {
 // synced with schema_manager.go#inferSQLType when extending.
 func TestInferSQLType(t *testing.T) {
 	cases := map[string]any{
-		"BOOLEAN":     true,
-		"NUMERIC":     float64(1.5),
-		"JSONB":       map[string]any{"a": 1},
-		"TEXT":        "hello",
+		"BOOLEAN": true,
+		"NUMERIC": float64(1.5),
+		"JSONB":   map[string]any{"a": 1},
+		"TEXT":    "hello",
 	}
 	for want, in := range cases {
 		if got := inferSQLType(in); got != want {
@@ -267,7 +267,7 @@ func TestBuildUpsertSQLSnapshot(t *testing.T) {
 	}
 	sqlText, values := buildUpsertSQLSnapshot("export_jobs", rec)
 
-	if !strings.Contains(sqlText, `cdc_internal."export_jobs"`) {
+	if !strings.Contains(sqlText, `"shadow_default"."export_jobs"`) {
 		t.Fatalf("table not quoted: %s", sqlText)
 	}
 	if !strings.Contains(sqlText, `ON CONFLICT (_gpay_source_id) WHERE NOT _gpay_deleted`) {

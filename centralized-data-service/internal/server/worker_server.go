@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"centralized-data-service/config"
@@ -37,7 +38,7 @@ type WorkerServer struct {
 	consumerPool     *handler.ConsumerPool
 	batchBuffer      *handler.BatchBuffer
 	eventHandler     *handler.EventHandler
-	registrySvc      *service.RegistryService
+	registrySvc      service.MetadataRegistry
 	registryRepo     *repository.RegistryRepo
 	maskingSvc       *service.MaskingService
 	activityLogger   *service.ActivityLogger
@@ -54,12 +55,22 @@ type WorkerServer struct {
 }
 
 func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, error) {
-	// 1. Connect PostgreSQL (primary — owns writes).
-	db, err := database.NewPostgresConnection(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: %w", err)
+	// 1. Connect PostgreSQL — Phase 01 split E2E (T-C4) wires the
+	// physical-instance Registry first, then aliases the legacy `db`
+	// handle to the control-plane pool so existing repositories keep
+	// working without holding a duplicate pool against cdc_dw.
+	registry := database.NewRegistry(cfg)
+	if err := registry.Init(context.Background()); err != nil {
+		return nil, fmt.Errorf("multi-pg registry init: %w", err)
 	}
-	logger.Info("PostgreSQL connected")
+	db, err := registry.GetDB(database.RoleControlPlane)
+	if err != nil {
+		return nil, fmt.Errorf("control-plane db: %w", err)
+	}
+	logger.Info("PostgreSQL connected (multi-pg registry)",
+		zap.String("control_plane", redactDSN(cfg.ControlPlaneURL())),
+		zap.String("destination", redactDSN(cfg.DestinationURL())),
+	)
 
 	// 1b. Optional read-replica pool (plan WORKER task #2). When the
 	// replica DSN is not set we reuse the primary connection but the
@@ -114,16 +125,26 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	registryRepo := repository.NewRegistryRepo(db)
 	mappingRepo := repository.NewMappingRuleRepo(db)
 	pendingRepo := repository.NewPendingFieldRepo(db)
+	connectionRepo := repository.NewConnectionRegistryRepo(db)
+	sourceObjectRepo := repository.NewSourceObjectRegistryRepo(db)
+	shadowBindingRepo := repository.NewShadowBindingRepo(db)
+	mappingRuleV2Repo := repository.NewMappingRuleV2Repo(db)
+	syncRuntimeRepo := repository.NewSyncRuntimeStateRepo(db)
 
 	// 5. Services
-	registrySvc := service.NewRegistryService(registryRepo, mappingRepo, logger)
+	registrySvc := service.NewMetadataRegistryService(connectionRepo, sourceObjectRepo, shadowBindingRepo, mappingRepo, logger)
 	maskingSvc := service.NewMaskingService(db, logger)
+	// Share the physical-instance Registry so ConnectionManager and
+	// any direct GetDB("cdc")/GetDB("dest") callers hit the same pools.
+	connectionManager := service.NewConnectionManagerWithRegistry(cfg, logger, registry)
 	schemaInspector := service.NewSchemaInspector(pendingRepo, redisCache, natsClient, logger)
 	schemaInspector.SetMaskingService(maskingSvc)
+	schemaInspector.SetMetadataRegistry(registrySvc)
 
 	// 6. Batch buffer
 	schemaAdapter := service.NewSchemaAdapter(db, logger)
 	batchBuffer := handler.NewBatchBuffer(cfg.Worker.BatchSize, cfg.Worker.BatchTimeout, db, schemaAdapter, logger)
+	batchBuffer.SetConnectionManager(connectionManager)
 	batchBuffer.SetMaskingService(maskingSvc)
 
 	// 6b. MongoDB + Reconciliation Core (plan WORKER tasks #2, #3).
@@ -151,6 +172,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 				service.ReconCoreConfig{}, // defaults; InstanceID derived from hostname+uuid
 				logger,
 			)
+			reconCore.SetMetadataRegistry(registrySvc)
 			logger.Info("Reconciliation Core initialized (replica + leader election)")
 		}
 	}
@@ -159,6 +181,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	// Kafka consumer BEFORE message processing so drift rejects reach
 	// the DLQ via the write-before-ACK path.
 	schemaValidator := service.NewSchemaValidator(db, logger)
+	schemaValidator.SetMetadataRegistry(registrySvc)
 
 	// 6d. DLQ retry worker. Runs alongside the consumer, polling
 	// failed_sync_logs every 5m and applying exponential backoff.
@@ -168,7 +191,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	// 7. Dynamic Mapper + Event handler
 	dynamicMapper := service.NewDynamicMapper(registrySvc, logger, schemaAdapter)
 	dynamicMapper.SetMaskingService(maskingSvc)
-	eventHandler := handler.NewEventHandler(db, registrySvc, dynamicMapper, schemaInspector, batchBuffer, logger)
+	eventHandler := handler.NewEventHandler(db, connectionManager, registrySvc, dynamicMapper, schemaInspector, batchBuffer, logger)
 
 	// 8. Consumer pool
 	consumerPool, err := handler.NewConsumerPool(
@@ -207,14 +230,16 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 		redisCache.DeletePattern(context.Background(), "schema:*")
 	})
 
-	// 10a. pgx pool for high-throughput operations
-	pgxPool, err := database.NewPgxPool(context.Background(), cfg)
+	// 10a. pgx pool for high-throughput operations — pulled from the
+	// shared Registry so we never hold two pgx pools against cdc_dw.
+	pgxPool, err := registry.GetPgxPool(context.Background(), database.RoleControlPlane)
 	if err != nil {
 		logger.Warn("pgx pool init failed, batch bridge disabled", zap.Error(err))
 	}
 
 	// 10b. Command handler — handles DW operations relayed via NATS from the API.
 	cmdHandler := handler.NewCommandHandler(db, mappingRepo, registryRepo, pendingRepo, logger)
+	cmdHandler.SetMetadataRegistry(registrySvc)
 	// Inject Kafka Connect URL so boundary-refactor handlers (restart,
 	// sync-state) can call the Connect REST API without leaking through
 	// the CMS. Empty string keeps those handlers idle.
@@ -239,7 +264,8 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	// NATS handler. Subject cdc.cmd.transmute materialises 1 master;
 	// cdc.cmd.transmute-shadow fans out from post-ingest hook.
 	typeResolver := service.NewTypeResolver(db)
-	transmuter := service.NewTransmuterModule(db, typeResolver, logger)
+	masterDDLGen := service.NewMasterDDLGenerator(db, connectionManager, mappingRuleV2Repo, syncRuntimeRepo, logger)
+	transmuter := service.NewTransmuterModule(db, connectionManager, syncRuntimeRepo, masterDDLGen, typeResolver, logger)
 	transmuteHandler := handler.NewTransmuteHandler(transmuter, db, natsClient.Conn, logger)
 	natsClient.Conn.Subscribe("cdc.cmd.transmute", transmuteHandler.HandleTransmute)
 	natsClient.Conn.Subscribe("cdc.cmd.transmute-shadow", transmuteHandler.HandleTransmuteShadow)
@@ -255,11 +281,69 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	go transmuteScheduler.Start(context.Background())
 	logger.Info("transmute scheduler started (60s poll, cron + FOR UPDATE SKIP LOCKED + fencing)")
 
+	// Track D Hardening (P4 / D-39.A) — JobMonitor closes the loop on
+	// cdc_system.transmute_schedule by subscribing to the handler's
+	// completion event. Decoupled from TransmuteHandler so command
+	// execution and schedule-state writes evolve independently.
+	jobMonitor := service.NewJobMonitor(db, logger)
+	if _, err := natsClient.Conn.Subscribe(handler.SubjectTransmuteCompleted, jobMonitor.HandleCompleted); err != nil {
+		return nil, fmt.Errorf("subscribe %s: %w", handler.SubjectTransmuteCompleted, err)
+	}
+	logger.Info("job monitor registered", zap.String("subject", handler.SubjectTransmuteCompleted))
+
 	// Master DDL generator (Sprint 5 R8) — consumes cdc.cmd.master-create.
-	masterDDLGen := service.NewMasterDDLGenerator(db, logger)
+	// Created BEFORE the provisioning gate so the Phase D Q2 alias
+	// `cdc.cmd.master.bind` (provisioning flow) can reuse the same
+	// HandleMasterCreate callback.
 	masterDDLHandler := handler.NewMasterDDLHandler(masterDDLGen, natsClient.Conn, logger)
 	natsClient.Conn.Subscribe("cdc.cmd.master-create", masterDDLHandler.HandleMasterCreate)
 	logger.Info("master DDL handler registered", zap.String("subject", "cdc.cmd.master-create"))
+
+	// Source Provisioning Mode (workspace feature-cdc-integration / phase
+	// provisioning_mode). Architect rulings D1–D8 + Phase D Q1–Q5. Gated
+	// by PROVISIONING_ORCHESTRATOR_ENABLED so we can ship dark and turn
+	// on per-environment.
+	if os.Getenv("PROVISIONING_ORCHESTRATOR_ENABLED") == "1" {
+		provOrch := service.NewProvisioningOrchestrator(db, natsClient.Conn, logger)
+		provHandler := handler.NewProvisioningHandler(provOrch, logger)
+		if _, err := natsClient.Conn.Subscribe(handler.SubjectProvisioningStepCompleted, provHandler.HandleStepCompleted); err != nil {
+			return nil, fmt.Errorf("subscribe %s: %w", handler.SubjectProvisioningStepCompleted, err)
+		}
+		go provOrch.RecoveryLoop(context.Background())
+
+		// Phase D Q3 — JobMonitor bridges first successful transmute
+		// tick to a step_completed event for sources awaiting
+		// schedule_enable. SetNATSConn wires the bridge publisher;
+		// JobMonitor stays silent on this until enabled.
+		jobMonitor.SetNATSConn(natsClient.Conn)
+
+		// Phase D Q1+Q3 — step handlers for shadow_bind + schedule_enable.
+		// master_bind alias (Q2) reuses masterDDLHandler.HandleMasterCreate
+		// — the handler reads `provisioning=true` from the payload to
+		// switch on the defer-emit branch.
+		stepHandler := handler.NewProvisioningStepHandler(db, natsClient.Conn, schemaAdapter, mongoClientShared, logger)
+		if _, err := natsClient.Conn.Subscribe("cdc.cmd.shadow.bind", stepHandler.HandleShadowBind); err != nil {
+			return nil, fmt.Errorf("subscribe cdc.cmd.shadow.bind: %w", err)
+		}
+		if _, err := natsClient.Conn.Subscribe("cdc.cmd.schedule.enable", stepHandler.HandleScheduleEnable); err != nil {
+			return nil, fmt.Errorf("subscribe cdc.cmd.schedule.enable: %w", err)
+		}
+		if _, err := natsClient.Conn.Subscribe("cdc.cmd.master.bind", masterDDLHandler.HandleMasterCreate); err != nil {
+			return nil, fmt.Errorf("subscribe cdc.cmd.master.bind: %w", err)
+		}
+
+		logger.Info("provisioning orchestrator registered",
+			zap.String("subject", handler.SubjectProvisioningStepCompleted),
+			zap.Strings("step_subjects", []string{
+				"cdc.cmd.shadow.bind",
+				"cdc.cmd.master.bind",
+				"cdc.cmd.schedule.enable",
+			}),
+			zap.Duration("pending_ttl", service.ProvisioningPendingTTL),
+			zap.Int("step_log_max", service.ProvisioningStepLogMaxEntries))
+	} else {
+		logger.Info("provisioning orchestrator DISABLED (set PROVISIONING_ORCHESTRATOR_ENABLED=1 to enable)")
+	}
 
 	// Sprint 4 4A.1. pgxPool remains available for future high-throughput
 	// Debezium-only consumers.
@@ -299,6 +383,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 
 		reconHandler := handler.NewReconHandler(reconCore, db, mongoClientForRecon, schemaAdapter, logger).
 			WithHealer(reconHealerShared).
+			WithMetadataRegistry(registrySvc).
 			WithMaskingService(maskingSvc)
 
 		// Backfill (_source_ts) service — tier 4 runs. Requires Mongo
@@ -307,6 +392,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 			db, mongoClientShared, registryRepo,
 			service.BackfillSourceTsConfig{}, logger,
 		)
+		backfillSvc.SetMetadataRegistry(registrySvc)
 		reconHandler = reconHandler.WithBackfill(backfillSvc, natsClient.Conn)
 
 		// Migration 017 — auto-detect timestamp field. Exposed via
@@ -332,6 +418,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 			db, dbReplica, mongoClientShared, registryRepo,
 			service.FullCountAggregatorConfig{}, logger,
 		)
+		fullCountAggShared.SetMetadataRegistry(registrySvc)
 	} else {
 		logger.Warn("reconciliation handlers NOT registered (MongoDB not configured)")
 	}
@@ -434,6 +521,15 @@ func (s *WorkerServer) Start() error {
 			zap.Strings("brokers", s.cfg.Kafka.Brokers),
 			zap.String("group", s.cfg.Kafka.GroupID),
 		)
+
+		// P0.1 (G1) — kafka topic dynamic refresh trigger.
+		s.nats.Conn.Subscribe("cdc.cmd.kafka.refresh-topics", func(msg *nats.Msg) {
+			if err := kafkaConsumer.RefreshTopics(context.Background()); err != nil {
+				s.logger.Warn("nats-triggered topic refresh failed", zap.Error(err))
+				return
+			}
+			s.logger.Info("nats-triggered topic refresh ok")
+		})
 	}
 
 	// DLQ retry worker — polls failed_sync_logs every 5 minutes via the
@@ -674,4 +770,42 @@ func (s *WorkerServer) Shutdown() {
 	sqlDB, _ := s.db.DB()
 	sqlDB.Close()
 	s.logger.Info("CDC Worker stopped")
+}
+
+// redactDSN strips the password component of a libpq URL so it is
+// safe to log at boot. Returns "<unset>" when the DSN is empty.
+func redactDSN(dsn string) string {
+	if dsn == "" {
+		return "<unset>"
+	}
+	atIdx := -1
+	for i := 0; i < len(dsn); i++ {
+		if dsn[i] == '@' {
+			atIdx = i
+		}
+	}
+	if atIdx == -1 {
+		return dsn
+	}
+	prefixEnd := -1
+	for i := 0; i < atIdx; i++ {
+		if dsn[i] == ':' && i+2 < len(dsn) && dsn[i+1] == '/' && dsn[i+2] == '/' {
+			prefixEnd = i + 3
+			break
+		}
+	}
+	if prefixEnd == -1 {
+		return dsn
+	}
+	colonAfterUser := -1
+	for i := prefixEnd; i < atIdx; i++ {
+		if dsn[i] == ':' {
+			colonAfterUser = i
+			break
+		}
+	}
+	if colonAfterUser == -1 {
+		return dsn
+	}
+	return dsn[:colonAfterUser+1] + "***" + dsn[atIdx:]
 }

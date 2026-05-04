@@ -2,15 +2,18 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"strconv"
-	"strings"
-	"time"
-
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
 
 	"centralized-data-service/internal/model"
 	"centralized-data-service/internal/service"
@@ -38,11 +41,13 @@ func otelTraceSpanFromContext(ctx context.Context) oteltrace.Span {
 	return sp
 }
 
-// KafkaConsumerConfig holds Kafka consumer configuration
+// KafkaConsumerConfig holds Kafka consumer configuration.
+// TopicPrefix is a list — multi-engine unified pipeline subscribes to
+// the union of all prefixes (e.g. cdc.gpay + cdc.goopay + cdc.mariadb).
 type KafkaConsumerConfig struct {
 	Brokers           []string `mapstructure:"brokers"`
 	GroupID           string   `mapstructure:"groupId"`
-	TopicPrefix       string   `mapstructure:"topicPrefix"`
+	TopicPrefix       []string `mapstructure:"topicPrefix"`
 	SchemaRegistryURL string   `mapstructure:"schemaRegistryUrl"`
 }
 
@@ -69,6 +74,12 @@ type KafkaConsumer struct {
 	readers      []*kafka.Reader
 	db           *gorm.DB
 	batches      map[string]*batchStats // per-topic batch accumulator
+	// P0.1 additions — reader manager fields
+	refreshMu     sync.Mutex
+	currentTopics []string
+	// discoverFunc allows test injection of topic discovery. If non-nil,
+	// discoverTopics delegates to it instead of dialing Kafka directly.
+	discoverFunc func(ctx context.Context) ([]string, error)
 }
 
 func NewKafkaConsumer(cfg KafkaConsumerConfig, handler *EventHandler, registrySvc interface{ GetDebeziumTables() []string }, db *gorm.DB, logger *zap.Logger) *KafkaConsumer {
@@ -92,12 +103,110 @@ func (kc *KafkaConsumer) SetMaskingService(masking *service.MaskingService) {
 	kc.masking = masking
 }
 
+// buildReader creates a new kafka.Reader for the given topic set using the
+// consumer's config. Does NOT connect immediately — kafka-go dials lazily.
+func (kc *KafkaConsumer) buildReader(topics []string) *kafka.Reader {
+	return kafka.NewReader(kafka.ReaderConfig{
+		Brokers:          kc.config.Brokers,
+		GroupID:          kc.config.GroupID,
+		GroupTopics:      topics,
+		MinBytes:         10e3, // 10KB
+		MaxBytes:         10e6, // 10MB
+		CommitInterval:   time.Second,
+		SessionTimeout:   30 * time.Second,
+		RebalanceTimeout: 30 * time.Second,
+		StartOffset:      kafka.FirstOffset,
+		Logger:           nil, // suppress kafka-go internal logs
+	})
+}
+
+// RefreshTopics re-discovers Kafka topics and recreates the reader if the
+// topic set has changed. Idempotent. Safe for concurrent callers
+// (NATS handler + background ticker + test).
+func (kc *KafkaConsumer) RefreshTopics(ctx context.Context) error {
+	// P0.1 close-loop: ensure registry cache is fresh before discovering.
+	// Without this, topics newly registered via admin-api won't pass the
+	// debeziumTables filter in discoverTopics and will be silently dropped.
+	if reloader, ok := kc.registrySvc.(interface{ ReloadAll(context.Context) error }); ok {
+		if err := reloader.ReloadAll(ctx); err != nil {
+			kc.logger.Warn("registry reload failed during topic refresh", zap.Error(err))
+			// non-fatal — continue with stale cache rather than fail refresh entirely
+		}
+	}
+
+	newTopics, err := kc.discoverTopics(ctx)
+	if err != nil {
+		return fmt.Errorf("discover topics: %w", err)
+	}
+
+	kc.refreshMu.Lock()
+	defer kc.refreshMu.Unlock()
+
+	if topicSetEqual(kc.currentTopics, newTopics) {
+		kc.logger.Debug("topic set unchanged, skipping refresh",
+			zap.Int("count", len(newTopics)))
+		return nil
+	}
+
+	kc.logger.Info("topic set changed, recreating reader",
+		zap.Strings("old", kc.currentTopics),
+		zap.Strings("new", newTopics))
+
+	kc.flushAllBatches()
+
+	// Close old readers with a 5s timeout per reader so we don't block the
+	// consume loop indefinitely. kafka-go Close() blocks until the fetch loop
+	// inside it returns; wrapping in a goroutine + select keeps us non-blocking.
+	for _, r := range kc.readers {
+		r := r // capture
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if cerr := r.Close(); cerr != nil {
+				kc.logger.Warn("close old reader", zap.Error(cerr))
+			}
+		}()
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		select {
+		case <-done:
+		case <-closeCtx.Done():
+			kc.logger.Warn("old reader close timed out after 5s, continuing")
+		}
+		cancel()
+	}
+	kc.readers = nil
+
+	newReader := kc.buildReader(newTopics)
+	kc.readers = append(kc.readers, newReader)
+	kc.currentTopics = append([]string(nil), newTopics...)
+
+	return nil
+}
+
+// topicSetEqual reports whether a and b contain the same topic names
+// regardless of order.
+func topicSetEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]struct{}, len(a))
+	for _, t := range a {
+		set[t] = struct{}{}
+	}
+	for _, t := range b {
+		if _, ok := set[t]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // Start discovers Kafka topics matching prefix and starts consuming
 func (kc *KafkaConsumer) Start(ctx context.Context) {
 	kc.logger.Info("kafka consumer starting",
 		zap.Strings("brokers", kc.config.Brokers),
 		zap.String("group", kc.config.GroupID),
-		zap.String("prefix", kc.config.TopicPrefix),
+		zap.Strings("prefixes", kc.config.TopicPrefix),
 	)
 
 	// Wait for Kafka to be ready
@@ -117,24 +226,28 @@ func (kc *KafkaConsumer) Start(ctx context.Context) {
 
 	if len(topics) == 0 {
 		kc.logger.Warn("no kafka topics found matching prefix, will retry periodically",
-			zap.String("prefix", kc.config.TopicPrefix))
+			zap.Strings("prefixes", kc.config.TopicPrefix))
+		retryTicker := time.NewTicker(60 * time.Second)
+		defer retryTicker.Stop()
+		for len(topics) == 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-retryTicker.C:
+				topics, err = kc.discoverTopics(ctx)
+				if err != nil {
+					kc.logger.Warn("kafka topic discovery retry failed", zap.Error(err))
+				}
+			}
+		}
 	}
 
-	// Create reader for all matching topics
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:          kc.config.Brokers,
-		GroupID:          kc.config.GroupID,
-		GroupTopics:      topics,
-		MinBytes:         10e3, // 10KB
-		MaxBytes:         10e6, // 10MB
-		CommitInterval:   time.Second,
-		SessionTimeout:   30 * time.Second,
-		RebalanceTimeout: 30 * time.Second,
-		StartOffset:      kafka.FirstOffset,
-		Logger:           nil, // suppress kafka-go internal logs
-	})
-
+	// === P0.1 — initial reader build via shared helper ===
+	kc.refreshMu.Lock()
+	reader := kc.buildReader(topics)
 	kc.readers = append(kc.readers, reader)
+	kc.currentTopics = append([]string(nil), topics...)
+	kc.refreshMu.Unlock()
 
 	kc.logger.Info("kafka consumer started",
 		zap.Strings("topics", topics),
@@ -145,6 +258,10 @@ func (kc *KafkaConsumer) Start(ctx context.Context) {
 	flushTicker := time.NewTicker(5 * time.Second)
 	defer flushTicker.Stop()
 
+	// P0.1 safety net — auto-refresh topic set every 60s.
+	refreshTicker := time.NewTicker(60 * time.Second)
+	defer refreshTicker.Stop()
+
 	// Consume loop
 	for {
 		select {
@@ -154,11 +271,30 @@ func (kc *KafkaConsumer) Start(ctx context.Context) {
 			return
 		case <-flushTicker.C:
 			kc.flushAllBatches()
+		case <-refreshTicker.C:
+			if err := kc.RefreshTopics(ctx); err != nil {
+				kc.logger.Warn("auto refresh topics failed", zap.Error(err))
+			}
 		default:
-			msg, err := reader.FetchMessage(ctx)
+			kc.refreshMu.Lock()
+			if len(kc.readers) == 0 {
+				kc.refreshMu.Unlock()
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			currentReader := kc.readers[0]
+			kc.refreshMu.Unlock()
+
+			msg, err := currentReader.FetchMessage(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				// If reader was recreated mid-fetch, error is expected.
+				if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "reader closed") {
+					kc.logger.Debug("reader closed during refresh, retrying", zap.Error(err))
+					time.Sleep(200 * time.Millisecond)
+					continue
 				}
 				kc.logger.Error("kafka fetch error", zap.Error(err))
 				time.Sleep(time.Second)
@@ -244,7 +380,7 @@ func (kc *KafkaConsumer) Start(ctx context.Context) {
 				}
 			}
 
-			if err := reader.CommitMessages(ctx, msg); err != nil {
+			if err := currentReader.CommitMessages(ctx, msg); err != nil {
 				kc.logger.Error("kafka commit failed", zap.Error(err))
 			}
 		}
@@ -294,6 +430,7 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, msg kafka.Message) 
 	// Unwrap Avro union types: goavro decodes unions as map[string]interface{}{"type": value}
 	op := unwrapAvroUnion(event["op"])
 	afterRaw := unwrapAvroUnion(event["after"])
+	beforeRaw := unwrapAvroUnion(event["before"])
 	// NOTE: do NOT unwrapAvroUnion on `source` — Debezium's Source record
 	// is a non-nullable Avro record (not a union), so unwrapping would
 	// strip a random field. Pass the raw map through.
@@ -306,6 +443,25 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, msg kafka.Message) 
 		afterData = v
 	case string:
 		json.Unmarshal([]byte(v), &afterData)
+	}
+
+	// Parse before data — same pattern as after (needed for DELETE events with REPLICA IDENTITY FULL)
+	var beforeData map[string]interface{}
+	switch v := beforeRaw.(type) {
+	case map[string]interface{}:
+		beforeData = v
+	case string:
+		json.Unmarshal([]byte(v), &beforeData)
+	}
+
+	// B9 — Unwrap Avro union envelopes for every field value.
+	// Avro nullable union ["null","string"] decodes to {"string":"x"} for non-null values.
+	// pgx cannot encode map[string]interface{} into timestamp/int columns — unwrap first.
+	if afterData != nil {
+		afterData = unwrapAvroUnionMap(afterData)
+	}
+	if beforeData != nil {
+		beforeData = unwrapAvroUnionMap(beforeData)
 	}
 
 	// Extract Debezium source.ts_ms (milliseconds since epoch). Missing
@@ -345,11 +501,16 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, msg kafka.Message) 
 	}
 
 	// Build CDCEvent-compatible JSON for EventHandler
+	// A1 fix: pass beforeData (parsed from Avro, may be nil for INSERT/non-FULL-identity ops)
+	var beforeField interface{}
+	if len(beforeData) > 0 {
+		beforeField = beforeData
+	}
 	cdcEvent := map[string]interface{}{
 		"source": fmt.Sprintf("/kafka/%s", msg.Topic),
 		"data": map[string]interface{}{
 			"op":           opStr,
-			"before":       nil,
+			"before":       beforeField,
 			"after":        afterData,
 			"source_ts_ms": sourceTsMs,
 		},
@@ -414,8 +575,14 @@ func extractSourceTsMs(source interface{}) int64 {
 	return 0
 }
 
-// discoverTopics finds Kafka topics matching the prefix
+// discoverTopics finds Kafka topics matching ANY configured prefix
+// (multi-engine unified pipeline). Returns the union, deduped.
+// Logs per-prefix match count for observability.
+// If kc.discoverFunc is set (test injection), it delegates there instead.
 func (kc *KafkaConsumer) discoverTopics(ctx context.Context) ([]string, error) {
+	if kc.discoverFunc != nil {
+		return kc.discoverFunc(ctx)
+	}
 	conn, err := kafka.DialContext(ctx, "tcp", kc.config.Brokers[0])
 	if err != nil {
 		return nil, fmt.Errorf("dial kafka: %w", err)
@@ -427,7 +594,8 @@ func (kc *KafkaConsumer) discoverTopics(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("read partitions: %w", err)
 	}
 
-	// Get debezium tables from registry
+	// Permissive registry filter — empty set means no filter, matching
+	// legacy behaviour for fresh stacks without V1 active rows.
 	debeziumTables := make(map[string]bool)
 	if kc.registrySvc != nil {
 		for _, t := range kc.registrySvc.GetDebeziumTables() {
@@ -435,32 +603,80 @@ func (kc *KafkaConsumer) discoverTopics(ctx context.Context) ([]string, error) {
 		}
 	}
 
-	topicSet := make(map[string]bool)
+	topicNames := make([]string, 0, len(partitions))
 	for _, p := range partitions {
-		if !strings.HasPrefix(p.Topic, kc.config.TopicPrefix) || strings.HasPrefix(p.Topic, "_") {
+		topicNames = append(topicNames, p.Topic)
+	}
+
+	topics, perPrefix, prefixes := filterMatchingTopics(topicNames, kc.config.TopicPrefix, debeziumTables)
+	if len(prefixes) == 0 {
+		kc.logger.Warn("kafka topic discovery: no prefixes configured")
+		return nil, nil
+	}
+
+	fields := []zap.Field{
+		zap.Strings("prefixes", prefixes),
+		zap.Strings("topics", topics),
+		zap.Int("debezium_tables", len(debeziumTables)),
+	}
+	for _, pre := range prefixes {
+		fields = append(fields, zap.Int("count_"+pre, perPrefix[pre]))
+	}
+	kc.logger.Info("discovered kafka topics (multi-prefix union)", fields...)
+	return topics, nil
+}
+
+// filterMatchingTopics is the pure core of discoverTopics — extracted
+// so unit tests can verify multi-prefix union without a live broker.
+//
+// Returns: deduped union of matching topics, per-prefix match count,
+// and the cleaned prefix list (blanks dropped).
+func filterMatchingTopics(topicNames, configuredPrefixes []string, debeziumTables map[string]bool) ([]string, map[string]int, []string) {
+	prefixes := make([]string, 0, len(configuredPrefixes))
+	for _, p := range configuredPrefixes {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			prefixes = append(prefixes, p)
+		}
+	}
+	if len(prefixes) == 0 {
+		return nil, nil, nil
+	}
+
+	perPrefix := make(map[string]int, len(prefixes))
+	topicSet := make(map[string]bool)
+	out := make([]string, 0)
+
+	for _, topic := range topicNames {
+		if strings.HasPrefix(topic, "_") {
 			continue
 		}
-		// Extract table name from topic: cdc.goopay.{db}.{collection}
-		parts := strings.Split(p.Topic, ".")
+		var matched string
+		for _, pre := range prefixes {
+			if strings.HasPrefix(topic, pre) {
+				matched = pre
+				break
+			}
+		}
+		if matched == "" {
+			continue
+		}
+		// Extract object name from `cdc.<prefix-tail>.<db>.<object>`.
+		parts := strings.Split(topic, ".")
 		var tableName string
 		if len(parts) >= 4 {
-			tableName = parts[3]
+			tableName = parts[len(parts)-1]
 		}
-		// Only consume if table is in registry with sync_engine=debezium/both
 		if len(debeziumTables) > 0 && !debeziumTables[tableName] {
-			kc.logger.Debug("skipping kafka topic (not debezium sync_engine)", zap.String("topic", p.Topic), zap.String("table", tableName))
 			continue
 		}
-		topicSet[p.Topic] = true
+		if !topicSet[topic] {
+			topicSet[topic] = true
+			perPrefix[matched]++
+			out = append(out, topic)
+		}
 	}
-
-	topics := make([]string, 0, len(topicSet))
-	for t := range topicSet {
-		topics = append(topics, t)
-	}
-
-	kc.logger.Info("discovered kafka topics (filtered by debezium registry)", zap.Strings("topics", topics), zap.Int("debezium_tables", len(debeziumTables)))
-	return topics, nil
+	return out, perPrefix, prefixes
 }
 
 // getAvroCodec fetches Avro schema from Schema Registry by ID and caches it
@@ -503,17 +719,29 @@ func (kc *KafkaConsumer) getAvroCodec(schemaID int32) (*goavro.Codec, error) {
 
 // unwrapAvroUnion extracts value from goavro union type.
 // goavro decodes union ["null","string"] as: nil (for null) or map[string]interface{}{"string": "value"}
+// Non-map or multi-key maps pass through unchanged (they are real record types, not unions).
 func unwrapAvroUnion(v interface{}) interface{} {
 	if v == nil {
 		return nil
 	}
-	if m, ok := v.(map[string]interface{}); ok {
-		// Avro union: {"string": "actual_value"} or {"io.debezium.data.Json": "json_string"}
+	if m, ok := v.(map[string]interface{}); ok && len(m) == 1 {
+		// Single-key map → Avro union envelope: {"string": "actual_value"}
 		for _, val := range m {
 			return val
 		}
 	}
 	return v
+}
+
+// unwrapAvroUnionMap applies unwrapAvroUnion to every top-level value in a map.
+// Used to sanitize Debezium Avro "after" payloads so pgx receives native Go
+// types (string, int64, etc.) rather than single-key map[string]interface{} envelopes.
+func unwrapAvroUnionMap(m map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		out[k] = unwrapAvroUnion(v)
+	}
+	return out
 }
 
 // sanitizeAvroSchemaNames replaces invalid chars in Avro name/namespace fields
@@ -703,11 +931,17 @@ func extractDLQMetadata(msg kafka.Message) (string, string, []byte) {
 		}
 	}
 
-	// Extract the Kafka value into a JSONB-friendly payload. The caller
-	// decides whether additional sanitization is required before persistence.
+	// Extract the Kafka value into a JSONB-friendly payload. 
+	// Track B5: If value contains binary/non-UTF8 (Avro/Protobuf), 
+	// PostgreSQL will reject plain string insert. Base64 encode instead.
 	raw := msg.Value
-	if !json.Valid(raw) {
-		wrapped, _ := json.Marshal(map[string]string{"raw": string(raw)})
+	if !json.Valid(raw) || !utf8.Valid(raw) {
+		encoded := base64.StdEncoding.EncodeToString(raw)
+		wrapped, _ := json.Marshal(map[string]string{
+			"raw_base64": encoded,
+			"encoding":   "base64",
+			"note":       "original payload contained binary or invalid utf8",
+		})
 		raw = wrapped
 	}
 	return recordID, operation, raw

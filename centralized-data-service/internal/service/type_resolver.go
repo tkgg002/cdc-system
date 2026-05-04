@@ -13,7 +13,7 @@ import (
 )
 
 // TypeResolver validates `data_type` strings from mapping_rules and, when
-// needed, looks up ENUM membership from cdc_internal.enum_types.
+// needed, looks up ENUM membership from cdc_system.enum_types.
 //
 // The regex here MUST stay in lockstep with the CHECK constraint in
 // migration 020_mapping_rule_jsonpath.sql — any relaxation there needs a
@@ -121,7 +121,7 @@ func (r *TypeResolver) ResolveEnum(ctx context.Context, name string) ([]string, 
 	// pull as text so GORM doesn't need a pq.StringArray binding.
 	err := r.db.WithContext(ctx).Raw(
 		`SELECT array_to_string(values, ',') AS values, is_active
-		   FROM cdc_internal.enum_types WHERE name = ?`, name,
+		   FROM cdc_system.enum_types WHERE name = ?`, name,
 	).Scan(&row).Error
 	if err != nil {
 		return nil, fmt.Errorf("load enum %q: %w", name, err)

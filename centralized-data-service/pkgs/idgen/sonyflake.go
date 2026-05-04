@@ -50,7 +50,7 @@ func NextID() (uint64, error) {
 }
 
 // InitWithMachineID initializes Sonyflake with a Postgres-allocated machine_id
-// (claimed via cdc_internal.claim_machine_id). Preferred for the SinkWorker
+// (claimed via cdc_system.claim_machine_id). Preferred for the SinkWorker
 // pipeline because it is collision-free at the whole-cluster level whereas
 // the default IP-based heuristic can collide across pods on different subnets.
 //

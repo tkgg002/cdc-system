@@ -1,0 +1,39 @@
+{
+  "name": "cdc-pg-source",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "postgres-source",
+    "database.port": "5432",
+    "database.user": "src_user",
+    "database.password": "src_pass",
+    "database.dbname": "goopay_source",
+
+    "topic.prefix": "cdc.gpay",
+    "plugin.name": "pgoutput",
+    "slot.name": "cdc_gpay_pg_source",
+    "publication.name": "cdc_gpay_pub",
+    "publication.autocreate.mode": "filtered",
+
+    "schema.include.list": "public",
+    "table.include.list": "public.orders,public.users,public.payments",
+
+    "snapshot.mode": "initial",
+    "heartbeat.interval.ms": "10000",
+
+    "schema.name.adjustment.mode": "avro",
+    "field.name.adjustment.mode": "avro",
+    "sanitize.field.names": "true",
+
+    "key.converter": "io.confluent.connect.avro.AvroConverter",
+    "key.converter.schema.registry.url": "http://gpay-schema-registry:8081",
+    "key.converter.scrub.invalid.names": "true",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://gpay-schema-registry:8081",
+    "value.converter.scrub.invalid.names": "true",
+
+    "max.batch.size": "2048",
+    "max.queue.size": "8192"
+  }
+}

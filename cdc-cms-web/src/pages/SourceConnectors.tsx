@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
-  Table, Card, Typography, Space, Button, Tag, Modal, Input, message, Alert, Descriptions,
+  Table, Card, Typography, Space, Button, Tag, Modal, Input, message, Alert, Descriptions, Tabs, Row, Col, Statistic,
 } from 'antd';
 import {
   ReloadOutlined, DatabaseOutlined, PlayCircleOutlined,
@@ -25,6 +25,21 @@ interface ConnectorView {
   connector_class: string;
   tasks: ConnectorTask[];
   config?: Record<string, string>;
+}
+
+interface SourceFingerprint {
+  id: number;
+  connector_name: string;
+  source_type: string;
+  connector_class: string;
+  topic_prefix?: string | null;
+  server_address?: string | null;
+  database_include_list?: string | null;
+  collection_include_list?: string | null;
+  status: string;
+  created_by?: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 const STATE_COLOR: Record<string, string> = {
@@ -150,6 +165,15 @@ export default function SourceConnectors() {
     refetchInterval: 15_000,
   });
 
+  const { data: sourceFingerprints, isLoading: sourcesLoading, refetch: refetchSources, isFetching: isFetchingSources } = useQuery({
+    queryKey: ['source-fingerprints'],
+    queryFn: async () => {
+      const r = await cmsApi.get<{ data: SourceFingerprint[]; count: number }>('/api/v1/sources');
+      return r.data.data;
+    },
+    refetchInterval: 30_000,
+  });
+
   const mutation = useMutation({
     mutationFn: async (p: PendingAction & { reason: string }) => {
       let path = `/api/v1/system/connectors/${encodeURIComponent(p.connector)}/${p.op === 'restartTask' ? `tasks/${p.taskId}/restart` : p.op}`;
@@ -188,6 +212,19 @@ export default function SourceConnectors() {
   const failedTasksCount = (data || []).reduce(
     (acc, c) => acc + c.tasks.filter((t) => t.state === 'FAILED').length, 0,
   );
+
+  const connectors = data || [];
+  const fingerprints = sourceFingerprints || [];
+
+  const connectorNameSet = useMemo(() => new Set(connectors.map((item) => item.name)), [connectors]);
+  const connectorByName = useMemo(
+    () => new Map(connectors.map((item) => [item.name, item])),
+    [connectors],
+  );
+
+  const linkedFingerprints = fingerprints.filter((item) => connectorNameSet.has(item.connector_name));
+  const orphanFingerprints = fingerprints.filter((item) => !connectorNameSet.has(item.connector_name));
+  const connectorsWithoutFingerprint = connectors.filter((item) => !fingerprints.some((fp) => fp.connector_name === item.name));
 
   const taskColumnsBase = [
     { title: 'Task ID', dataIndex: 'id', width: 80 },
@@ -322,22 +359,110 @@ export default function SourceConnectors() {
     },
   ];
 
+  const fingerprintColumns = [
+    {
+      title: 'Connector / Fingerprint',
+      key: 'connector_name',
+      render: (_: unknown, row: SourceFingerprint) => (
+        <Space direction="vertical" size={0}>
+          <Text strong>{row.connector_name}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{row.connector_class || '-'}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Source',
+      key: 'source',
+      render: (_: unknown, row: SourceFingerprint) => (
+        <Space direction="vertical" size={0}>
+          <Tag color="blue">{row.source_type}</Tag>
+          <Text>{row.database_include_list || '-'}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{row.collection_include_list || '-'}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Status',
+      key: 'status',
+      width: 180,
+      render: (_: unknown, row: SourceFingerprint) => {
+        const live = connectorByName.get(row.connector_name);
+        if (!live) {
+          return (
+            <Space direction="vertical" size={0}>
+              <Tag color="orange">Fingerprint only</Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>Connector runtime không còn tồn tại</Text>
+            </Space>
+          );
+        }
+        return (
+          <Space direction="vertical" size={0}>
+            <Tag color="green">Linked</Tag>
+            <Tag color={STATE_COLOR[live.state] || 'default'}>{live.state || 'UNKNOWN'}</Tag>
+          </Space>
+        );
+      },
+    },
+    {
+      title: 'Topic / Server',
+      key: 'infra',
+      render: (_: unknown, row: SourceFingerprint) => (
+        <Space direction="vertical" size={0}>
+          <Text code>{row.topic_prefix || '-'}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{row.server_address || '-'}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Updated',
+      dataIndex: 'updated_at',
+      width: 180,
+      render: (v: string) => new Date(v).toLocaleString('vi-VN', { hour12: false }),
+    },
+  ];
+
   return (
     <Card bordered={false}>
       <Space style={{ marginBottom: 16, width: '100%', justifyContent: 'space-between' }}>
-        <Title level={4} style={{ margin: 0 }}>Debezium Command Center</Title>
+        <Title level={4} style={{ margin: 0 }}>Sources & Connectors</Title>
         <Space>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             New Connector
           </Button>
-          <Button icon={<ReloadOutlined />} loading={isFetching} onClick={() => refetch()}>Refresh</Button>
+          <Button icon={<ReloadOutlined />} loading={isFetching || isFetchingSources} onClick={() => { refetch(); refetchSources(); }}>
+            Refresh
+          </Button>
         </Space>
       </Space>
 
       <Text type="secondary">
-        Kafka Connect REST proxy (/api/v1/system/connectors). Bật/tắt Debezium connector, restart task lẻ.
+        Trang này là lớp vận hành cho Debezium connector runtime và source fingerprint đã persist.
+        Operator dùng nó để nhìn cả connector đang chạy lẫn metadata nguồn đã được ghi lại cho wizard/registry.
         Mọi thao tác destructive cần reason ≥ 10 ký tự cho audit.
       </Text>
+
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={12} sm={6}>
+          <Card size="small">
+            <Statistic title="Connectors" value={connectors.length} prefix={<DatabaseOutlined />} />
+          </Card>
+        </Col>
+        <Col xs={12} sm={6}>
+          <Card size="small">
+            <Statistic title="Fingerprints" value={fingerprints.length} prefix={<DatabaseOutlined />} />
+          </Card>
+        </Col>
+        <Col xs={12} sm={6}>
+          <Card size="small">
+            <Statistic title="Linked" value={linkedFingerprints.length} prefix={<SyncOutlined />} />
+          </Card>
+        </Col>
+        <Col xs={12} sm={6}>
+          <Card size="small">
+            <Statistic title="Orphans" value={orphanFingerprints.length + connectorsWithoutFingerprint.length} prefix={<WarningOutlined />} />
+          </Card>
+        </Col>
+      </Row>
 
       {failedTasksCount > 0 && (
         <Alert
@@ -349,15 +474,49 @@ export default function SourceConnectors() {
         />
       )}
 
-      <Table
+      {(orphanFingerprints.length > 0 || connectorsWithoutFingerprint.length > 0) && (
+        <Alert
+          style={{ marginTop: 16 }}
+          type="warning"
+          showIcon
+          message="Connector / fingerprint mismatch"
+          description={`Fingerprint-only: ${orphanFingerprints.length}. Runtime-only connectors: ${connectorsWithoutFingerprint.length}. Đây là tín hiệu cho thấy runtime connector và metadata nguồn chưa khớp hoàn toàn.`}
+        />
+      )}
+
+      <Tabs
         style={{ marginTop: 16 }}
-        size="middle"
-        loading={isLoading}
-        dataSource={data || []}
-        rowKey="name"
-        columns={columns}
-        expandable={{ expandedRowRender: expandedTasks, rowExpandable: (r) => (r.tasks?.length || 0) > 0 }}
-        pagination={false}
+        items={[
+          {
+            key: 'connectors',
+            label: `Connectors (${connectors.length})`,
+            children: (
+              <Table
+                size="middle"
+                loading={isLoading}
+                dataSource={connectors}
+                rowKey="name"
+                columns={columns}
+                expandable={{ expandedRowRender: expandedTasks, rowExpandable: (r) => (r.tasks?.length || 0) > 0 }}
+                pagination={false}
+              />
+            ),
+          },
+          {
+            key: 'fingerprints',
+            label: `Source Fingerprints (${fingerprints.length})`,
+            children: (
+              <Table
+                size="middle"
+                loading={sourcesLoading}
+                dataSource={fingerprints}
+                rowKey="id"
+                columns={fingerprintColumns}
+                pagination={false}
+              />
+            ),
+          },
+        ]}
       />
 
       <Modal

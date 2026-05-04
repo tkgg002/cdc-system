@@ -7,7 +7,10 @@ interface Props {
   onCancel: () => void;
   onSuccess: () => void;
   initialValues?: {
+    source_database?: string;
     source_table: string;
+    shadow_schema?: string;
+    shadow_table?: string;
     source_field: string;
   };
 }
@@ -45,19 +48,40 @@ export default function AddMappingModal({ visible, onCancel, onSuccess, initialV
         form={form}
         layout="vertical"
         initialValues={{
+          source_database: initialValues?.source_database,
           source_table: initialValues?.source_table,
+          shadow_schema: initialValues?.shadow_schema,
+          shadow_table: initialValues?.shadow_table,
           source_field: initialValues?.source_field,
           is_active: true,
           is_enriched: false
         }}
       >
-        <Form.Item name="source_table" label="Source Table" rules={[{ required: true }]}>
+        <Form.Item name="source_database" hidden>
+          <Input />
+        </Form.Item>
+        <Form.Item
+          name="source_table"
+          label="Source Object Table"
+          tooltip="Backend hiện ưu tiên resolve theo source/shadow context V2; source_table được giữ lại làm compatibility fallback."
+          rules={[{ required: true }]}
+        >
           <Input disabled />
         </Form.Item>
-        <Form.Item name="source_field" label="Source Field (in _raw_data)" rules={[{ required: true }]}>
+        <Form.Item name="shadow_schema" hidden>
+          <Input />
+        </Form.Item>
+        <Form.Item name="shadow_table" hidden>
+          <Input />
+        </Form.Item>
+        <Form.Item
+          name="source_field"
+          label="Source Field (from shadow raw payload)"
+          rules={[{ required: true }]}
+        >
           <Input placeholder="e.g. user_id, amount" />
         </Form.Item>
-        <Form.Item name="target_column" label="Target Column (PostgreSQL)" rules={[{ required: true }]}>
+        <Form.Item name="target_column" label="Target Column" rules={[{ required: true }]}>
           <Input placeholder="e.g. user_id, tx_amount" />
         </Form.Item>
         <Form.Item name="data_type" label="Data Type" rules={[{ required: true }]}>

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -17,6 +18,18 @@ type ColumnInfo struct {
 	Name       string
 	DataType   string
 	IsNullable bool
+}
+
+// BusinessColumn — Phase Auto Provisioning Feature A: a column inferred
+// from the source object (PG/MariaDB introspection or Mongo sample doc)
+// that the shadow table should mirror so downstream Discover finds
+// non-empty mapping rules. DataType is a Postgres type literal already
+// safe for embedding in DDL (mapper layer is responsible for sanitizing
+// engine-specific types into PG equivalents).
+type BusinessColumn struct {
+	Name     string
+	DataType string
+	Nullable bool
 }
 
 // TableSchema holds cached schema info for a target table
@@ -30,7 +43,7 @@ type TableSchema struct {
 // SchemaAdapter reads target table schemas dynamically and prepares for CDC inserts
 type SchemaAdapter struct {
 	db     *gorm.DB
-	cache  sync.Map // table name → *TableSchema
+	cache  sync.Map // schema.table → *TableSchema
 	logger *zap.Logger
 }
 
@@ -40,12 +53,21 @@ func NewSchemaAdapter(db *gorm.DB, logger *zap.Logger) *SchemaAdapter {
 
 // GetSchema returns cached schema for a table, loading from DB if needed
 func (sa *SchemaAdapter) GetSchema(tableName string) *TableSchema {
+	return sa.GetSchemaInSchema("public", tableName)
+}
+
+func (sa *SchemaAdapter) GetSchemaInSchema(schemaName, tableName string) *TableSchema {
+	cacheKey := schemaCacheKey(schemaName, tableName)
+	if cached, ok := sa.cache.Load(cacheKey); ok {
+		return cached.(*TableSchema)
+	}
 	if cached, ok := sa.cache.Load(tableName); ok {
 		return cached.(*TableSchema)
 	}
 
-	schema := sa.loadSchema(tableName)
+	schema := sa.loadSchemaInSchema(schemaName, tableName)
 	if schema != nil {
+		sa.cache.Store(cacheKey, schema)
 		sa.cache.Store(tableName, schema)
 	}
 	return schema
@@ -53,10 +75,15 @@ func (sa *SchemaAdapter) GetSchema(tableName string) *TableSchema {
 
 // InvalidateCache removes cached schema (call on schema.config.reload)
 func (sa *SchemaAdapter) InvalidateCache(tableName string) {
+	sa.InvalidateCacheInSchema("public", tableName)
+}
+
+func (sa *SchemaAdapter) InvalidateCacheInSchema(schemaName, tableName string) {
+	sa.cache.Delete(schemaCacheKey(schemaName, tableName))
 	sa.cache.Delete(tableName)
 }
 
-func (sa *SchemaAdapter) loadSchema(tableName string) *TableSchema {
+func (sa *SchemaAdapter) loadSchemaInSchema(schemaName, tableName string) *TableSchema {
 	var rows []struct {
 		ColumnName string
 		DataType   string
@@ -64,8 +91,8 @@ func (sa *SchemaAdapter) loadSchema(tableName string) *TableSchema {
 	}
 	sa.db.Raw(`SELECT column_name, data_type, is_nullable
 		FROM information_schema.columns
-		WHERE table_name = ? AND table_schema = 'public'
-		ORDER BY ordinal_position`, tableName).Scan(&rows)
+		WHERE table_name = ? AND table_schema = ?
+		ORDER BY ordinal_position`, tableName, schemaName).Scan(&rows)
 
 	if len(rows) == 0 {
 		return nil
@@ -88,9 +115,76 @@ func (sa *SchemaAdapter) loadSchema(tableName string) *TableSchema {
 // 1. Add CDC columns if missing
 // 3. Add UNIQUE constraint on PK if missing
 func (sa *SchemaAdapter) PrepareForCDCInsert(tableName, pkColumn string) error {
-	schema := sa.GetSchema(tableName)
+	return sa.PrepareForCDCInsertInSchema("public", tableName, pkColumn)
+}
+
+func (sa *SchemaAdapter) PrepareForCDCInsertInSchema(schemaName, tableName, pkColumn string) error {
+	return sa.PrepareForCDCInsertWithBusinessCols(schemaName, tableName, pkColumn, nil)
+}
+
+// PrepareForCDCInsertWithBusinessCols — Phase Auto Provisioning
+// Feature A. Same contract as PrepareForCDCInsertInSchema but lets the
+// caller supply a business-column manifest inferred from the source
+// object. When the shadow table is auto-created we inline those columns
+// in the DDL; when it exists already we ALTER ADD COLUMN IF NOT EXISTS
+// for each (idempotent, no destructive change). Pass nil to fall back
+// to the legacy PK-only behaviour.
+func (sa *SchemaAdapter) PrepareForCDCInsertWithBusinessCols(
+	schemaName, tableName, pkColumn string, businessCols []BusinessColumn,
+) error {
+	schema := sa.GetSchemaInSchema(schemaName, tableName)
 	if schema == nil {
-		return fmt.Errorf("table %s does not exist", tableName)
+		// Track D Hardening (P2 / Bug #6) — architect ruling:
+		// auto-create the shadow table instead of failing. Idempotent
+		// (CREATE TABLE IF NOT EXISTS) so a manual bootstrap that ran
+		// earlier is preserved untouched.
+		if err := sa.createShadowTableV1WithCols(schemaName, tableName, pkColumn, businessCols); err != nil {
+			return fmt.Errorf("create shadow table %s.%s: %w", schemaName, tableName, err)
+		}
+		schema = sa.loadSchemaInSchema(schemaName, tableName)
+		if schema == nil {
+			return fmt.Errorf("shadow table %s.%s still missing after CREATE", schemaName, tableName)
+		}
+		sa.cache.Store(schemaCacheKey(schemaName, tableName), schema)
+		sa.cache.Store(tableName, schema)
+		sa.logger.Info("shadow table auto-created",
+			zap.String("schema", schemaName),
+			zap.String("table", tableName),
+			zap.String("pk", pkColumn),
+			zap.Int("business_cols", len(businessCols)))
+	} else if len(businessCols) > 0 {
+		// Existing table — additive ALTER for any business cols not yet
+		// present. Type drift on an existing column is intentionally
+		// NOT corrected here (fail-safe: avoid silent destructive ALTER
+		// TYPE on production data).
+		for _, bc := range businessCols {
+			if bc.Name == "" || bc.Name == pkColumn {
+				continue
+			}
+			if _, exists := schema.Columns[bc.Name]; exists {
+				continue
+			}
+			nullClause := ""
+			if !bc.Nullable {
+				nullClause = " NULL" // store NULL — discover-side rules tighten
+			}
+			ident := pgx.Identifier{bc.Name}.Sanitize()
+			ddl := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s%s`,
+				quoteQualifiedTable(schemaName, tableName), ident, bc.DataType, nullClause)
+			if err := sa.db.Exec(ddl).Error; err != nil {
+				sa.logger.Warn("add business column failed",
+					zap.String("schema", schemaName),
+					zap.String("table", tableName),
+					zap.String("col", bc.Name),
+					zap.Error(err))
+			}
+		}
+		// Reload so the cdcCols loop below sees the newly added cols.
+		if reloaded := sa.loadSchemaInSchema(schemaName, tableName); reloaded != nil {
+			schema = reloaded
+			sa.cache.Store(schemaCacheKey(schemaName, tableName), schema)
+			sa.cache.Store(tableName, schema)
+		}
 	}
 
 	if schema.Prepared {
@@ -110,13 +204,13 @@ func (sa *SchemaAdapter) PrepareForCDCInsert(tableName, pkColumn string) error {
 	}
 	for col, def := range cdcCols {
 		if _, exists := schema.Columns[col]; !exists {
-			sa.db.Exec(fmt.Sprintf(`ALTER TABLE "%s" ADD COLUMN IF NOT EXISTS "%s" %s`, tableName, col, def))
+			sa.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS "%s" %s`, quoteQualifiedTable(schemaName, tableName), col, def))
 		}
 	}
 
 	for colName, info := range schema.Columns {
 		if strings.HasPrefix(colName, "_airbyte_") && !info.IsNullable {
-			sa.db.Exec(fmt.Sprintf(`ALTER TABLE "%s" ALTER COLUMN "%s" DROP NOT NULL`, tableName, colName))
+			sa.db.Exec(fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN "%s" DROP NOT NULL`, quoteQualifiedTable(schemaName, tableName), colName))
 		}
 	}
 
@@ -126,12 +220,12 @@ func (sa *SchemaAdapter) PrepareForCDCInsert(tableName, pkColumn string) error {
 		SELECT 1 FROM pg_constraint c
 		JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
 		WHERE c.conrelid = ?::regclass AND c.contype IN ('u','p') AND a.attname = ?
-	)`, fmt.Sprintf(`"%s"`, tableName), pkColumn).Scan(&hasUnique)
+	)`, quoteQualifiedTable(schemaName, tableName), pkColumn).Scan(&hasUnique)
 
 	if !hasUnique {
 		constraintName := fmt.Sprintf("%s_%s_cdc_unique", tableName, pkColumn)
-		if err := sa.db.Exec(fmt.Sprintf(`ALTER TABLE "%s" ADD CONSTRAINT "%s" UNIQUE ("%s")`,
-			tableName, constraintName, pkColumn)).Error; err != nil {
+		if err := sa.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT "%s" UNIQUE ("%s")`,
+			quoteQualifiedTable(schemaName, tableName), constraintName, pkColumn)).Error; err != nil {
 			sa.logger.Warn("add UNIQUE constraint failed (may already exist)", zap.Error(err))
 		}
 	}
@@ -141,15 +235,96 @@ func (sa *SchemaAdapter) PrepareForCDCInsert(tableName, pkColumn string) error {
 	schema.Prepared = true
 
 	// Reload schema after modifications
-	newSchema := sa.loadSchema(tableName)
+	newSchema := sa.loadSchemaInSchema(schemaName, tableName)
 	if newSchema != nil {
 		newSchema.PKColumn = pkColumn
 		newSchema.HasUnique = true
 		newSchema.Prepared = true
+		sa.cache.Store(schemaCacheKey(schemaName, tableName), newSchema)
 		sa.cache.Store(tableName, newSchema)
 	}
 
-	sa.logger.Info("table prepared for CDC insert", zap.String("table", tableName), zap.String("pk", pkColumn))
+	sa.logger.Info("table prepared for CDC insert", zap.String("schema", schemaName), zap.String("table", tableName), zap.String("pk", pkColumn))
+	return nil
+}
+
+// createShadowTableV1 emits CREATE SCHEMA + CREATE TABLE IF NOT EXISTS
+// for a V1 shadow target. Conservative TEXT pk: PrepareForCDCInsert is
+// the legacy fallback path, so we don't infer pk type from MappedData
+// to avoid schema drift.
+//
+// NOTE (architect P2 ruling): V1 keeps TEXT PK to swallow any source
+// shape (Mongo ObjectID, UUID, BIGINT, ...) without runtime type
+// inference. This trades insert-side correctness for SELECT/JOIN cost
+// at scale. V2 callers MUST go through SchemaManager.createShadowTable
+// which owns the typed-CREATE pipeline.
+//
+// Identifier quoting via pgx.Identifier{}.Sanitize() — refuses to
+// emit anything that would parse as injection (NUL byte) and handles
+// embedded quote characters per Postgres lexical rules.
+func (sa *SchemaAdapter) createShadowTableV1(schemaName, tableName, pkColumn string) error {
+	return sa.createShadowTableV1WithCols(schemaName, tableName, pkColumn, nil)
+}
+
+// createShadowTableV1WithCols — variant that inlines business-column
+// definitions from the source manifest. Conservative typing: caller has
+// already mapped engine-specific types to PG equivalents. PK stays
+// TEXT (V1 fallback contract).
+func (sa *SchemaAdapter) createShadowTableV1WithCols(
+	schemaName, tableName, pkColumn string, businessCols []BusinessColumn,
+) error {
+	schemaName = strings.TrimSpace(schemaName)
+	tableName = strings.TrimSpace(tableName)
+	pkColumn = strings.TrimSpace(pkColumn)
+	if schemaName == "" || tableName == "" || pkColumn == "" {
+		return fmt.Errorf("createShadowTableV1: schema/table/pk required (got %q/%q/%q)", schemaName, tableName, pkColumn)
+	}
+	schemaIdent := pgx.Identifier{schemaName}.Sanitize()
+	qualified := pgx.Identifier{schemaName, tableName}.Sanitize()
+	pkIdent := pgx.Identifier{pkColumn}.Sanitize()
+
+	if err := sa.db.Exec(fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, schemaIdent)).Error; err != nil {
+		return fmt.Errorf("create schema: %w", err)
+	}
+
+	// Build inline business column list (skip pk to avoid duplicate).
+	var bizDDL strings.Builder
+	seen := map[string]bool{strings.ToLower(pkColumn): true}
+	for _, bc := range businessCols {
+		name := strings.TrimSpace(bc.Name)
+		if name == "" || seen[strings.ToLower(name)] {
+			continue
+		}
+		seen[strings.ToLower(name)] = true
+		colIdent := pgx.Identifier{name}.Sanitize()
+		dt := strings.TrimSpace(bc.DataType)
+		if dt == "" {
+			dt = "TEXT"
+		}
+		nullClause := ""
+		if !bc.Nullable {
+			// Allow NULL anyway: source row may legitimately omit a
+			// column (especially Mongo schemaless). Discover-side rules
+			// can later tighten via mapping_rule_v2 NOT NULL flags.
+			nullClause = " NULL"
+		}
+		fmt.Fprintf(&bizDDL, "\n\t\t%s %s%s,", colIdent, dt, nullClause)
+	}
+
+	ddl := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		%s TEXT,%s
+		"_raw_data" JSONB,
+		"_source" VARCHAR(20) DEFAULT 'airbyte',
+		"_synced_at" TIMESTAMP DEFAULT NOW(),
+		"_version" BIGINT DEFAULT 1,
+		"_hash" VARCHAR(64),
+		"_deleted" BOOLEAN DEFAULT FALSE,
+		"_created_at" TIMESTAMP DEFAULT NOW(),
+		"_updated_at" TIMESTAMP DEFAULT NOW()
+	)`, qualified, pkIdent, bizDDL.String())
+	if err := sa.db.Exec(ddl).Error; err != nil {
+		return fmt.Errorf("create table: %w", err)
+	}
 	return nil
 }
 
@@ -223,11 +398,17 @@ func (sa *SchemaAdapter) CoerceValue(schema *TableSchema, colName string, val in
 func (sa *SchemaAdapter) BuildUpsertSQL(schema *TableSchema, tableName string, pkField string,
 	pkValue interface{}, mappedData map[string]interface{}, rawData, source, hash string,
 	sourceTsMs int64) (string, []interface{}) {
+	return sa.BuildUpsertSQLInSchema(schema, "public", tableName, pkField, pkValue, mappedData, rawData, source, hash, sourceTsMs)
+}
 
+func (sa *SchemaAdapter) BuildUpsertSQLInSchema(schema *TableSchema, schemaName, tableName string, pkField string,
+	pkValue interface{}, mappedData map[string]interface{}, rawData, source, hash string,
+	sourceTsMs int64) (string, []interface{}) {
 	hasSourceTs := false
 	if _, ok := schema.Columns["_source_ts"]; ok {
 		hasSourceTs = true
 	}
+	qualifiedTable := quoteQualifiedTable(schemaName, tableName)
 
 	allCols := []string{fmt.Sprintf(`"%s"`, pkField)}
 	allPlaceholders := []string{"?"}
@@ -269,6 +450,13 @@ func (sa *SchemaAdapter) BuildUpsertSQL(schema *TableSchema, tableName string, p
 		allPlaceholders = append(allPlaceholders, "?")
 		finalValues = append(finalValues, hash)
 	}
+	// V2 anchor key — populate _gpay_source_id from source PK so master
+	// ON CONFLICT (_gpay_source_id) gets a distinct value per source row.
+	if _, ok := schema.Columns["_gpay_source_id"]; ok {
+		allCols = append(allCols, `"_gpay_source_id"`)
+		allPlaceholders = append(allPlaceholders, "?")
+		finalValues = append(finalValues, fmt.Sprintf("%v", pkValue))
+	}
 	if hasSourceTs {
 		allCols = append(allCols, `"_source_ts"`)
 		if sourceTsMs > 0 {
@@ -298,10 +486,13 @@ func (sa *SchemaAdapter) BuildUpsertSQL(schema *TableSchema, tableName string, p
 		updateSets = append(updateSets, `"_synced_at" = NOW()`)
 	}
 	if _, ok := schema.Columns["_version"]; ok {
-		updateSets = append(updateSets, fmt.Sprintf(`"_version" = "%s"."_version" + 1`, tableName))
+		updateSets = append(updateSets, fmt.Sprintf(`"_version" = %s."_version" + 1`, qualifiedTable))
 	}
 	if _, ok := schema.Columns["_hash"]; ok {
 		updateSets = append(updateSets, `"_hash" = EXCLUDED."_hash"`)
+	}
+	if _, ok := schema.Columns["_gpay_source_id"]; ok {
+		updateSets = append(updateSets, `"_gpay_source_id" = EXCLUDED."_gpay_source_id"`)
 	}
 	if _, ok := schema.Columns["_updated_at"]; ok {
 		updateSets = append(updateSets, `"_updated_at" = NOW()`)
@@ -321,16 +512,16 @@ func (sa *SchemaAdapter) BuildUpsertSQL(schema *TableSchema, tableName string, p
 	var whereClause string
 	if hasSourceTs && sourceTsMs > 0 {
 		whereClause = fmt.Sprintf(
-			`WHERE "%s"."_source_ts" IS NULL OR "%s"."_source_ts" <= EXCLUDED."_source_ts"`,
-			tableName, tableName,
+			`WHERE %s."_source_ts" IS NULL OR %s."_source_ts" <= EXCLUDED."_source_ts"`,
+			qualifiedTable, qualifiedTable,
 		)
 	} else {
-		whereClause = fmt.Sprintf(`WHERE "%s"."_hash" IS DISTINCT FROM EXCLUDED."_hash"`, tableName)
+		whereClause = fmt.Sprintf(`WHERE %s."_hash" IS DISTINCT FROM EXCLUDED."_hash"`, qualifiedTable)
 	}
 
 	query := fmt.Sprintf(
-		`INSERT INTO "%s" (%s) VALUES (%s) ON CONFLICT ("%s") DO UPDATE SET %s %s`,
-		tableName,
+		`INSERT INTO %s (%s) VALUES (%s) ON CONFLICT ("%s") DO UPDATE SET %s %s`,
+		qualifiedTable,
 		strings.Join(allCols, ", "),
 		strings.Join(allPlaceholders, ", "),
 		pkField,
@@ -339,6 +530,17 @@ func (sa *SchemaAdapter) BuildUpsertSQL(schema *TableSchema, tableName string, p
 	)
 
 	return query, finalValues
+}
+
+func schemaCacheKey(schemaName, tableName string) string {
+	return strings.TrimSpace(schemaName) + "." + strings.TrimSpace(tableName)
+}
+
+// quoteQualifiedTable emits "schema"."table" using pgx's identifier
+// sanitiser instead of hand-rolled escape — covers embedded quotes,
+// rejects NUL bytes, matches Postgres lexer rules exactly.
+func quoteQualifiedTable(schemaName, tableName string) string {
+	return pgx.Identifier{strings.TrimSpace(schemaName), strings.TrimSpace(tableName)}.Sanitize()
 }
 
 func decodeBase64JSON(v string) []byte {

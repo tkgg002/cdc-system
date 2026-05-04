@@ -53,9 +53,25 @@ type ScheduleRow struct {
 // List — GET /api/v1/schedules
 func (h *TransmuteScheduleHandler) List(c *fiber.Ctx) error {
 	var rows []ScheduleRow
-	err := h.db.WithContext(c.Context()).
-		Table("cdc_internal.transmute_schedule").
-		Order("master_table, mode").Scan(&rows).Error
+	err := h.db.WithContext(c.Context()).Raw(`
+		SELECT
+			ts.id,
+			mb.master_table        AS master_table,
+			ts.mode,
+			ts.cron_expr,
+			ts.last_run_at,
+			ts.next_run_at,
+			ts.last_status,
+			ts.last_error,
+			ts.last_stats,
+			ts.is_enabled,
+			ts.created_by,
+			ts.created_at,
+			ts.updated_at
+		FROM cdc_system.transmute_schedule ts
+		LEFT JOIN cdc_system.master_binding mb ON mb.id = ts.master_binding_id
+		ORDER BY mb.master_table NULLS LAST, ts.mode
+	`).Scan(&rows).Error
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
@@ -105,7 +121,7 @@ func (h *TransmuteScheduleHandler) Create(c *fiber.Ctx) error {
 	}
 
 	err := h.db.WithContext(c.Context()).Exec(
-		`INSERT INTO cdc_internal.transmute_schedule
+		`INSERT INTO cdc_system.transmute_schedule
 		   (master_table, mode, cron_expr, next_run_at, is_enabled, created_by, created_at, updated_at)
 		 VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, NOW(), NOW())
 		 ON CONFLICT (master_table, mode) DO UPDATE
@@ -136,7 +152,7 @@ func (h *TransmuteScheduleHandler) Toggle(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
 	}
 	res := h.db.WithContext(c.Context()).Exec(
-		`UPDATE cdc_internal.transmute_schedule
+		`UPDATE cdc_system.transmute_schedule
 		    SET is_enabled = ?, updated_at = NOW()
 		  WHERE id = ?`,
 		req.IsEnabled, id,
@@ -155,8 +171,26 @@ func (h *TransmuteScheduleHandler) Toggle(c *fiber.Ctx) error {
 func (h *TransmuteScheduleHandler) RunNow(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var row ScheduleRow
-	err := h.db.WithContext(c.Context()).Table("cdc_internal.transmute_schedule").
-		Where("id = ?", id).Scan(&row).Error
+	err := h.db.WithContext(c.Context()).Raw(`
+		SELECT
+			ts.id,
+			mb.master_table        AS master_table,
+			ts.mode,
+			ts.cron_expr,
+			ts.last_run_at,
+			ts.next_run_at,
+			ts.last_status,
+			ts.last_error,
+			ts.last_stats,
+			ts.is_enabled,
+			ts.created_by,
+			ts.created_at,
+			ts.updated_at
+		FROM cdc_system.transmute_schedule ts
+		LEFT JOIN cdc_system.master_binding mb ON mb.id = ts.master_binding_id
+		WHERE ts.id = ?
+		LIMIT 1
+	`, id).Scan(&row).Error
 	if err != nil || row.ID == 0 {
 		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 	}

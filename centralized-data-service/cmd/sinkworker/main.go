@@ -1,4 +1,4 @@
-// Command sinkworker runs the v1.25 Debezium -> cdc_internal pipeline in a
+// Command sinkworker runs the v1.25 Debezium -> shadow_<source_db> pipeline in a
 // standalone process. It is launched in PARALLEL with the legacy worker
 // binary (cmd/worker) and does not share any runtime state. See plan v7.2
 // §10 (Parallel Independence Contract).
@@ -67,7 +67,7 @@ func main() {
 		OutMachineID    int   `gorm:"column:out_machine_id"`
 		OutFencingToken int64 `gorm:"column:out_fencing_token"`
 	}
-	if err := db.Raw(`SELECT * FROM cdc_internal.claim_machine_id(?, ?)`,
+	if err := db.Raw(`SELECT * FROM cdc_system.claim_machine_id(?, ?)`,
 		hostname, os.Getpid(),
 	).Scan(&claim).Error; err != nil {
 		logger.Fatal("claim_machine_id", zap.Error(err))
@@ -227,7 +227,7 @@ func discoverTopics(ctx context.Context, brokers []string, pattern string) ([]st
 	return out, nil
 }
 
-// runHeartbeat keeps cdc_internal.worker_registry fresh. The Postgres
+// runHeartbeat keeps cdc_system.worker_registry fresh. The Postgres
 // function returns FALSE if our fencing_token has been reclaimed by
 // another pod — we translate that into fail-stop behaviour via cancel().
 func runHeartbeat(
@@ -247,7 +247,7 @@ func runHeartbeat(
 		case <-ticker.C:
 			var alive bool
 			if err := db.Raw(
-				`SELECT cdc_internal.heartbeat_machine_id(?, ?)`,
+				`SELECT cdc_system.heartbeat_machine_id(?, ?)`,
 				machineID, fencingToken,
 			).Scan(&alive).Error; err != nil {
 				logger.Warn("heartbeat query error", zap.Error(err))

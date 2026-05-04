@@ -10,6 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"cdc-cms-service/internal/middleware"
+	"cdc-cms-service/internal/model"
+	"cdc-cms-service/internal/repository"
+
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 )
@@ -24,13 +28,18 @@ import (
 type SystemConnectorsHandler struct {
 	kafkaConnectURL string
 	httpClient      *http.Client
+	sourceRepo      *repository.SourceRepo
 	logger          *zap.Logger
 }
 
-func NewSystemConnectorsHandler(kafkaConnectURL string, logger *zap.Logger) *SystemConnectorsHandler {
+// NewSystemConnectorsHandler wires the proxy with the Source fingerprint
+// repo. sourceRepo may be nil in test builds — Create falls back to
+// best-effort Warn logging when it is missing.
+func NewSystemConnectorsHandler(kafkaConnectURL string, sourceRepo *repository.SourceRepo, logger *zap.Logger) *SystemConnectorsHandler {
 	return &SystemConnectorsHandler{
 		kafkaConnectURL: strings.TrimRight(kafkaConnectURL, "/"),
 		httpClient:      &http.Client{Timeout: 10 * time.Second},
+		sourceRepo:      sourceRepo,
 		logger:          logger,
 	}
 }
@@ -195,6 +204,31 @@ func (h *SystemConnectorsHandler) Create(c *fiber.Ctx) error {
 		return c.Status(502).JSON(fiber.Map{"error": "connector_create_failed", "detail": err.Error()})
 	}
 	h.logger.Info("connector created", zap.String("connector", req.Name))
+
+	// Systematic Flow (F-1.1): persist Connection Fingerprint so the
+	// Registry dropdown + wizard can read it back. Best-effort — connector
+	// is already live on Kafka Connect, don't fail the request.
+	if h.sourceRepo != nil {
+		fp := parseFingerprint(req.Config)
+		rawCfg, _ := json.Marshal(filterSafeConfig(req.Config))
+		src := &model.Source{
+			ConnectorName:         req.Name,
+			SourceType:            fp.sourceType,
+			ConnectorClass:        req.Config["connector.class"],
+			TopicPrefix:           fp.topicPrefix,
+			ServerAddress:         fp.serverAddress,
+			DatabaseIncludeList:   fp.dbList,
+			CollectionIncludeList: fp.collectionList,
+			RawConfigSanitized:    rawCfg,
+			Status:                "created",
+			CreatedBy:             middleware.GetUsername(c),
+		}
+		if err := h.sourceRepo.Upsert(c.Context(), src); err != nil {
+			h.logger.Warn("source fingerprint persist failed",
+				zap.String("connector", req.Name), zap.Error(err))
+		}
+	}
+
 	return c.Status(201).JSON(resp)
 }
 
@@ -209,6 +243,16 @@ func (h *SystemConnectorsHandler) Delete(c *fiber.Ctx) error {
 		return c.Status(502).JSON(fiber.Map{"error": "delete_failed", "detail": err.Error()})
 	}
 	h.logger.Info("connector deleted", zap.String("connector", name))
+
+	// Systematic Flow (F-1.4): soft-delete the fingerprint so audit trail
+	// survives. Best-effort.
+	if h.sourceRepo != nil {
+		if err := h.sourceRepo.MarkDeleted(c.Context(), name); err != nil {
+			h.logger.Warn("source soft-delete failed",
+				zap.String("connector", name), zap.Error(err))
+		}
+	}
+
 	return c.Status(202).JSON(fiber.Map{"status": "delete_triggered", "connector": name})
 }
 
@@ -277,6 +321,55 @@ func (h *SystemConnectorsHandler) doJSON(ctx interface{}, method, relPath string
 		return fmt.Errorf("parse response: %w", err)
 	}
 	return nil
+}
+
+// fingerprint is the minimal set of identity fields the CMS keeps
+// for each connector — enough to rebuild "who watches what" without
+// having to hit Kafka Connect.
+type fingerprint struct {
+	sourceType     string
+	topicPrefix    string
+	serverAddress  string
+	dbList         string
+	collectionList string
+}
+
+// parseFingerprint extracts the identity fields from a Kafka Connect
+// connector config. Driven by connector.class so we pick the right
+// source-specific keys (MongoDB vs MySQL vs Postgres).
+func parseFingerprint(cfg map[string]string) fingerprint {
+	fp := fingerprint{topicPrefix: cfg["topic.prefix"]}
+	cls := cfg["connector.class"]
+	switch {
+	case strings.Contains(cls, "MongoDb"):
+		fp.sourceType = "mongodb"
+		fp.serverAddress = cfg["mongodb.connection.string"]
+		fp.dbList = cfg["database.include.list"]
+		fp.collectionList = cfg["collection.include.list"]
+	case strings.Contains(cls, "MySql"):
+		fp.sourceType = "mysql"
+		fp.serverAddress = joinHostPort(cfg["database.hostname"], cfg["database.port"])
+		fp.dbList = cfg["database.include.list"]
+		fp.collectionList = cfg["table.include.list"]
+	case strings.Contains(cls, "Postgres"):
+		fp.sourceType = "postgres"
+		fp.serverAddress = joinHostPort(cfg["database.hostname"], cfg["database.port"])
+		fp.dbList = cfg["database.dbname"]
+		fp.collectionList = cfg["table.include.list"]
+	default:
+		fp.sourceType = "unknown"
+	}
+	return fp
+}
+
+func joinHostPort(host, port string) string {
+	if host == "" {
+		return ""
+	}
+	if port == "" {
+		return host
+	}
+	return host + ":" + port
 }
 
 // filterSafeConfig strips credentials / internal-only keys before returning

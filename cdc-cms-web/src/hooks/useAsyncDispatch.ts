@@ -63,7 +63,7 @@ export interface DispatchMutationInput {
 }
 
 export interface UseAsyncDispatchOptions {
-  /** Dispatch endpoint, e.g. '/api/registry/37/scan-fields'. */
+  /** Dispatch endpoint, e.g. '/api/v1/source-objects/registry/37/scan-fields'. */
   endpoint: string;
   /** Optional override; defaults to `${endpoint}/dispatch-status`. */
   statusEndpoint?: string;
@@ -71,6 +71,8 @@ export interface UseAsyncDispatchOptions {
   operation: string;
   /** Optional target_table filter for multi-tenant endpoints. */
   targetTable?: string;
+  /** Optional richer query params for status polling. */
+  statusParams?: Record<string, string | number | boolean | null | undefined>;
   /** Poll interval in ms (default 3_000). */
   pollInterval?: number;
   /** Max poll duration in ms (default 5 min). */
@@ -95,6 +97,7 @@ export function useAsyncDispatch(opts: UseAsyncDispatchOptions) {
     statusEndpoint,
     operation,
     targetTable,
+    statusParams,
     pollInterval = 3_000,
     maxPollDuration = 5 * 60_000,
     invalidateKeys = [['registry'], ['mapping-rules']],
@@ -160,12 +163,19 @@ export function useAsyncDispatch(opts: UseAsyncDispatchOptions) {
     state.status === 'accepted' || state.status === 'running';
 
   const statusQuery = useQuery<DispatchStatusResponse | null>({
-    queryKey: ['dispatch-status', endpoint, operation, sinceTs, targetTable ?? ''],
+    queryKey: ['dispatch-status', endpoint, operation, sinceTs, targetTable ?? '', JSON.stringify(statusParams ?? {})],
     queryFn: async () => {
       if (!sinceTs) return null;
       const url = statusEndpoint ?? `${endpoint}/dispatch-status`;
       const params = new URLSearchParams({ subject: operation, since: sinceTs });
       if (targetTable) params.set('target_table', targetTable);
+      if (statusParams) {
+        for (const [key, value] of Object.entries(statusParams)) {
+          if (value !== undefined && value !== null && value !== '') {
+            params.set(key, String(value));
+          }
+        }
+      }
       const { data } = await cmsApi.get<DispatchStatusResponse>(`${url}?${params.toString()}`);
       return data ?? { entries: [] };
     },

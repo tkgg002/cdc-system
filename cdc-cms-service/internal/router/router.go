@@ -58,8 +58,11 @@ func SetupRoutes(
 	healthHandler *api.HealthHandler,
 	schemaHandler *api.SchemaChangeHandler,
 	registryHandler *api.RegistryHandler,
-	cdcInternalRegistryHandler *api.CDCInternalRegistryHandler,
+	sourceObjectsHandler *api.SourceObjectsHandler,
+	sourceObjectActionsHandler *api.SourceObjectActionsHandler,
 	systemConnectorsHandler *api.SystemConnectorsHandler,
+	sourcesHandler *api.SourcesHandler,
+	wizardHandler *api.WizardHandler,
 	masterRegistryHandler *api.MasterRegistryHandler,
 	schemaProposalHandler *api.SchemaProposalHandler,
 	scheduleV1Handler *api.TransmuteScheduleHandler,
@@ -71,6 +74,7 @@ func SetupRoutes(
 	reconHandler *api.ReconciliationHandler,
 	systemHealthHandler *api.SystemHealthHandler,
 	alertsHandler *api.AlertsHandler,
+	provisioningHandler *api.ProvisioningHandler,
 	destructive DestructiveMiddleware,
 ) {
 	app.Get("/health", healthHandler.Health)
@@ -134,6 +138,7 @@ func SetupRoutes(
 
 	registerDestructive("/reconciliation/check", reconHandler.TriggerCheckAll)
 	registerDestructive("/reconciliation/check/:table", reconHandler.TriggerCheck)
+	registerDestructive("/reconciliation/heal", reconHandler.TriggerHeal)
 	registerDestructive("/reconciliation/heal/:table", reconHandler.TriggerHeal)
 	registerDestructive("/failed-sync-logs/:id/retry", reconHandler.RetryFailedLog)
 	registerDestructive("/tools/reset-debezium-offset", reconHandler.ResetDebeziumOffset)
@@ -145,16 +150,6 @@ func SetupRoutes(
 	// we still require ops-admin + idempotency + audit so every run is
 	// attributable. Runs as a background job; returns 202 immediately.
 	registerDestructive("/recon/backfill-source-ts", reconHandler.TriggerBackfillSourceTs)
-
-	// cdc_internal registry admin toggle — flips is_financial / profile_status
-	// on a single cdc_internal.table_registry row. The worker SchemaManager
-	// polls the flag with a 60s TTL so the toggle lands without a restart.
-	// PATCH instead of POST so REST semantics match "partial update".
-	{
-		handlers := append([]fiber.Handler{}, destructiveChain...)
-		handlers = append(handlers, cdcInternalRegistryHandler.Patch)
-		apiGroup.Patch("/v1/tables/:name", handlers...)
-	}
 
 	// Debezium Command Center — Kafka Connect REST proxy. Replaces the
 	registerDestructive("/v1/system/connectors", systemConnectorsHandler.Create)
@@ -176,6 +171,20 @@ func SetupRoutes(
 	registerDestructive("/v1/masters/:name/approve", masterRegistryHandler.Approve)
 	registerDestructive("/v1/masters/:name/reject", masterRegistryHandler.Reject)
 	registerDestructive("/v1/masters/:name/toggle-active", masterRegistryHandler.ToggleActive)
+	// Systematic Flow F-4.1 — atomic master swap (BEGIN+RENAME+COMMIT).
+	registerDestructive("/v1/masters/:name/swap", masterRegistryHandler.Swap)
+
+	// Systematic Flow F-3 — Wizard state machine.
+	//
+	// Tier split (Apr 2026):
+	//   - Create (draft) + Patch (draft field edits)  → admin tier only.
+	//     Zero infra side-effect, zero DDL, zero fan-out. Forcing the
+	//     destructive chain (Idempotency-Key + reason ≥ 10) here would
+	//     generate audit noise on every keystroke + burden the FE.
+	//   - Execute (commit → triggers pipeline, NATS, Debezium, DDL)
+	//     stays destructive — it is the real side-effect boundary.
+	// See lessons.md [2026-04-24] "Route classification".
+	registerDestructive("/v1/wizard/sessions/:id/execute", wizardHandler.Execute)
 
 	// Schema Proposal Workflow (Sprint 5 §R9) — approve applies ALTER +
 	// inserts mapping_rule in a single transaction.
@@ -206,6 +215,36 @@ func SetupRoutes(
 		registerDestructive("/alerts/:fingerprint/silence", alertsHandler.Silence)
 	}
 
+	// ------------------------------------------------------------
+	// Source Provisioning Mode (workspace feature-cdc-integration /
+	// phase provisioning_mode). Architect ruling D5: path scope
+	// /api/v1/cms/sources/:id/provisioning/*. ALL 7 endpoints (incl.
+	// GET) gated by RequireOpsAdmin per architect Phase C ruling.
+	// Mutating endpoints additionally pick up the destructive chain
+	// (Idempotency + Audit) so a Manager retrying with the same
+	// Idempotency-Key doesn't double-fire commands.
+	//
+	// Error mapping (api/provisioning_handler.go):
+	//   ErrProvisioningSourceNotFound      → 404
+	//   ErrProvisioningInvalidTransition   → 422
+	//   ErrProvisioningConflict            → 409
+	// ------------------------------------------------------------
+	if provisioningHandler != nil {
+		// GET — ops-admin alone, no idempotency/audit (read-only).
+		{
+			handlers := []fiber.Handler{middleware.RequireOpsAdmin()}
+			handlers = append(handlers, provisioningHandler.GetState)
+			apiGroup.Get("/v1/cms/sources/:id/provisioning", handlers...)
+		}
+		// POST writes — full destructive chain (ops-admin + idempotency + audit).
+		registerDestructive("/v1/cms/sources/:id/provisioning/advance", provisioningHandler.Advance)
+		registerDestructive("/v1/cms/sources/:id/provisioning/pause", provisioningHandler.Pause)
+		registerDestructive("/v1/cms/sources/:id/provisioning/resume", provisioningHandler.Resume)
+		registerDestructive("/v1/cms/sources/:id/provisioning/retry", provisioningHandler.Retry)
+		registerDestructive("/v1/cms/sources/:id/provisioning/archive", provisioningHandler.Archive)
+		registerDestructive("/v1/cms/sources/:id/provisioning/mode", provisioningHandler.SetMode)
+	}
+
 	// TODO(phase-4): routes below are mentioned in the plan but their
 	// handlers do not exist in this service yet. When they land, mount
 	// via registerDestructive / registerDestructiveRestart:
@@ -223,18 +262,26 @@ func SetupRoutes(
 	shared.Get("/activity-log", activityLogHandler.List)
 	shared.Get("/activity-log/stats", activityLogHandler.Stats)
 	shared.Get("/worker-schedule", scheduleHandler.List)
-	shared.Get("/sync/reconciliation", registryHandler.Reconciliation)
-	shared.Get("/registry", registryHandler.List)
-	shared.Get("/registry/stats", registryHandler.GetStats)
-	shared.Get("/registry/:id/status", registryHandler.GetStatus)
-	shared.Get("/registry/:id/dispatch-status", registryHandler.DispatchStatus)
+	shared.Get("/v1/source-objects/stats", sourceObjectsHandler.GetStats)
+	shared.Get("/v1/source-objects", sourceObjectsHandler.List)
+	shared.Get("/v1/source-objects/registry/:registry_id", sourceObjectsHandler.GetMappingContext)
+	shared.Get("/v1/shadow-bindings", sourceObjectsHandler.ListShadowBindings)
+	shared.Get("/v1/source-objects/:id/dispatch-status", sourceObjectActionsHandler.DispatchStatusV2)
+	shared.Get("/v1/source-objects/:id/transform-status", sourceObjectActionsHandler.TransformStatusV2)
+	shared.Get("/v1/source-objects/registry/:id/dispatch-status", sourceObjectActionsHandler.DispatchStatus)
+	shared.Get("/v1/source-objects/registry/:id/transform-status", sourceObjectActionsHandler.TransformStatus)
 	shared.Get("/mapping-rules", mappingHandler.List)
 	shared.Get("/introspection/scan/:table", introspectionHandler.Scan)
 	shared.Get("/introspection/scan-raw/:table", introspectionHandler.ScanRawData)
-	shared.Get("/v1/tables", cdcInternalRegistryHandler.List)
 	shared.Get("/v1/system/connectors", systemConnectorsHandler.List)
 	shared.Get("/v1/system/connectors/:name", systemConnectorsHandler.Get)
 	shared.Get("/v1/system/connector-plugins", systemConnectorsHandler.Plugins)
+	// Systematic Flow F-1.2/1.3 — Sources registry reads.
+	shared.Get("/v1/sources", sourcesHandler.List)
+	shared.Get("/v1/sources/:id", sourcesHandler.Get)
+	// Systematic Flow F-3.2/3.5 — Wizard state machine reads.
+	shared.Get("/v1/wizard/sessions/:id", wizardHandler.Get)
+	shared.Get("/v1/wizard/sessions/:id/progress", wizardHandler.Progress)
 	shared.Get("/v1/masters", masterRegistryHandler.List)
 	shared.Get("/v1/schema-proposals", schemaProposalHandler.List)
 	shared.Get("/v1/schema-proposals/:id", schemaProposalHandler.Get)
@@ -244,22 +291,19 @@ func SetupRoutes(
 	admin := apiGroup.Group("", middleware.RequireRole("admin"))
 	admin.Post("/schema-changes/:id/approve", schemaHandler.Approve)
 	admin.Post("/schema-changes/:id/reject", schemaHandler.Reject)
-	admin.Post("/registry", registryHandler.Register)
-	admin.Patch("/registry/:id", registryHandler.Update)
-	admin.Post("/registry/batch", registryHandler.BulkRegister)
-	admin.Post("/registry/scan-source", registryHandler.ScanSource)
-	admin.Post("/registry/:id/sync", registryHandler.Sync)
-	admin.Get("/registry/:id/jobs", registryHandler.GetJobs)
-	admin.Post("/registry/:id/standardize", registryHandler.Standardize)
-	admin.Post("/registry/:id/discover", registryHandler.Discover)
-	// /registry/:id/refresh-catalog removed — Debezium config via Connect REST.
-	admin.Post("/registry/:id/scan-fields", registryHandler.ScanFields)
-	admin.Post("/registry/:id/bridge", registryHandler.Bridge)
-	admin.Post("/registry/:id/transform", registryHandler.Transform)
-	admin.Post("/registry/:id/drop-gin-index", registryHandler.DropGINIndex)
-	admin.Post("/registry/:id/create-default-columns", registryHandler.CreateDefaultColumns)
-	admin.Post("/registry/:id/detect-timestamp-field", registryHandler.DetectTimestampField)
-	shared.Get("/registry/:id/transform-status", registryHandler.TransformStatus)
+	admin.Post("/v1/source-objects/register", sourceObjectActionsHandler.Register)
+	admin.Patch("/v1/source-objects/:id", sourceObjectActionsHandler.UpdateV2)
+	admin.Post("/v1/source-objects/:id/create-default-columns", sourceObjectActionsHandler.CreateDefaultColumnsV2)
+	admin.Post("/v1/source-objects/:id/scan-fields", sourceObjectActionsHandler.ScanFieldsV2)
+	admin.Post("/v1/source-objects/:id/standardize", sourceObjectActionsHandler.StandardizeV2)
+	admin.Patch("/v1/source-objects/registry/:id", sourceObjectActionsHandler.UpdateBridge)
+	admin.Post("/v1/source-objects/register-batch", sourceObjectActionsHandler.BulkRegister)
+	admin.Post("/v1/source-objects/registry/:id/standardize", sourceObjectActionsHandler.Standardize)
+	admin.Post("/v1/source-objects/registry/:id/scan-fields", sourceObjectActionsHandler.ScanFields)
+	admin.Post("/v1/source-objects/registry/:id/transform", sourceObjectActionsHandler.Transform)
+	admin.Post("/v1/source-objects/registry/:id/create-default-columns", sourceObjectActionsHandler.CreateDefaultColumns)
+	admin.Post("/v1/source-objects/:id/detect-timestamp-field", sourceObjectActionsHandler.DetectTimestampFieldV2)
+	admin.Post("/v1/source-objects/registry/:id/detect-timestamp-field", sourceObjectActionsHandler.DetectTimestampField)
 	admin.Post("/mapping-rules", mappingHandler.Create)
 	admin.Patch("/mapping-rules/batch", mappingHandler.BatchUpdate)
 	admin.Patch("/mapping-rules/:id", mappingHandler.UpdateStatus)
@@ -267,6 +311,11 @@ func SetupRoutes(
 	admin.Post("/mapping-rules/:id/backfill", mappingHandler.Backfill)
 	admin.Patch("/worker-schedule/:id", scheduleHandler.Update)
 	admin.Post("/worker-schedule", scheduleHandler.Create)
+
+	// Systematic Flow F-3 — Wizard draft endpoints (non-destructive tier).
+	// See block above for the tier rationale.
+	admin.Post("/v1/wizard/sessions", wizardHandler.Create)
+	admin.Patch("/v1/wizard/sessions/:id", wizardHandler.Patch)
 
 	// Reconciliation + Data Integrity (read-only)
 	shared.Get("/reconciliation/report", reconHandler.LatestReport)

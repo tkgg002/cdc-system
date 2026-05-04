@@ -5,8 +5,8 @@
  *   GET  /api/reconciliation/report                      → recon report list
  *   GET  /api/failed-sync-logs?page_size=...             → failed sync logs
  *   POST /api/reconciliation/check                       → trigger check all
- *   POST /api/reconciliation/check/:table?tier=N         → trigger per-table check
- *   POST /api/reconciliation/heal/:table                 → heal drift
+ *   POST /api/reconciliation/check                       → trigger per-table check when body carries scope
+ *   POST /api/reconciliation/heal                        → heal drift for one scoped target
  *   POST /api/failed-sync-logs/:id/retry                 → retry failed log
  *
  * Notes:
@@ -40,6 +40,11 @@ export type ReconStatus =
 
 export interface ReconRow {
   target_table: string;
+  source_object_id?: number | null;
+  source_table?: string | null;
+  shadow_schema?: string | null;
+  shadow_table?: string | null;
+  scope_ambiguous?: boolean;
   sync_engine?: string | null;
   source_type?: string | null;
   /** NULL when source query failed — distinguishes from a real 0 count. */
@@ -84,6 +89,7 @@ export interface ReconReport extends ReconRow {
 export interface FailedLog {
   id: number;
   target_table: string;
+  source_db?: string | null;
   record_id: string;
   operation: string;
   error_message: string;
@@ -91,6 +97,10 @@ export interface FailedLog {
   retry_count: number;
   status: string;
   created_at: string;
+  resolved_source_table?: string | null;
+  shadow_schema?: string | null;
+  shadow_table?: string | null;
+  scope_ambiguous?: boolean;
 }
 
 export interface FailedLogsResponse {
@@ -168,11 +178,18 @@ export function useCheckAllMutation() {
  * Trigger check for a single table at chosen tier.
  */
 export function useCheckTableMutation() {
-  return useMutation<void, Error, { table: string; tier: string; reason: string }>({
-    mutationFn: async ({ table, tier, reason }) => {
+  return useMutation<void, Error, { table: string; tier: string; reason: string; sourceDatabase?: string; sourceTable?: string; shadowSchema?: string; shadowTable?: string }>({
+    mutationFn: async ({ table, tier, reason, sourceDatabase, sourceTable, shadowSchema, shadowTable }) => {
       await cmsApi.post(
-        `/api/reconciliation/check/${encodeURIComponent(table)}?tier=${encodeURIComponent(tier)}`,
-        { reason },
+        `/api/reconciliation/check?tier=${encodeURIComponent(tier)}`,
+        {
+          reason,
+          table,
+          source_database: sourceDatabase || undefined,
+          source_table: sourceTable || undefined,
+          shadow_schema: shadowSchema || undefined,
+          shadow_table: shadowTable || undefined,
+        },
         { headers: auditHeaders(reason) },
       );
     },
@@ -184,11 +201,18 @@ export function useCheckTableMutation() {
  * Heal drift for a table (destructive — writes to dest DB).
  */
 export function useHealMutation() {
-  return useMutation<void, Error, { table: string; reason: string }>({
-    mutationFn: async ({ table, reason }) => {
+  return useMutation<void, Error, { table: string; reason: string; sourceDatabase?: string; sourceTable?: string; shadowSchema?: string; shadowTable?: string }>({
+    mutationFn: async ({ table, reason, sourceDatabase, sourceTable, shadowSchema, shadowTable }) => {
       await cmsApi.post(
-        `/api/reconciliation/heal/${encodeURIComponent(table)}`,
-        { reason },
+        '/api/reconciliation/heal',
+        {
+          reason,
+          table,
+          source_database: sourceDatabase || undefined,
+          source_table: sourceTable || undefined,
+          shadow_schema: shadowSchema || undefined,
+          shadow_table: shadowTable || undefined,
+        },
         { headers: auditHeaders(reason) },
       );
     },
@@ -198,6 +222,8 @@ export function useHealMutation() {
 
 /**
  * Retry a failed sync log entry (replays the upsert).
+ * ID remains the canonical identity; no extra source/shadow payload is
+ * required from FE because the backend resolves and enriches scope itself.
  */
 export function useRetryFailedMutation() {
   return useMutation<void, Error, { id: number; reason: string }>({

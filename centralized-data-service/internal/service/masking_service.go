@@ -107,7 +107,7 @@ func (ms *MaskingService) resolveMaskSet(table string) map[string]struct{} {
 	if ms.db != nil && cacheKey != "" {
 		var raw string
 		err := ms.db.Raw(
-			`SELECT sensitive_fields::text FROM cdc_table_registry WHERE target_table = ? LIMIT 1`,
+			`SELECT sensitive_fields::text FROM cdc_system.cdc_table_registry WHERE target_table = ? LIMIT 1`,
 			table,
 		).Scan(&raw).Error
 		if err == nil && raw != "" {

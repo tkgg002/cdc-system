@@ -14,4 +14,4 @@ type User struct {
 	UpdatedAt time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
 
-func (User) TableName() string { return "auth_users" }
+func (User) TableName() string { return "cdc_auth_service.auth_users" }

@@ -22,6 +22,33 @@ type RegistryService struct {
 	mappingCache  map[string][]model.MappingRule  // target_table → mapping rules
 }
 
+func (rs *RegistryService) ResolveSourceRoute(sourceDB, sourceTable string) *ResolvedSourceRoute {
+	_ = sourceDB
+	cfg := rs.GetTableConfigBySource(sourceTable)
+	if cfg == nil {
+		return nil
+	}
+	return &ResolvedSourceRoute{TableConfig: cfg}
+}
+
+// ResolveSourceRoutes returns the single route for the legacy RegistryService.
+// Legacy V1 service has no logical-clone concept; returns master route only.
+func (rs *RegistryService) ResolveSourceRoutes(sourceDB, sourceTable string) []*ResolvedSourceRoute {
+	route := rs.ResolveSourceRoute(sourceDB, sourceTable)
+	if route == nil {
+		return nil
+	}
+	return []*ResolvedSourceRoute{route}
+}
+
+func (rs *RegistryService) ResolveTargetRoute(targetTable string) *ResolvedSourceRoute {
+	cfg := rs.GetTableConfig(targetTable)
+	if cfg == nil {
+		return nil
+	}
+	return &ResolvedSourceRoute{TableConfig: cfg}
+}
+
 func NewRegistryService(
 	regRepo *repository.RegistryRepo,
 	mapRepo *repository.MappingRuleRepo,
@@ -91,10 +118,34 @@ func (rs *RegistryService) GetTableConfig(targetTable string) *model.TableRegist
 	return rs.registryCache[targetTable]
 }
 
+func (rs *RegistryService) GetTableConfigByID(id uint) *model.TableRegistry {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	for _, item := range rs.registryCache {
+		if item != nil && item.ID == id {
+			return item
+		}
+	}
+	return nil
+}
+
 func (rs *RegistryService) GetTableConfigBySource(sourceTable string) *model.TableRegistry {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
 	return rs.sourceCache[sourceTable]
+}
+
+func (rs *RegistryService) ListTableConfigs() []model.TableRegistry {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	out := make([]model.TableRegistry, 0, len(rs.registryCache))
+	for _, item := range rs.registryCache {
+		if item == nil {
+			continue
+		}
+		out = append(out, *item)
+	}
+	return out
 }
 
 func (rs *RegistryService) GetMappingRules(targetTable string) []model.MappingRule {
@@ -114,4 +165,58 @@ func (rs *RegistryService) GetDebeziumTables() []string {
 		}
 	}
 	return tables
+}
+
+// DebeziumNamespace identifies a CDC source object by the full
+// `(engine, database, namespace, object)` tuple. Multi-engine
+// unified pipeline uses this so the consumer can disambiguate when
+// two engines happen to expose objects under the same name (e.g.
+// PG `public.orders` vs Mongo `payment-bill-service.orders`).
+//
+// Engine    — `postgresql` | `mongodb` | `mysql` (mariadb-via-mysql).
+// Database  — Debezium `database.server.name` (PG/MySQL) or
+//             Mongo database name.
+// Namespace — PG schema (`public`); for Mongo/MySQL identical to
+//             Database (kept separate for future homogenisation).
+// Object    — table or collection name.
+type DebeziumNamespace struct {
+	Engine    string
+	Database  string
+	Namespace string
+	Object    string
+}
+
+// GetDebeziumNamespaces returns one DebeziumNamespace tuple per
+// active V1 registry row whose sync_engine is `debezium` or `both`.
+//
+// Multi-engine unified pipeline (Phase suffix `multi_engine_unified`).
+// V1 registry has no explicit `namespace` column; we synthesise it
+// from `source_db` for non-PG engines so callers always receive a
+// 4-tuple.
+func (rs *RegistryService) GetDebeziumNamespaces() []DebeziumNamespace {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	out := make([]DebeziumNamespace, 0, len(rs.registryCache))
+	for _, reg := range rs.registryCache {
+		if reg == nil {
+			continue
+		}
+		if reg.SyncEngine != "debezium" && reg.SyncEngine != "both" {
+			continue
+		}
+		ns := reg.SourceDB
+		if reg.SourceType == "postgresql" || reg.SourceType == "postgres" {
+			// PG default schema; richer schema discovery is a V2 concern
+			// and lives in source_object_registry. V1 callers only need
+			// "is this object under PG?" — `public` is the safe default.
+			ns = "public"
+		}
+		out = append(out, DebeziumNamespace{
+			Engine:    reg.SourceType,
+			Database:  reg.SourceDB,
+			Namespace: ns,
+			Object:    reg.SourceTable,
+		})
+	}
+	return out
 }

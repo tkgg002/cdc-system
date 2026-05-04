@@ -152,6 +152,60 @@ func TestKafkaConsumerWriteDLQSanitizesErrorText(t *testing.T) {
 	}
 }
 
+// B9 — unwrapAvroUnion unit tests.
+// Validates the Avro union envelope unwrapping helper for all cases in the DoD.
+func TestUnwrapAvroUnion_String(t *testing.T) {
+	got := unwrapAvroUnion(map[string]interface{}{"string": "x"})
+	if got != "x" {
+		t.Errorf("got %v, want %q", got, "x")
+	}
+}
+
+func TestUnwrapAvroUnion_Null(t *testing.T) {
+	got := unwrapAvroUnion(map[string]interface{}{"null": nil})
+	if got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+func TestUnwrapAvroUnion_PlainString(t *testing.T) {
+	got := unwrapAvroUnion("plain")
+	if got != "plain" {
+		t.Errorf("got %v, want %q", got, "plain")
+	}
+}
+
+func TestUnwrapAvroUnion_MultiKeyPassThrough(t *testing.T) {
+	input := map[string]interface{}{"a": 1, "b": 2}
+	got := unwrapAvroUnion(input)
+	m, ok := got.(map[string]interface{})
+	if !ok || m["a"] != 1 || m["b"] != 2 {
+		t.Errorf("multi-key map should pass through unchanged, got %v", got)
+	}
+}
+
+func TestUnwrapAvroUnionMap_UnwrapsAllFields(t *testing.T) {
+	input := map[string]interface{}{
+		"created_at": map[string]interface{}{"string": "2026-04-29T07:44:47Z"},
+		"amount":     map[string]interface{}{"long": int64(999)},
+		"status":     "paid",
+		"notes":      map[string]interface{}{"null": nil},
+	}
+	out := unwrapAvroUnionMap(input)
+	if out["created_at"] != "2026-04-29T07:44:47Z" {
+		t.Errorf("created_at: got %v", out["created_at"])
+	}
+	if out["amount"] != int64(999) {
+		t.Errorf("amount: got %v", out["amount"])
+	}
+	if out["status"] != "paid" {
+		t.Errorf("status: got %v", out["status"])
+	}
+	if out["notes"] != nil {
+		t.Errorf("notes: got %v, want nil", out["notes"])
+	}
+}
+
 // TestDLQWriteBeforeACK_SemanticContract documents the contract the
 // consume loop enforces: processMessage error → writeDLQ attempt → if
 // writeDLQ fails, CommitMessages MUST NOT run (redelivery).

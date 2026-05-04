@@ -57,7 +57,7 @@ type ProposalRow struct {
 func (h *SchemaProposalHandler) List(c *fiber.Ctx) error {
 	status := c.Query("status", "")
 	var rows []ProposalRow
-	q := h.db.WithContext(c.Context()).Table("cdc_internal.schema_proposal")
+	q := h.db.WithContext(c.Context()).Table("cdc_system.schema_proposal")
 	if status != "" {
 		q = q.Where("status = ?", status)
 	}
@@ -72,7 +72,7 @@ func (h *SchemaProposalHandler) List(c *fiber.Ctx) error {
 func (h *SchemaProposalHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var row ProposalRow
-	err := h.db.WithContext(c.Context()).Table("cdc_internal.schema_proposal").
+	err := h.db.WithContext(c.Context()).Table("cdc_system.schema_proposal").
 		Where("id = ?", id).Scan(&row).Error
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
@@ -105,7 +105,7 @@ func (h *SchemaProposalHandler) Approve(c *fiber.Ctx) error {
 
 	// Load the proposal.
 	var row ProposalRow
-	if err := h.db.WithContext(c.Context()).Table("cdc_internal.schema_proposal").
+	if err := h.db.WithContext(c.Context()).Table("cdc_system.schema_proposal").
 		Where("id = ?", id).Scan(&row).Error; err != nil || row.ID == 0 {
 		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 	}
@@ -129,9 +129,24 @@ func (h *SchemaProposalHandler) Approve(c *fiber.Ctx) error {
 	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
 		switch row.TableLayer {
 		case "shadow":
+			// Phase 39 — resolve shadow_schema từ binding (schema-aware).
+			var shadowSchema string
+			if err := tx.Raw(
+				`SELECT shadow_schema FROM cdc_system.shadow_binding
+				  WHERE shadow_table = ? AND is_active = true LIMIT 1`,
+				row.TableName,
+			).Scan(&shadowSchema).Error; err != nil {
+				return fmt.Errorf("binding lookup: %w", err)
+			}
+			if shadowSchema == "" {
+				return fmt.Errorf("binding_not_found for shadow table %q", row.TableName)
+			}
+			if !propIdentRe.MatchString(shadowSchema) {
+				return fmt.Errorf("invalid_shadow_schema: %q", shadowSchema)
+			}
 			stmt := fmt.Sprintf(
-				`ALTER TABLE cdc_internal.%q ADD COLUMN IF NOT EXISTS %q %s`,
-				row.TableName, row.ColumnName, finalType,
+				`ALTER TABLE %q.%q ADD COLUMN IF NOT EXISTS %q %s`,
+				shadowSchema, row.TableName, row.ColumnName, finalType,
 			)
 			if err := tx.Exec(stmt).Error; err != nil {
 				return fmt.Errorf("alter shadow: %w", err)
@@ -177,7 +192,7 @@ func (h *SchemaProposalHandler) Approve(c *fiber.Ctx) error {
 
 		// Mark proposal approved.
 		if err := tx.Exec(
-			`UPDATE cdc_internal.schema_proposal
+			`UPDATE cdc_system.schema_proposal
 			    SET status = 'approved',
 			        reviewed_by = ?,
 			        reviewed_at = NOW(),
@@ -197,7 +212,7 @@ func (h *SchemaProposalHandler) Approve(c *fiber.Ctx) error {
 	if err != nil {
 		// Mark failed (best-effort, don't rollback row).
 		_ = h.db.WithContext(c.Context()).Exec(
-			`UPDATE cdc_internal.schema_proposal SET status='failed', error_message=?, updated_at=NOW() WHERE id=?`,
+			`UPDATE cdc_system.schema_proposal SET status='failed', error_message=?, updated_at=NOW() WHERE id=?`,
 			err.Error(), id,
 		).Error
 		h.logger.Error("proposal approve failed",
@@ -237,7 +252,7 @@ func (h *SchemaProposalHandler) Reject(c *fiber.Ctx) error {
 	actor := getActor(c)
 
 	res := h.db.WithContext(c.Context()).Exec(
-		`UPDATE cdc_internal.schema_proposal
+		`UPDATE cdc_system.schema_proposal
 		    SET status = 'rejected',
 		        reviewed_by = ?,
 		        reviewed_at = NOW(),

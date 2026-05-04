@@ -3,15 +3,27 @@ server:
   port: ":8083"
 
 db:
+  # Phase 01 split E2E — CMS reads Preview from control plane (shadow tables).
+  #   gpay-postgres-cdc : localhost:5433  cdc_dw
   host: localhost
-  port: 5432
-  username: user
-  password: password
-  database: goopay_dw
+  port: 5433
+  username: gpay_admin
+  password: gpay_pass
+  database: cdc_dw
   sslMode: disable
   maxOpenConn: 25
   maxIdleConn: 10
   connMaxLifetime: 5m
+
+# Phase 01 split E2E (T-C2) — physical-instance DSNs for future
+# multi-DB reads (e.g. master preview from goopay_dest). CMS today
+# only needs control plane (cdc_dw) but the symmetric block keeps
+# config shape consistent across services.
+controlPlane:
+  url: postgres://gpay_admin:gpay_pass@localhost:5433/cdc_dw?sslmode=disable
+
+destination:
+  url: postgres://gpay_admin:gpay_pass@localhost:5434/goopay_dest?sslmode=disable
 
 nats:
   url: nats://cms_service:cms_secret_2026@localhost:14222

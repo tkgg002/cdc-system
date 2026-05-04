@@ -62,9 +62,9 @@ func TestDLQHandlerSendToDLQSanitizesFailedSyncLogAndPublishedMessage(t *testing
 	targetTable := "customer_profiles"
 	subject := "cdc.goopay.db.customer_profiles"
 	recordID := "dlq-it-1"
-	db.Exec(`DELETE FROM failed_sync_logs WHERE target_table = ? AND record_id = ?`, targetTable, recordID)
+	db.Exec(`DELETE FROM cdc_system.failed_sync_logs WHERE target_table = ? AND record_id = ?`, targetTable, recordID)
 	t.Cleanup(func() {
-		db.Exec(`DELETE FROM failed_sync_logs WHERE target_table = ? AND record_id = ?`, targetTable, recordID)
+		db.Exec(`DELETE FROM cdc_system.failed_sync_logs WHERE target_table = ? AND record_id = ?`, targetTable, recordID)
 	})
 
 	sub, err := nc.Conn.SubscribeSync(DLQSubject)

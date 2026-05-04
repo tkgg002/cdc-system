@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Link, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Link, useLocation, useNavigate } from 'react-router-dom';
 import { Layout, Menu, Button, Typography, Spin } from 'antd';
+import type { MenuProps } from 'antd';
 import {
   DashboardOutlined,
   DatabaseOutlined,
@@ -8,6 +9,7 @@ import {
   SettingOutlined,
   LogoutOutlined,
   CompassOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import QueryErrorBoundary from './components/QueryErrorBoundary';
 
@@ -16,13 +18,11 @@ const Login = lazy(() => import('./pages/Login'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const SchemaChanges = lazy(() => import('./pages/SchemaChanges'));
 const TableRegistry = lazy(() => import('./pages/TableRegistry'));
-const CDCInternalRegistry = lazy(() => import('./pages/CDCInternalRegistry'));
 const MasterRegistry = lazy(() => import('./pages/MasterRegistry'));
 const SchemaProposals = lazy(() => import('./pages/SchemaProposals'));
 const TransmuteSchedules = lazy(() => import('./pages/TransmuteSchedules'));
 const MappingFieldsPage = lazy(() => import('./pages/MappingFieldsPage'));
 const SourceConnectors = lazy(() => import('./pages/SourceConnectors'));
-const QueueMonitoring = lazy(() => import('./pages/QueueMonitoring'));
 const ActivityLog = lazy(() => import('./pages/ActivityLog'));
 const ActivityManager = lazy(() => import('./pages/ActivityManager'));
 const DataIntegrity = lazy(() => import('./pages/DataIntegrity'));
@@ -56,6 +56,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function AppLayout() {
   const navigate = useNavigate();
+  const location = useLocation();
   const user = getUser();
 
   const logout = () => {
@@ -65,56 +66,106 @@ function AppLayout() {
     navigate('/login');
   };
 
+  const menuItems: MenuProps['items'] = [
+    {
+      key: '/',
+      icon: <DashboardOutlined />,
+      label: <Link to="/">Dashboard</Link>,
+    },
+    {
+      key: 'setup',
+      icon: <CompassOutlined />,
+      label: 'Setup',
+      children: [
+        {
+          key: '/source-to-master',
+          icon: <CompassOutlined />,
+          label: <Link to="/source-to-master">Source → Master Wizard</Link>,
+        },
+        {
+          key: '/sources',
+          icon: <SettingOutlined />,
+          label: <Link to="/sources">Sources & Connectors</Link>,
+        },
+        {
+          key: '/registry',
+          icon: <DatabaseOutlined />,
+          label: <Link to="/registry">Source Objects</Link>,
+        },
+        {
+          key: '/masters',
+          icon: <DatabaseOutlined />,
+          label: <Link to="/masters">Master Registry</Link>,
+        },
+      ],
+    },
+    {
+      key: 'operate',
+      icon: <ThunderboltOutlined />,
+      label: 'Operate',
+      children: [
+        {
+          key: '/schema-proposals',
+          icon: <BranchesOutlined />,
+          label: <Link to="/schema-proposals">Schema Proposals</Link>,
+        },
+        {
+          key: '/schedules',
+          icon: <SettingOutlined />,
+          label: <Link to="/schedules">Transmute Schedules</Link>,
+        },
+        {
+          key: '/activity-log',
+          icon: <BranchesOutlined />,
+          label: <Link to="/activity-log">Activity Log</Link>,
+        },
+        {
+          key: '/data-integrity',
+          icon: <DatabaseOutlined />,
+          label: <Link to="/data-integrity">Data Integrity</Link>,
+        },
+        {
+          key: '/system-health',
+          icon: <DashboardOutlined />,
+          label: <Link to="/system-health">System Health</Link>,
+        },
+      ],
+    },
+    {
+      key: 'advanced',
+      icon: <SettingOutlined />,
+      label: 'Advanced',
+      children: [
+        {
+          key: '/schema-changes',
+          icon: <BranchesOutlined />,
+          label: <Link to="/schema-changes">Schema Review</Link>,
+        },
+        {
+          key: '/activity-manager',
+          icon: <SettingOutlined />,
+          label: <Link to="/activity-manager">Operations</Link>,
+        },
+      ],
+    },
+  ];
+
+  const selectedMenuKey =
+    location.pathname.startsWith('/registry/') ? '/registry' : location.pathname;
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider width={220} theme="dark">
         <div style={{ padding: '16px', textAlign: 'center' }}>
           <Text strong style={{ color: '#fff', fontSize: 16 }}>CDC Management</Text>
         </div>
-        <Menu theme="dark" mode="inline" defaultSelectedKeys={['dashboard']}>
-          <Menu.Item key="dashboard" icon={<DashboardOutlined />}>
-            <Link to="/">Dashboard</Link>
-          </Menu.Item>
-          <Menu.Item key="wizard" icon={<CompassOutlined />}>
-            <Link to="/source-to-master">Source → Master Wizard</Link>
-          </Menu.Item>
-          <Menu.Item key="schema" icon={<BranchesOutlined />}>
-            <Link to="/schema-changes">Mapping Approval</Link>
-          </Menu.Item>
-          <Menu.Item key="registry" icon={<DatabaseOutlined />}>
-            <Link to="/registry">Table Registry</Link>
-          </Menu.Item>
-          <Menu.Item key="cdc-internal" icon={<DatabaseOutlined />}>
-            <Link to="/cdc-internal">Shadow Registry (v1.25)</Link>
-          </Menu.Item>
-          <Menu.Item key="masters" icon={<DatabaseOutlined />}>
-            <Link to="/masters">Master Registry</Link>
-          </Menu.Item>
-          <Menu.Item key="proposals" icon={<BranchesOutlined />}>
-            <Link to="/schema-proposals">Schema Proposals</Link>
-          </Menu.Item>
-          <Menu.Item key="schedules" icon={<SettingOutlined />}>
-            <Link to="/schedules">Transmute Schedules</Link>
-          </Menu.Item>
-          <Menu.Item key="sources" icon={<SettingOutlined />}>
-            <Link to="/sources">Debezium Command Center</Link>
-          </Menu.Item>
-          <Menu.Item key="queue" icon={<DashboardOutlined />}>
-            <Link to="/queue">Queue Monitor</Link>
-          </Menu.Item>
-          <Menu.Item key="activity" icon={<BranchesOutlined />}>
-            <Link to="/activity-log">Activity Log</Link>
-          </Menu.Item>
-          <Menu.Item key="manager" icon={<SettingOutlined />}>
-            <Link to="/activity-manager">Quản lý tác vụ</Link>
-          </Menu.Item>
-          <Menu.Item key="integrity" icon={<DatabaseOutlined />}>
-            <Link to="/data-integrity">Toàn vẹn dữ liệu</Link>
-          </Menu.Item>
-          <Menu.Item key="health" icon={<DashboardOutlined />}>
-            <Link to="/system-health">Sức khỏe hệ thống</Link>
-          </Menu.Item>
-        </Menu>
+        <Menu
+          theme="dark"
+          mode="inline"
+          selectedKeys={[selectedMenuKey]}
+          defaultOpenKeys={['setup', 'operate', 'advanced']}
+          items={menuItems}
+        />
       </Sider>
       <Layout>
         <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -128,13 +179,13 @@ function AppLayout() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/schema-changes" element={<SchemaChanges />} />
                 <Route path="/registry" element={<TableRegistry />} />
-                <Route path="/cdc-internal" element={<CDCInternalRegistry />} />
+                <Route path="/cdc-internal" element={<Navigate to="/registry" replace />} />
                 <Route path="/masters" element={<MasterRegistry />} />
                 <Route path="/schema-proposals" element={<SchemaProposals />} />
                 <Route path="/schedules" element={<TransmuteSchedules />} />
                 <Route path="/registry/:id/mappings" element={<MappingFieldsPage />} />
                 <Route path="/sources" element={<SourceConnectors />} />
-                <Route path="/queue" element={<QueueMonitoring />} />
+                <Route path="/queue" element={<Navigate to="/system-health" replace />} />
                 <Route path="/activity-log" element={<ActivityLog />} />
                 <Route path="/activity-manager" element={<ActivityManager />} />
                 <Route path="/data-integrity" element={<DataIntegrity />} />

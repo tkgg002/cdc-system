@@ -12,11 +12,37 @@ import (
 )
 
 func NewPostgresConnection(cfg *config.AppConfig) (*gorm.DB, error) {
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.DB.Host, cfg.DB.Port, cfg.DB.UserName, cfg.DB.Password, cfg.DB.Database, cfg.DB.SSLMode,
-	)
+	dsn := cfg.DB.DSN()
 
+	logLevel := logger.Warn
+	if cfg.Server.Mode == "debug" {
+		logLevel = logger.Info
+	}
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger: logger.Default.LogMode(logLevel),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect postgres: %w", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
+	}
+
+	sqlDB.SetMaxOpenConns(cfg.DB.MaxOpenConn)
+	sqlDB.SetMaxIdleConns(cfg.DB.MaxIdleConn)
+	if cfg.DB.ConnMaxLifetime > 0 {
+		sqlDB.SetConnMaxLifetime(cfg.DB.ConnMaxLifetime)
+	} else {
+		sqlDB.SetConnMaxLifetime(5 * time.Minute)
+	}
+
+	return db, nil
+}
+
+func NewPostgresConnectionByDSN(cfg *config.AppConfig, dsn string) (*gorm.DB, error) {
 	logLevel := logger.Warn
 	if cfg.Server.Mode == "debug" {
 		logLevel = logger.Info

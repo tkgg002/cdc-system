@@ -92,7 +92,7 @@ func (sm *DLQStateMachine) RunOnce(ctx context.Context) {
 
 	var rows []model.FailedSyncLog
 	err := sm.db.WithContext(cycleCtx).
-		Raw(`SELECT * FROM failed_sync_logs
+		Raw(`SELECT * FROM cdc_system.failed_sync_logs
 			 WHERE status IN ('pending','failed','retrying')
 			   AND (next_retry_at IS NULL OR next_retry_at <= NOW())
 			   AND retry_count < ?
@@ -116,7 +116,7 @@ func (sm *DLQStateMachine) RunOnce(ctx context.Context) {
 func (sm *DLQStateMachine) retryOne(ctx context.Context, row model.FailedSyncLog) {
 	now := time.Now().UTC()
 	if err := sm.db.WithContext(ctx).Exec(
-		`UPDATE failed_sync_logs
+		`UPDATE cdc_system.failed_sync_logs
 		    SET status='retrying', last_retry_at=?
 		  WHERE id=?`,
 		now, row.ID,
@@ -137,7 +137,7 @@ func (sm *DLQStateMachine) retryOne(ctx context.Context, row model.FailedSyncLog
 	publishErr := sm.nats.Conn.Publish(subject, row.RawJSON)
 	if publishErr == nil {
 		if err := sm.db.WithContext(ctx).Exec(
-			`UPDATE failed_sync_logs
+			`UPDATE cdc_system.failed_sync_logs
 			    SET status='resolved', retry_count=?, resolved_at=?, next_retry_at=NULL, last_error=NULL
 			  WHERE id=?`,
 			retryCount, now, row.ID,
@@ -158,7 +158,7 @@ func (sm *DLQStateMachine) retryOne(ctx context.Context, row model.FailedSyncLog
 	errMsg := truncateDLQError(publishErr.Error(), 2000)
 	if retryCount >= sm.cfg.MaxRetries {
 		if err := sm.db.WithContext(ctx).Exec(
-			`UPDATE failed_sync_logs
+			`UPDATE cdc_system.failed_sync_logs
 			    SET status='dead_letter', retry_count=?, next_retry_at=NULL, last_error=?
 			  WHERE id=?`,
 			retryCount, errMsg, row.ID,
@@ -178,7 +178,7 @@ func (sm *DLQStateMachine) retryOne(ctx context.Context, row model.FailedSyncLog
 
 	nextRetryAt := now.Add(nextReplayDelay(retryCount))
 	if err := sm.db.WithContext(ctx).Exec(
-		`UPDATE failed_sync_logs
+		`UPDATE cdc_system.failed_sync_logs
 		    SET status='retrying', retry_count=?, next_retry_at=?, last_error=?
 		  WHERE id=?`,
 		retryCount, nextRetryAt, errMsg, row.ID,

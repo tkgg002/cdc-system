@@ -23,19 +23,19 @@ import (
 )
 
 type Server struct {
-	cfg    *config.AppConfig
-	logger *zap.Logger
-	db     *gorm.DB
-	nats   *natsconn.NatsClient
-	redis  *rediscache.RedisCache
-	app    *fiber.App
-	reconSvc         *service.ReconciliationService
-	healthCollector  *service.Collector
-	collectorCancel  context.CancelFunc
-	auditLogger      *middleware.AuditLogger
-	auditCancel      context.CancelFunc
+	cfg             *config.AppConfig
+	logger          *zap.Logger
+	db              *gorm.DB
+	nats            *natsconn.NatsClient
+	redis           *rediscache.RedisCache
+	app             *fiber.App
+	reconSvc        *service.ReconciliationService
+	healthCollector *service.Collector
+	collectorCancel context.CancelFunc
+	auditLogger     *middleware.AuditLogger
+	auditCancel     context.CancelFunc
 	// Phase 6 — alert state machine + background resolver.
-	alertMgr      *service.AlertManager
+	alertMgr            *service.AlertManager
 	alertResolverCancel context.CancelFunc
 }
 
@@ -75,20 +75,28 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	mappingRepo := repository.NewMappingRuleRepo(db)
 	pendingRepo := repository.NewPendingFieldRepo(db)
 	schemaLogRepo := repository.NewSchemaLogRepo(db)
+	sourceRepo := repository.NewSourceRepo(db)
+	wizardRepo := repository.NewWizardRepo(db)
 
 	// No external client wiring required.
 
 	// Services
 	approvalSvc := service.NewApprovalService(db, pendingRepo, mappingRepo, schemaLogRepo, registryRepo, natsClient, logger)
 	reconSvc := service.NewReconciliationService(registryRepo, mappingRepo, db, logger)
+	shadowAutomator := service.NewShadowAutomator(db, logger)
+	sourceObjectV2Sync := service.NewSourceObjectV2SyncService(db, logger)
+	masterSwap := service.NewMasterSwap(db, logger)
 
 	// Handlers
 	healthHandler := api.NewHealthHandler(db)
 	schemaHandler := api.NewSchemaChangeHandler(pendingRepo, schemaLogRepo, approvalSvc)
-	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, logger)
-	cdcInternalRegistryHandler := api.NewCDCInternalRegistryHandler(db, logger)
-	systemConnectorsHandler := api.NewSystemConnectorsHandler(cfg.System.KafkaConnectURL, logger)
-	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, logger)
+	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, shadowAutomator, sourceObjectV2Sync, logger)
+	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger)
+	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(registryHandler, db, logger)
+	systemConnectorsHandler := api.NewSystemConnectorsHandler(cfg.System.KafkaConnectURL, sourceRepo, logger)
+	sourcesHandler := api.NewSourcesHandler(sourceRepo, logger)
+	wizardHandler := api.NewWizardHandler(wizardRepo, logger)
+	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, masterSwap, logger)
 	schemaProposalHandler := api.NewSchemaProposalHandler(db, logger)
 	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, logger)
 	mappingPreviewHandler := api.NewMappingPreviewHandler(db, logger)
@@ -137,6 +145,13 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	healthCollector.SetAlertManager(alertMgr)
 	alertsHandler := api.NewAlertsHandler(alertMgr, logger)
 
+	// Source Provisioning Mode (workspace feature-cdc-integration / phase
+	// provisioning_mode). CMS owns the synchronous trigger surface;
+	// worker owns RecoveryLoop + step_completed handling. Both share
+	// the DB and rely on D6 CAS for race safety.
+	provOrch := service.NewProvisioningOrchestrator(db, natsClient.Conn, logger)
+	provisioningHandler := api.NewProvisioningHandler(provOrch, logger)
+
 	// Phase 4 — Security stack.
 	//
 	// Audit logger: async writer into the partitioned admin_actions
@@ -153,7 +168,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	app.Get("/swagger/*", swagger.HandlerDefault)
 
 	// Routes
-	router.SetupRoutes(app, cfg, healthHandler, schemaHandler, registryHandler, cdcInternalRegistryHandler, systemConnectorsHandler, masterRegistryHandler, schemaProposalHandler, scheduleHandler2, mappingPreviewHandler, mappingHandler, introspectionHandler, activityLogHandler, scheduleHandler, reconHandler, systemHealthHandler, alertsHandler, destructiveMW)
+	router.SetupRoutes(app, cfg, healthHandler, schemaHandler, registryHandler, sourceObjectsHandler, sourceObjectActionsHandler, systemConnectorsHandler, sourcesHandler, wizardHandler, masterRegistryHandler, schemaProposalHandler, scheduleHandler2, mappingPreviewHandler, mappingHandler, introspectionHandler, activityLogHandler, scheduleHandler, reconHandler, systemHealthHandler, alertsHandler, provisioningHandler, destructiveMW)
 
 	return &Server{
 		cfg: cfg, logger: logger, db: db,

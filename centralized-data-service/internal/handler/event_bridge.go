@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"centralized-data-service/internal/repository"
@@ -14,9 +15,17 @@ import (
 	"go.uber.org/zap"
 )
 
-// EventBridge listens to PostgreSQL changes and publishes minimized NATS events for Moleculer services.
-// Critical tables: LISTEN/NOTIFY (realtime <10ms)
-// Non-critical tables: Polling changelog (1-5s interval)
+// EventBridge is retained as a compatibility reserve for the old
+// Postgres-trigger / polling bridge model. The current Debezium-first
+// runtime does not wire it into the main worker path, but we keep the
+// component alive because:
+//   1. it still has test coverage
+//   2. it can be revived for operational experiments without rebuilding
+//      the feature from scratch
+//
+// Because it is no longer the primary runtime, changes here should stay
+// minimal and only harden correctness (for example schema-qualified
+// polling) rather than grow the surface area.
 type EventBridge struct {
 	pool         *pgxpool.Pool
 	nats         *natsconn.NatsClient
@@ -125,15 +134,46 @@ func (eb *EventBridge) pollChanges(ctx context.Context) {
 		}
 
 		// Check _updated_at for recent changes
+		schemaName := eb.resolveTargetSchema(ctx, entry.TargetTable)
 		var count int64
 		eb.pool.QueryRow(ctx,
-			fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE _updated_at > NOW() - INTERVAL '10 seconds'`, entry.TargetTable),
+			fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE _updated_at > NOW() - INTERVAL '10 seconds'`, quoteEventBridgeQualifiedTable(schemaName, entry.TargetTable)),
 		).Scan(&count)
 
 		if count > 0 {
 			eb.publishEvent("cdc_change", fmt.Sprintf(`{"table":"%s","count":%d}`, entry.TargetTable, count))
 		}
 	}
+}
+
+func quoteEventBridgeIdent(v string) string {
+	return `"` + strings.ReplaceAll(v, `"`, `""`) + `"`
+}
+
+func quoteEventBridgeQualifiedTable(schemaName, tableName string) string {
+	if strings.TrimSpace(schemaName) == "" {
+		schemaName = "public"
+	}
+	return quoteEventBridgeIdent(schemaName) + "." + quoteEventBridgeIdent(tableName)
+}
+
+func (eb *EventBridge) resolveTargetSchema(ctx context.Context, targetTable string) string {
+	if eb.pool == nil {
+		return "public"
+	}
+	var schemaName string
+	err := eb.pool.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(sb.shadow_schema, ''), 'public')
+		FROM cdc_system.shadow_binding sb
+		WHERE sb.shadow_table = $1
+		  AND sb.is_active = TRUE
+		ORDER BY sb.updated_at DESC NULLS LAST, sb.id DESC NULLS LAST
+		LIMIT 1
+	`, targetTable).Scan(&schemaName)
+	if err != nil || strings.TrimSpace(schemaName) == "" {
+		return "public"
+	}
+	return schemaName
 }
 
 func (eb *EventBridge) publishEvent(channel, payload string) {

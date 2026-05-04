@@ -21,6 +21,7 @@ type SchemaInspector struct {
 	pendingRepo *repository.PendingFieldRepo
 	redisCache  *rediscache.RedisCache
 	natsClient  *natsconn.NatsClient
+	metadata    MetadataRegistry
 	masking     *MaskingService
 	logger      *zap.Logger
 	alertCache  sync.Map
@@ -55,6 +56,10 @@ func NewSchemaInspector(
 
 func (si *SchemaInspector) SetMaskingService(masking *MaskingService) {
 	si.masking = masking
+}
+
+func (si *SchemaInspector) SetMetadataRegistry(metadata MetadataRegistry) {
+	si.metadata = metadata
 }
 
 func (si *SchemaInspector) InspectEvent(ctx context.Context, tableName, sourceDB string, eventData map[string]interface{}) (*SchemaDrift, error) {
@@ -119,7 +124,8 @@ func (si *SchemaInspector) maskSampleValue(tableName, fieldName string, value in
 }
 
 func (si *SchemaInspector) getTableSchema(ctx context.Context, tableName string) (map[string]bool, error) {
-	cacheKey := fmt.Sprintf("schema:%s", tableName)
+	schemaName := si.resolveTargetSchema(tableName)
+	cacheKey := fmt.Sprintf("schema:%s.%s", schemaName, tableName)
 
 	if si.redisCache != nil {
 		cached, err := si.redisCache.Get(ctx, cacheKey)
@@ -131,7 +137,7 @@ func (si *SchemaInspector) getTableSchema(ctx context.Context, tableName string)
 		}
 	}
 
-	schema, err := si.pendingRepo.GetTableColumns(ctx, tableName)
+	schema, err := si.pendingRepo.GetTableColumnsInSchema(ctx, schemaName, tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +148,17 @@ func (si *SchemaInspector) getTableSchema(ctx context.Context, tableName string)
 	}
 
 	return schema, nil
+}
+
+func (si *SchemaInspector) resolveTargetSchema(tableName string) string {
+	if si.metadata != nil {
+		if route := si.metadata.ResolveTargetRoute(tableName); route != nil && route.ShadowBinding != nil {
+			if v := strings.TrimSpace(route.ShadowBinding.ShadowSchema); v != "" {
+				return v
+			}
+		}
+	}
+	return "public"
 }
 
 func (si *SchemaInspector) publishDriftAlert(sourceDB, tableName string, fields []DetectedField) {
