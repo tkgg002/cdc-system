@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -327,4 +328,171 @@ func TestExtendDebeziumInclude_PG_DBLockMismatch(t *testing.T) {
 	_, err := extendConfigInMemory(cfg, "postgresql", "other_db", "public.tbl")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "pg connector locked to db=goopay_source")
+}
+
+// ──────────────────────────────────────────────
+// F1 Security Hardening Tests
+// ──────────────────────────────────────────────
+
+// newTestServer — helper creates a Server with a fixed token "secret-test-token"
+// and no real DB/NATS (dev mode not needed because token is set).
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	nc := startEmbeddedNATS(t)
+	return NewServer(Deps{
+		DB:                nil,
+		NATS:              nc,
+		DebeziumBaseURL:   "http://localhost:19999",
+		SchemaRegistryURL: "http://localhost:19998",
+		AuthToken:         "secret-test-token",
+		Logger:            zap.NewNop(),
+	})
+}
+
+// newTestServerWithMockDB — helper creates a Server with sqlmock DB.
+func newTestServerWithMockDB(t *testing.T, setupMock func(sqlmock.Sqlmock)) *Server {
+	t.Helper()
+	sqlDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	t.Cleanup(func() { sqlDB.Close() })
+
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{})
+	require.NoError(t, err)
+
+	setupMock(mock)
+
+	nc := startEmbeddedNATS(t)
+	return NewServer(Deps{
+		DB:                gormDB,
+		NATS:              nc,
+		DebeziumBaseURL:   "http://localhost:19999",
+		SchemaRegistryURL: "http://localhost:19998",
+		AuthToken:         "secret-test-token",
+		Logger:            zap.NewNop(),
+	})
+}
+
+// F1-2: constant-time compare — happy / wrong-token / length-mismatch / missing
+func TestAuthMiddleware_ConstantTimeCompare(t *testing.T) {
+	cases := []struct {
+		name   string
+		token  string
+		status int
+	}{
+		{"wrong", "Bearer wrong-token", http.StatusUnauthorized},
+		{"length-mismatch", "Bearer x", http.StatusUnauthorized},
+		{"missing", "", http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(Deps{
+				DB:                nil,
+				NATS:              nil,
+				DebeziumBaseURL:   "http://localhost",
+				SchemaRegistryURL: "http://localhost",
+				AuthToken:         "secret-test-token",
+				Logger:            zap.NewNop(),
+			})
+			req := httptest.NewRequest("POST", "/v2/sources/register", strings.NewReader("{}"))
+			req.Header.Set("Content-Type", "application/json")
+			if tc.token != "" {
+				req.Header.Set("Authorization", tc.token)
+			}
+			w := httptest.NewRecorder()
+			srv.engine.ServeHTTP(w, req)
+			require.Equal(t, tc.status, w.Code, "case=%s body=%s", tc.name, w.Body.String())
+		})
+	}
+
+	// Happy path: correct token must pass auth (will hit DB nil panic → 500, but not 401)
+	t.Run("happy-passes-auth", func(t *testing.T) {
+		srv := NewServer(Deps{
+			DB:                nil,
+			NATS:              nil,
+			DebeziumBaseURL:   "http://localhost",
+			SchemaRegistryURL: "http://localhost",
+			AuthToken:         "secret-test-token",
+			Logger:            zap.NewNop(),
+		})
+		req := httptest.NewRequest("POST", "/v2/sources/register", strings.NewReader(`{"object_code":"x","source_engine_type":"mongodb","sync_engine":"debezium","source_object_name":"x","source_locator":{"database":"d"},"target_master_table":"x"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer secret-test-token")
+		w := httptest.NewRecorder()
+		srv.engine.ServeHTTP(w, req)
+		// Auth passed → not 401 (may be 500 due to nil DB)
+		require.NotEqual(t, http.StatusUnauthorized, w.Code, "correct token must not get 401")
+	})
+}
+
+// F1-3: rate-limit allows burst 3 then 429 on 4th request
+func TestRateLimit_Allows3ThenBlocks(t *testing.T) {
+	s := newTestServer(t)
+	body := `{"object_code":"x","source_engine_type":"mongodb","sync_engine":"debezium","source_object_name":"x","source_locator":{"database":"d"},"target_master_table":"x"}`
+	var got429 int
+	for i := 0; i < 5; i++ {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v2/sources/register", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret-test-token")
+		req.Header.Set("Content-Type", "application/json")
+		s.engine.ServeHTTP(w, req)
+		if w.Code == http.StatusTooManyRequests {
+			got429++
+			// Verify Retry-After header is set
+			require.NotEmpty(t, w.Header().Get("Retry-After"), "Retry-After header must be set on 429")
+		}
+	}
+	require.GreaterOrEqual(t, got429, 1, "expected >=1 429 after burst capacity exceeded")
+}
+
+// F1-4: error response must sanitize sensitive patterns in DB error detail.
+// The sanitizer redacts key=value secrets (e.g. "password=xxx") but preserves
+// structural error text like table names. The key security property is that
+// raw DB errors go to Logger (full detail) and the HTTP body uses SanitizeFreeformText
+// which redacts credentials and is truncated. We verify:
+//  1. Status is 500 (step1 failed)
+//  2. The response body contains the "step1" error key (structured, not raw blob)
+//  3. The raw full error string is NOT placed in the top-level "error" field (it goes to "detail")
+//  4. Sensitive credential patterns ARE redacted (password=xxx style)
+func TestRegister_StepFailure_SanitizedError(t *testing.T) {
+	// Error with a sensitive credential pattern that SanitizeFreeformText WILL redact
+	s := newTestServerWithMockDB(t, func(mock sqlmock.Sqlmock) {
+		mock.ExpectBegin()
+		mock.ExpectQuery(`SELECT id FROM cdc_system.connection_registry`).
+			WillReturnError(errors.New(`ERROR: password=supersecret123 connection refused`))
+		mock.ExpectRollback()
+	})
+	body := `{"object_code":"x","source_engine_type":"mongodb","sync_engine":"debezium","source_object_name":"x","source_locator":{"database":"d"},"target_master_table":"x"}`
+	req := httptest.NewRequest("POST", "/v2/sources/register", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret-test-token")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.engine.ServeHTTP(w, req)
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	body500 := w.Body.String()
+	// Raw credential value must be redacted in the detail field
+	require.NotContains(t, body500, "supersecret123",
+		"response must not leak raw credential value")
+	// Step indicator must be present
+	require.Contains(t, body500, "step1", "response must indicate which step failed")
+	// Structured error key must be generic, not the full raw DB error string as the "error" field
+	// (the "detail" field may contain the sanitized version)
+	require.Contains(t, body500, `"error":"step1 (registry insert) failed"`,
+		"top-level error field must be a generic message, not raw DB error")
+}
+
+// F1-5: body size limit — 70 KiB payload must NOT return 200 or 500
+func TestBodyLimit_TooLarge(t *testing.T) {
+	s := newTestServer(t)
+	// 70 KiB database name to exceed 64 KiB limit
+	big := strings.Repeat("x", 70*1024)
+	body := `{"object_code":"x","source_engine_type":"mongodb","sync_engine":"debezium","source_object_name":"x","source_locator":{"database":"` + big + `"},"target_master_table":"x"}`
+	req := httptest.NewRequest("POST", "/v2/sources/register", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret-test-token")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.engine.ServeHTTP(w, req)
+	// gin MaxBytesReader trip → ShouldBindJSON returns error → 400
+	// (some setups may return 413; either is acceptable as long as NOT 200 or 500)
+	require.NotEqual(t, http.StatusOK, w.Code, "oversized body must not succeed")
+	require.NotEqual(t, http.StatusInternalServerError, w.Code, "oversized body must not cause 500")
 }

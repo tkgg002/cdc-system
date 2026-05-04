@@ -74,8 +74,11 @@ func qualifiedSourceObjectName(req RegisterSourceRequest) string {
 		}
 		return ns + "." + stringFromLocator(req.SourceLocator, "table")
 	case "mongodb":
-		return stringFromLocator(req.SourceLocator, "database") + "." +
-			stringFromLocator(req.SourceLocator, "collection")
+		collection := stringFromLocator(req.SourceLocator, "collection")
+		if collection == "" {
+			collection = req.SourceObjectName
+		}
+		return stringFromLocator(req.SourceLocator, "database") + "." + collection
 	case "mariadb", "mysql":
 		return stringFromLocator(req.SourceLocator, "database") + "." +
 			req.SourceObjectName
@@ -126,6 +129,9 @@ func topicNameFor(req RegisterSourceRequest) string {
 	switch req.SourceEngineType {
 	case "mongodb":
 		obj = stringFromLocator(req.SourceLocator, "collection")
+		if obj == "" {
+			obj = req.SourceObjectName
+		}
 	case "postgresql":
 		obj = req.SourceObjectName
 	default:
@@ -229,7 +235,12 @@ func (s *Server) extendDebeziumInclude(ctx context.Context, req RegisterSourceRe
 	var collectionOrTable string
 	switch req.SourceEngineType {
 	case "mongodb":
+		// Ưu tiên "collection" trong source_locator; fallback về source_object_name
+		// nếu caller không truyền "collection" key (chỉ truyền "database").
 		collectionOrTable = stringFromLocator(req.SourceLocator, "collection")
+		if collectionOrTable == "" {
+			collectionOrTable = req.SourceObjectName
+		}
 	case "mysql", "mariadb":
 		collectionOrTable = req.SourceObjectName
 	default: // postgresql

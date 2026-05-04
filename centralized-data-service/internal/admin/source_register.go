@@ -9,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+
+	"centralized-data-service/internal/service"
 )
 
 // handleRegisterSource — POST /v2/sources/register
@@ -36,8 +38,10 @@ func (s *Server) handleRegisterSource(c *gin.Context) {
 
 	// ── Step 1: DB transaction (idempotent) ───────────────────────────────
 	if err := s.step1InsertRegistry(c.Request.Context(), req, &sourceID); err != nil {
+		s.deps.Logger.Error("step1 registry insert failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "step1 (registry insert) failed: " + err.Error(),
+			"error":  "step1 (registry insert) failed",
+			"detail": service.SanitizeFreeformText(err.Error(), 200),
 		})
 		return
 	}
@@ -53,7 +57,7 @@ func (s *Server) handleRegisterSource(c *gin.Context) {
 			SourceObjectID:    sourceID,
 			ProvisioningState: "step2_failed",
 			StepsCompleted:    stepsCompleted,
-			LastStepError:     err.Error(),
+			LastStepError:     service.SanitizeFreeformText(err.Error(), 200),
 		})
 		return
 	}
@@ -73,7 +77,7 @@ func (s *Server) handleRegisterSource(c *gin.Context) {
 			SourceObjectID:    sourceID,
 			ProvisioningState: "step3_failed",
 			StepsCompleted:    stepsCompleted,
-			LastStepError:     err.Error(),
+			LastStepError:     service.SanitizeFreeformText(err.Error(), 200),
 		})
 		return
 	}
@@ -194,5 +198,5 @@ func (s *Server) markProvisioningFailed(sourceID int64, step string, err error) 
 	                SET provisioning_state = ?,
 	                    last_step_error    = ?,
 	                    updated_at         = NOW()
-	                WHERE id = ?`, step, err.Error(), sourceID)
+	                WHERE id = ?`, step, service.SanitizeFreeformText(err.Error(), 2000), sourceID)
 }

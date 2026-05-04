@@ -63,6 +63,15 @@ func main() {
 
 	addr := getEnvOr("ADMIN_API_LISTEN_ADDR", "127.0.0.1:8090")
 	token := os.Getenv("ADMIN_API_TOKEN")
+	devMode := os.Getenv("ADMIN_API_DEV") == "true"
+
+	if token == "" && !devMode {
+		logger.Fatal("ADMIN_API_TOKEN is empty and ADMIN_API_DEV != 'true' — refusing to start without auth. " +
+			"Set ADMIN_API_TOKEN to a strong secret, or set ADMIN_API_DEV=true to explicitly opt into dev mode.")
+	}
+	if token == "" {
+		logger.Warn("ADMIN_API_DEV=true — running without authentication. NEVER use this in production.")
+	}
 
 	srv := admin.NewServer(admin.Deps{
 		DB:                db,
