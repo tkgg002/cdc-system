@@ -11,6 +11,7 @@ import (
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 
@@ -500,20 +501,24 @@ func (h *MasterRegistryHandler) ToggleActive(c *fiber.Ctx) error {
 		}
 	}
 
-	res := h.db.WithContext(c.Context()).Exec(
-		`UPDATE cdc_system.master_binding
-		    SET is_active = NOT is_active, updated_at = NOW()
-		  WHERE id = ?`,
-		target.ID,
-	)
-	if res.Error != nil {
-		if strings.Contains(res.Error.Error(), "v2_master_active_requires_approved") {
-			return c.Status(409).JSON(fiber.Map{"error": "requires_approved", "detail": "cannot set is_active=true until schema_status='approved'"})
-		}
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
-	if res.RowsAffected == 0 {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	user := middleware.GetUsername(c)
+	cmd := commands.ToggleMasterActiveCommand{
+		MasterBindingID: uint64(target.ID),
+		UpdatedBy:       user,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	if _, err := h.bus.Execute(ctx, cmd); err != nil {
+		switch {
+		case errors.Is(err, commands.ErrMasterBindingNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		case errors.Is(err, commands.ErrMasterRequiresApproved):
+			return c.Status(409).JSON(fiber.Map{"error": "requires_approved", "detail": "cannot set is_active=true until schema_status='approved'"})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		}
 	}
 	return c.JSON(fiber.Map{"status": "toggled", "master_name": name})
 }

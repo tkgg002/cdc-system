@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -288,25 +289,41 @@ func (h *ScheduleHandler) Create(c *fiber.Ctx) error {
 		}
 	}
 
-	schedule := model.WorkerSchedule{
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+
+	var targetTable *string
+	if resolved != nil {
+		targetTable = &resolved.TargetTable
+	} else if trimmed(req.TargetTable) != nil {
+		targetTable = trimmed(req.TargetTable)
+	}
+
+	user := middleware.GetUsername(c)
+	cmd := commands.CreateWorkerScheduleCommand{
 		Operation:       strings.TrimSpace(req.Operation),
+		TargetTable:     targetTable,
 		IntervalMinutes: req.IntervalMinutes,
 		IsEnabled:       boolValue(req.IsEnabled, true),
 		Notes:           req.Notes,
+		CreatedBy:       user,
 	}
-	if resolved != nil {
-		schedule.TargetTable = &resolved.TargetTable
-	} else if trimmed(req.TargetTable) != nil {
-		schedule.TargetTable = trimmed(req.TargetTable)
-	}
-
-	if err := h.db.WithContext(c.Context()).Create(&schedule).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	res, derr := h.bus.Execute(ctx, cmd)
+	if derr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
 	}
 
-	row, err := h.getResponseByID(c, schedule.ID)
+	var body struct {
+		ID      uint                 `json:"id"`
+		Created model.WorkerSchedule `json:"created"`
+	}
+	_ = json.Unmarshal(res.ResultBody, &body)
+
+	row, err := h.getResponseByID(c, body.ID)
 	if err != nil {
-		return c.Status(201).JSON(fiber.Map{"data": schedule})
+		return c.Status(201).JSON(fiber.Map{"data": body.Created})
 	}
 	return c.Status(201).JSON(fiber.Map{"data": row})
 }

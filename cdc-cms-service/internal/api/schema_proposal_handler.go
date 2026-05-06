@@ -2,10 +2,16 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
+
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/middleware"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
@@ -17,11 +23,12 @@ import (
 // destructive.
 type SchemaProposalHandler struct {
 	db     *gorm.DB
+	bus    ports.CommandBus
 	logger *zap.Logger
 }
 
-func NewSchemaProposalHandler(db *gorm.DB, logger *zap.Logger) *SchemaProposalHandler {
-	return &SchemaProposalHandler{db: db, logger: logger}
+func NewSchemaProposalHandler(db *gorm.DB, bus ports.CommandBus, logger *zap.Logger) *SchemaProposalHandler {
+	return &SchemaProposalHandler{db: db, bus: bus, logger: logger}
 }
 
 var (
@@ -250,22 +257,23 @@ func (h *SchemaProposalHandler) Reject(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
 	}
 	actor := getActor(c)
-
-	res := h.db.WithContext(c.Context()).Exec(
-		`UPDATE cdc_system.schema_proposal
-		    SET status = 'rejected',
-		        reviewed_by = ?,
-		        reviewed_at = NOW(),
-		        rejection_reason = ?,
-		        updated_at = NOW()
-		  WHERE id = ? AND status = 'pending'`,
-		actor, req.Reason, id,
-	)
-	if res.Error != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
-	if res.RowsAffected == 0 {
-		return c.Status(409).JSON(fiber.Map{"error": "not_pending_or_not_found"})
+	user := middleware.GetUsername(c)
+	cmd := commands.RejectSchemaProposalCommand{
+		ProposalID:      id,
+		RejectionReason: req.Reason,
+		ReviewedBy:      actor,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	if _, err := h.bus.Execute(ctx, cmd); err != nil {
+		switch {
+		case errors.Is(err, commands.ErrSchemaProposalNotPendingOrNotFound):
+			return c.Status(409).JSON(fiber.Map{"error": "not_pending_or_not_found"})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		}
 	}
 	return c.JSON(fiber.Map{"status": "rejected", "id": id})
 }

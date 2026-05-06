@@ -208,7 +208,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH)
 	wizardHandler := api.NewWizardHandler(wizardRepo, logger, getWizardSessionH, getWizardProgressH, cmdBus)
 	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, masterSwap, logger, listMastersH, cmdBus)
-	schemaProposalHandler := api.NewSchemaProposalHandler(db, logger)
+	schemaProposalHandler := api.NewSchemaProposalHandler(db, cmdBus, logger)
 	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, cmdBus, logger, listTransmuteSchedulesH)
 	mappingPreviewHandler := api.NewMappingPreviewHandler(db, logger)
 	mappingHandler := api.NewMappingRuleHandler(mappingRepo, registryRepo, natsClient, cmdBus, listMappingRulesH, db)
@@ -276,6 +276,9 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSync("schedule.toggle", commands.NewToggleTransmuteScheduleHandler(db))
 	cmdBus.RegisterSync("registry.register", commands.NewRegisterRegistryHandler(db, shadowAutomator, natsClient, logger))
 	cmdBus.RegisterSync("registry.bulk-register", commands.NewBulkRegisterRegistryHandler(db, natsClient, logger))
+	cmdBus.RegisterSync("master.toggle-active", commands.NewToggleMasterActiveHandler(db))
+	cmdBus.RegisterSync("worker-schedule.create", commands.NewCreateWorkerScheduleHandler(db))
+	cmdBus.RegisterSync("schema-proposal.reject", commands.NewRejectSchemaProposalHandler(db))
 	alertsHandler := api.NewAlertsHandler(alertMgr, cmdBus, logger)
 
 	// Source Provisioning Mode (workspace feature-cdc-integration / phase

@@ -599,19 +599,23 @@ func (h *MappingRuleHandler) BatchUpdate(c *fiber.Ctx) error {
 	dispatched := 0
 	backfilled := 0
 
+	baseIdem := c.Get("Idempotency-Key")
 	for _, id := range body.IDs {
 		rule, err := h.getRuleByID(c, int64(id))
 		if err != nil {
 			continue
 		}
-		updates := map[string]interface{}{"status": body.Status, "updated_by": username}
-		if body.Status == "rejected" {
-			updates["is_active"] = false
+		updateIdem := ""
+		if baseIdem != "" {
+			updateIdem = baseIdem + ":rule:" + strconv.FormatUint(uint64(id), 10)
 		}
-		if body.Status == "approved" {
-			updates["is_active"] = true
+		updateCtx := messaging.WithMetadata(c.UserContext(), username, c.Get("X-Correlation-Id"), updateIdem)
+		updateCmd := commands.UpdateMappingRuleCommand{
+			ID:        int64(id),
+			Status:    body.Status,
+			UpdatedBy: username,
 		}
-		if err := h.db.WithContext(c.Context()).Table("cdc_system.mapping_rule_v2").Where("id = ?", id).Updates(updates).Error; err != nil {
+		if _, err := h.bus.Execute(updateCtx, updateCmd); err != nil {
 			continue
 		}
 		updated++
