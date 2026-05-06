@@ -10,6 +10,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"cdc-cms-service/internal/service/health/probes"
 )
 
 func TestComputeOverall(t *testing.T) {
@@ -64,7 +66,10 @@ func TestComputeAlertsPerSection(t *testing.T) {
 }
 
 func TestSanitizeErrRedactsURLs(t *testing.T) {
-	got := sanitizeErr(errors.New(`Get "http://admin:secret@kafka.internal:18083/connectors/xyz": dial error`))
+	// Helper moved to internal/service/health/probes (T15 split). Test
+	// stays in service package because it owns the regression budget
+	// for the redaction contract; pointing at the canonical impl is fine.
+	got := probes.SanitizeErr(errors.New(`Get "http://admin:secret@kafka.internal:18083/connectors/xyz": dial error`))
 	if strings.Contains(got, "kafka.internal") || strings.Contains(got, "secret") {
 		t.Fatalf("URL/credential not redacted: %q", got)
 	}
