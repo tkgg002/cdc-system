@@ -542,13 +542,21 @@ func (h *ReconciliationHandler) RetryFailedLog(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
 	}
 
-	// Update status
-	now := time.Now()
-	h.db.Model(&log).Updates(map[string]interface{}{
-		"status":        "retrying",
-		"retry_count":   gorm.Expr("retry_count + 1"),
-		"last_retry_at": now,
-	})
+	// Mark UI projection via bus so the cdc_jobs audit row carries the
+	// retry-mark intent alongside the retry dispatch above. Best-effort
+	// — failure here doesn't reverse the dispatch the operator already
+	// triggered, just leaves the FE badge stale until next poll.
+	//
+	// Idempotency-Key suffix `:mark` so the mark row doesn't collide
+	// with the retry-failed Dispatch row on the UNIQUE(idempotency_key)
+	// constraint when the operator supplied the same client key.
+	markIdem := c.Get("Idempotency-Key")
+	if markIdem != "" {
+		markIdem += ":mark"
+	}
+	markCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), markIdem)
+	markCmd := commands.MarkFailedLogRetryingCommand{FailedLogID: log.ID, UpdatedBy: user}
+	_, _ = h.bus.Execute(markCtx, markCmd)
 
 	return c.Status(202).JSON(fiber.Map{
 		"message": "retry dispatched",

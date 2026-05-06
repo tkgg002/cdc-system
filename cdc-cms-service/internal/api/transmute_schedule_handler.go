@@ -6,7 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
+	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"github.com/gofiber/fiber/v2"
@@ -22,6 +26,7 @@ import (
 type TransmuteScheduleHandler struct {
 	db     *gorm.DB
 	nats   *natsconn.NatsClient
+	bus    ports.CommandBus
 	logger *zap.Logger
 	cronP  cron.Parser
 	listQ  *queries.ListTransmuteSchedulesHandler
@@ -30,12 +35,14 @@ type TransmuteScheduleHandler struct {
 func NewTransmuteScheduleHandler(
 	db *gorm.DB,
 	nats *natsconn.NatsClient,
+	bus ports.CommandBus,
 	logger *zap.Logger,
 	listQ *queries.ListTransmuteSchedulesHandler,
 ) *TransmuteScheduleHandler {
 	return &TransmuteScheduleHandler{
 		db:     db,
 		nats:   nats,
+		bus:    bus,
 		logger: logger,
 		cronP:  cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
 		listQ:  listQ,
@@ -174,15 +181,26 @@ func (h *TransmuteScheduleHandler) RunNow(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 	}
 	actor := getActor(c)
-	payload, _ := json.Marshal(map[string]string{
-		"master_table":   row.MasterTable,
-		"triggered_by":   actor,
-		"correlation_id": "run-now-" + id + "-" + time.Now().UTC().Format(time.RFC3339Nano),
-	})
-	if err := h.nats.Conn.Publish("cdc.cmd.transmute", payload); err != nil {
-		return c.Status(502).JSON(fiber.Map{"error": "publish_failed", "detail": err.Error()})
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
-	return c.Status(202).JSON(fiber.Map{"status": "dispatched", "id": id, "master_table": row.MasterTable})
+	user := middleware.GetUsername(c)
+	cmd := commands.TransmuteRunCommand{
+		MasterTable:   row.MasterTable,
+		TriggeredBy:   actor,
+		CorrelationID: "run-now-" + id + "-" + time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	res, derr := h.bus.Dispatch(ctx, cmd)
+	if derr != nil {
+		return c.Status(502).JSON(fiber.Map{"error": "publish_failed", "detail": derr.Error()})
+	}
+	return c.Status(202).JSON(fiber.Map{
+		"status":       "dispatched",
+		"id":           id,
+		"master_table": row.MasterTable,
+		"job_id":       res.JobID,
+	})
 }
 
 // ---- Mapping-rule preview for JsonPath editor (§Dashboard.1) ----

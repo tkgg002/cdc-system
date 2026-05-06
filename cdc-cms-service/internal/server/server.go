@@ -209,12 +209,12 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	wizardHandler := api.NewWizardHandler(wizardRepo, logger, getWizardSessionH, getWizardProgressH, cmdBus)
 	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, masterSwap, logger, listMastersH, cmdBus)
 	schemaProposalHandler := api.NewSchemaProposalHandler(db, logger)
-	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, logger, listTransmuteSchedulesH)
+	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, cmdBus, logger, listTransmuteSchedulesH)
 	mappingPreviewHandler := api.NewMappingPreviewHandler(db, logger)
 	mappingHandler := api.NewMappingRuleHandler(mappingRepo, registryRepo, natsClient, cmdBus, listMappingRulesH, db)
 	introspectionHandler := api.NewIntrospectionHandler(natsClient)
 	activityLogHandler := api.NewActivityLogHandler(listActivityLogsH, getActivityStatsH)
-	scheduleHandler := api.NewScheduleHandler(db, workerScheduleReader, listWorkerSchedulesH)
+	scheduleHandler := api.NewScheduleHandler(db, workerScheduleReader, listWorkerSchedulesH, cmdBus)
 	reconHandler := api.NewReconciliationHandler(db, natsClient, cmdBus, listLatestReportsH, getTableHistoryH, listFailedLogsH)
 	jobHandler := api.NewJobHandler(getJobH)
 	// Phase 0 — System Health Background Collector.
@@ -269,6 +269,9 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSync("wizard.patch", commands.NewPatchWizardHandler(wizardRepo, logger))
 	cmdBus.RegisterSync("wizard.execute", commands.NewWizardExecuteHandler(wizardRepo, logger))
 	cmdBus.RegisterSync("source.update-v2", commands.NewUpdateSourceObjectV2Handler(db, logger))
+	cmdBus.RegisterSync("schedule.update", commands.NewUpdateScheduleHandler(db, logger))
+	cmdBus.RegisterSync("recon.failed-log-mark-retrying", commands.NewMarkFailedLogRetryingHandler(db))
+	cmdBus.RegisterSync("registry.update", commands.NewUpdateRegistryHandler(db, natsClient, logger))
 	alertsHandler := api.NewAlertsHandler(alertMgr, cmdBus, logger)
 
 	// Source Provisioning Mode (workspace feature-cdc-integration / phase

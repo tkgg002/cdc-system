@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -243,57 +244,52 @@ func (h *RegistryHandler) Update(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "no fields to update"})
 	}
 
-	if err := h.db.Model(&model.TableRegistry{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to update: " + err.Error()})
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
 
-	// Khi inactive → active: auto approve tất cả mapping rules của stream
-	if update.IsActive != nil && *update.IsActive {
-		result := h.db.Model(&model.MappingRule{}).
-			Where("source_table = ? AND status != ?", existing.SourceTable, "approved").
-			Updates(map[string]interface{}{
-				"status":    "approved",
-				"is_active": true,
+	user := middleware.GetUsername(c)
+	cmd := commands.UpdateRegistryCommand{
+		ID:             existing.ID,
+		SyncEngine:     update.SyncEngine,
+		SyncInterval:   update.SyncInterval,
+		Priority:       update.Priority,
+		IsActive:       update.IsActive,
+		Notes:          update.Notes,
+		TimestampField: update.TimestampField,
+		UpdatedBy:      user,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		switch {
+		case errors.Is(err, commands.ErrRegistryNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "not found"})
+		case errors.Is(err, commands.ErrRegistryNoFields):
+			return c.Status(400).JSON(fiber.Map{"error": "no fields to update"})
+		case errors.Is(err, commands.ErrRegistryInvalidTSField):
+			return c.Status(400).JSON(fiber.Map{
+				"error": "invalid timestamp_field: must match [A-Za-z_][A-Za-z0-9_]{0,63}",
 			})
-		if result.RowsAffected > 0 {
-			h.logAction("auto-approve-fields", existing.TargetTable, "success", map[string]interface{}{
-				"fields_approved": result.RowsAffected,
-				"source_table":    existing.SourceTable,
-				"trigger":         "inactive→active",
-			}, "")
-			h.natsClient.PublishReload(existing.TargetTable, middleware.GetUsername(c), "auto_approve", "")
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "failed to update: " + err.Error()})
 		}
 	}
 
-	// Legacy state-sync dispatch retired Sprint 4 4A.2. Modern Debezium
-	// state is managed via Connect REST at /api/v1/system/connectors.
-	dispatched := []string{}
-
-	// Activity Log
-	details := map[string]interface{}{"updates": updates, "user": middleware.GetUsername(c), "dispatched": dispatched}
-	detailsJSON, _ := json.Marshal(details)
-	now := time.Now()
-	h.db.Create(&model.ActivityLog{
-		Operation:   "registry-update",
-		TargetTable: existing.TargetTable,
-		Status:      "accepted",
-		Details:     detailsJSON,
-		TriggeredBy: "manual",
-		StartedAt:   now,
-		CompletedAt: &now,
-	})
-
-	h.natsClient.PublishReload(existing.TargetTable, middleware.GetUsername(c), "update", "")
 	if h.v2sync != nil {
-		if err := h.v2sync.SyncFromLegacy(c.Context(), existing); err != nil {
-			h.logger.Error("post-update v2 sync failed", zap.Uint("registry_id", existing.ID), zap.Error(err))
+		// Re-fetch so the v2sync sees the post-update row state. Cheap
+		// — single PK lookup; the alternative would be threading the
+		// updated entry out of the bus result body which couples this
+		// API to the command's wire shape.
+		if updated, getErr := h.repo.GetByID(c.Context(), existing.ID); getErr == nil {
+			if syncErr := h.v2sync.SyncFromLegacy(c.Context(), updated); syncErr != nil {
+				h.logger.Error("post-update v2 sync failed", zap.Uint("registry_id", existing.ID), zap.Error(syncErr))
+			}
 		}
 	}
-	return c.Status(202).JSON(fiber.Map{
-		"message":    "updated — external state dispatched",
-		"entry":      existing,
-		"dispatched": dispatched,
-	})
+
+	c.Set("Content-Type", "application/json")
+	return c.Status(202).Send(res.ResultBody)
 }
 
 // BulkRegister is kept as a compatibility delegate behind the V2

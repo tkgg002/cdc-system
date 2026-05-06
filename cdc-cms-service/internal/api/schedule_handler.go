@@ -1,12 +1,14 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
+	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
 
 	"github.com/gofiber/fiber/v2"
@@ -22,14 +24,16 @@ type ScheduleHandler struct {
 	db     *gorm.DB
 	reader queries.WorkerScheduleReader
 	listQ  *queries.ListWorkerSchedulesHandler
+	bus    ports.CommandBus
 }
 
 func NewScheduleHandler(
 	db *gorm.DB,
 	reader queries.WorkerScheduleReader,
 	listQ *queries.ListWorkerSchedulesHandler,
+	bus ports.CommandBus,
 ) *ScheduleHandler {
-	return &ScheduleHandler{db: db, reader: reader, listQ: listQ}
+	return &ScheduleHandler{db: db, reader: reader, listQ: listQ, bus: bus}
 }
 
 // WorkerScheduleScope / WorkerScheduleResponse re-exported from
@@ -213,49 +217,30 @@ func (h *ScheduleHandler) Update(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	updates := map[string]interface{}{}
-	if body.IntervalMinutes != nil {
-		updates["interval_minutes"] = *body.IntervalMinutes
-	}
-	if body.IsEnabled != nil {
-		updates["is_enabled"] = *body.IsEnabled
-	}
-	if body.Notes != nil {
-		updates["notes"] = *body.Notes
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
 
-	if len(updates) == 0 {
-		return c.Status(400).JSON(fiber.Map{"error": "nothing to update"})
+	user := middleware.GetUsername(c)
+	cmd := commands.UpdateScheduleCommand{
+		ID:              int64(id),
+		IntervalMinutes: body.IntervalMinutes,
+		IsEnabled:       body.IsEnabled,
+		Notes:           body.Notes,
+		UpdatedBy:       user,
 	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
 
-	var existing model.WorkerSchedule
-	if err := h.db.WithContext(c.Context()).First(&existing, id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	if _, err := h.bus.Execute(ctx, cmd); err != nil {
+		switch {
+		case errors.Is(err, commands.ErrScheduleNotFound):
 			return c.Status(404).JSON(fiber.Map{"error": "schedule_not_found"})
+		case errors.Is(err, commands.ErrScheduleNoFields):
+			return c.Status(400).JSON(fiber.Map{"error": "nothing to update"})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	updates["updated_at"] = time.Now()
-	if err := h.db.WithContext(c.Context()).Model(&model.WorkerSchedule{}).Where("id = ?", id).Updates(updates).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	detailsJSON, _ := json.Marshal(updates)
-	now := time.Now()
-	logTarget := "all_schedules"
-	if existing.TargetTable != nil && strings.TrimSpace(*existing.TargetTable) != "" {
-		logTarget = *existing.TargetTable
-	}
-	h.db.Create(&model.ActivityLog{
-		Operation:   "schedule-update",
-		TargetTable: logTarget,
-		Status:      "success",
-		Details:     detailsJSON,
-		TriggeredBy: "manual",
-		StartedAt:   now,
-		CompletedAt: &now,
-	})
 
 	row, err := h.getResponseByID(c, uint(id))
 	if err != nil {
