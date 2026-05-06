@@ -279,6 +279,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSync("master.toggle-active", commands.NewToggleMasterActiveHandler(db))
 	cmdBus.RegisterSync("worker-schedule.create", commands.NewCreateWorkerScheduleHandler(db))
 	cmdBus.RegisterSync("schema-proposal.reject", commands.NewRejectSchemaProposalHandler(db))
+	cmdBus.RegisterSync("schema-proposal.approve", commands.NewApproveSchemaProposalHandler(db))
 	alertsHandler := api.NewAlertsHandler(alertMgr, cmdBus, logger)
 
 	// Source Provisioning Mode (workspace feature-cdc-integration / phase

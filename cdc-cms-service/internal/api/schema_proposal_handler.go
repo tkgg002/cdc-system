@@ -3,8 +3,8 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,11 +31,7 @@ func NewSchemaProposalHandler(db *gorm.DB, bus ports.CommandBus, logger *zap.Log
 	return &SchemaProposalHandler{db: db, bus: bus, logger: logger}
 }
 
-var (
-	propIdentRe   = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
-	propColumnRe  = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
-	propTypeRe    = regexp.MustCompile(`^(SMALLINT|INTEGER|BIGINT|REAL|DOUBLE PRECISION|BOOLEAN|DATE|TIME|TIMESTAMP|TIMESTAMPTZ|INTERVAL|JSON|JSONB|UUID|INET|CIDR|MACADDR|BYTEA|TEXT|CHAR\([1-9][0-9]{0,7}\)|VARCHAR\([1-9][0-9]{0,7}\)|NUMERIC\([1-9][0-9]?,[0-9][0-9]?\)|DECIMAL\([1-9][0-9]?,[0-9][0-9]?\))$`)
-)
+var propIdentRe = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
 type ProposalRow struct {
 	ID                  int64           `json:"id"`
@@ -99,10 +95,16 @@ type ApproveProposalRequest struct {
 }
 
 // Approve — POST /api/v1/schema-proposals/:id/approve (destructive).
-// Applies ALTER TABLE for shadow layer; inserts mapping_rule row for
-// master layer. Full transaction; rollback on any error.
+// Delegates to ApproveSchemaProposalCommand: shadow layer ALTER TABLE
+// on resolved shadow_schema; master layer ALTER TABLE public + INSERT
+// cdc_mapping_rules. Full transaction in the command handler;
+// rollback on any error with best-effort failure-mark.
 func (h *SchemaProposalHandler) Approve(c *fiber.Ctx) error {
-	id := c.Params("id")
+	idStr := c.Params("id")
+	proposalID, perr := strconv.ParseInt(idStr, 10, 64)
+	if perr != nil || proposalID <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_id"})
+	}
 
 	var req ApproveProposalRequest
 	_ = c.BodyParser(&req)
@@ -110,137 +112,48 @@ func (h *SchemaProposalHandler) Approve(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
 	}
 
-	// Load the proposal.
-	var row ProposalRow
-	if err := h.db.WithContext(c.Context()).Table("cdc_system.schema_proposal").
-		Where("id = ?", id).Scan(&row).Error; err != nil || row.ID == 0 {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-	}
-	if row.Status != "pending" {
-		return c.Status(409).JSON(fiber.Map{"error": "not_pending", "status": row.Status})
-	}
-
-	finalType := row.ProposedDataType
-	if req.OverrideDataType != nil && *req.OverrideDataType != "" {
-		finalType = *req.OverrideDataType
-	}
-	if !propTypeRe.MatchString(finalType) {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_data_type", "data_type": finalType})
-	}
-	if !propIdentRe.MatchString(row.TableName) || !propColumnRe.MatchString(row.ColumnName) {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_identifiers_in_proposal"})
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
 
 	actor := getActor(c)
-
-	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-		switch row.TableLayer {
-		case "shadow":
-			// Phase 39 — resolve shadow_schema từ binding (schema-aware).
-			var shadowSchema string
-			if err := tx.Raw(
-				`SELECT shadow_schema FROM cdc_system.shadow_binding
-				  WHERE shadow_table = ? AND is_active = true LIMIT 1`,
-				row.TableName,
-			).Scan(&shadowSchema).Error; err != nil {
-				return fmt.Errorf("binding lookup: %w", err)
-			}
-			if shadowSchema == "" {
-				return fmt.Errorf("binding_not_found for shadow table %q", row.TableName)
-			}
-			if !propIdentRe.MatchString(shadowSchema) {
-				return fmt.Errorf("invalid_shadow_schema: %q", shadowSchema)
-			}
-			stmt := fmt.Sprintf(
-				`ALTER TABLE %q.%q ADD COLUMN IF NOT EXISTS %q %s`,
-				shadowSchema, row.TableName, row.ColumnName, finalType,
-			)
-			if err := tx.Exec(stmt).Error; err != nil {
-				return fmt.Errorf("alter shadow: %w", err)
-			}
-		case "master":
-			stmt := fmt.Sprintf(
-				`ALTER TABLE public.%q ADD COLUMN IF NOT EXISTS %q %s`,
-				row.TableName, row.ColumnName, finalType,
-			)
-			if err := tx.Exec(stmt).Error; err != nil {
-				return fmt.Errorf("alter master: %w", err)
-			}
-			finalPath := ""
-			if req.OverrideJSONPath != nil {
-				finalPath = *req.OverrideJSONPath
-			} else if row.ProposedJSONPath != nil {
-				finalPath = *row.ProposedJSONPath
-			}
-			finalFn := ""
-			if req.OverrideTransformFn != nil {
-				finalFn = *req.OverrideTransformFn
-			} else if row.ProposedTransformFn != nil {
-				finalFn = *row.ProposedTransformFn
-			}
-			// Insert mapping rule pointing to the new master column.
-			insertSQL := `INSERT INTO cdc_mapping_rules
-			  (source_table, master_table, source_field, target_column, data_type,
-			   source_format, jsonpath, transform_fn, is_active, status,
-			   approved_by_admin, approved_at, created_by, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, 'debezium_after', NULLIF(?, ''), NULLIF(?, ''),
-			         true, 'approved', true, NOW(), ?, NOW(), NOW())
-			 ON CONFLICT DO NOTHING`
-			if err := tx.Exec(insertSQL,
-				row.TableName, row.TableName,
-				row.ColumnName, row.ColumnName, finalType,
-				finalPath, finalFn, actor,
-			).Error; err != nil {
-				return fmt.Errorf("insert mapping_rule: %w", err)
-			}
-		default:
-			return fmt.Errorf("invalid table_layer: %s", row.TableLayer)
-		}
-
-		// Mark proposal approved.
-		if err := tx.Exec(
-			`UPDATE cdc_system.schema_proposal
-			    SET status = 'approved',
-			        reviewed_by = ?,
-			        reviewed_at = NOW(),
-			        applied_at = NOW(),
-			        override_data_type = ?,
-			        override_jsonpath = ?,
-			        override_transform_fn = ?,
-			        error_message = NULL,
-			        updated_at = NOW()
-			  WHERE id = ?`,
-			actor, req.OverrideDataType, req.OverrideJSONPath, req.OverrideTransformFn, id,
-		).Error; err != nil {
-			return fmt.Errorf("mark approved: %w", err)
-		}
-		return nil
-	})
+	user := middleware.GetUsername(c)
+	cmd := commands.ApproveSchemaProposalCommand{
+		ProposalID:          proposalID,
+		OverrideDataType:    req.OverrideDataType,
+		OverrideJSONPath:    req.OverrideJSONPath,
+		OverrideTransformFn: req.OverrideTransformFn,
+		Reason:              req.Reason,
+		ReviewedBy:          actor,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	res, err := h.bus.Execute(ctx, cmd)
 	if err != nil {
-		// Mark failed (best-effort, don't rollback row).
-		_ = h.db.WithContext(c.Context()).Exec(
-			`UPDATE cdc_system.schema_proposal SET status='failed', error_message=?, updated_at=NOW() WHERE id=?`,
-			err.Error(), id,
-		).Error
-		h.logger.Error("proposal approve failed",
-			zap.String("id", id), zap.Error(err))
-		return c.Status(500).JSON(fiber.Map{"error": "apply_failed", "detail": err.Error()})
+		switch {
+		case errors.Is(err, commands.ErrSchemaProposalNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		case errors.Is(err, commands.ErrSchemaProposalNotPending):
+			return c.Status(409).JSON(fiber.Map{"error": "not_pending"})
+		case errors.Is(err, commands.ErrSchemaProposalInvalidDataType):
+			return c.Status(400).JSON(fiber.Map{"error": "invalid_data_type"})
+		case errors.Is(err, commands.ErrSchemaProposalInvalidIdent):
+			return c.Status(400).JSON(fiber.Map{"error": "invalid_identifiers_in_proposal"})
+		case errors.Is(err, commands.ErrSchemaProposalApplyFailed):
+			h.logger.Error("proposal approve failed",
+				zap.Int64("id", proposalID), zap.Error(err))
+			return c.Status(500).JSON(fiber.Map{"error": "apply_failed", "detail": err.Error()})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "internal_error", "detail": err.Error()})
+		}
 	}
 
 	h.logger.Info("proposal approved",
-		zap.String("id", id),
-		zap.String("table", row.TableName),
-		zap.String("column", row.ColumnName),
-		zap.String("final_type", finalType),
+		zap.Int64("id", proposalID),
 		zap.String("actor", actor))
 
-	return c.JSON(fiber.Map{
-		"status":     "approved",
-		"id":         id,
-		"table":      row.TableName,
-		"column":     row.ColumnName,
-		"final_type": finalType,
-	})
+	var body map[string]interface{}
+	_ = json.Unmarshal(res.ResultBody, &body)
+	return c.JSON(body)
 }
 
 // RejectProposalRequest — reason required.
