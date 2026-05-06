@@ -264,7 +264,8 @@ func (c *Collector) collectAndCache(parent context.Context) error {
 // ----- Probes -----
 
 func (c *Collector) probeWorker(ctx context.Context) map[string]any {
-	url := strings.TrimRight(c.cfg.WorkerURL, "/") + "/health"
+	// admin-api Phase F1 auth-gates /health; /healthz is the no-auth dev probe.
+	url := strings.TrimRight(c.cfg.WorkerURL, "/") + "/healthz"
 	start := time.Now()
 	body, code, err := c.httpGet(ctx, url)
 	sec := map[string]any{"latency_ms": time.Since(start).Milliseconds()}

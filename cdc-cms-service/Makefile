@@ -1,4 +1,4 @@
-.PHONY: run build test swagger tidy
+.PHONY: run build test swagger tidy migrate migrate-status
 
 # Run CMS Service
 run:
@@ -19,3 +19,16 @@ swagger:
 # Tidy deps
 tidy:
 	go mod tidy
+
+PG_CONTAINER ?= gpay-postgres-cdc
+PG_USER      ?= gpay_admin
+PG_DB        ?= cdc_dw
+
+migrate:
+	@for f in migrations/*.sql; do \
+		echo "==> applying $$f"; \
+		docker exec -i $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB) -v ON_ERROR_STOP=1 < $$f || exit 1; \
+	done
+
+migrate-status:
+	@docker exec $(PG_CONTAINER) psql -U $(PG_USER) -d $(PG_DB) -c "\dt cdc_cms.*"

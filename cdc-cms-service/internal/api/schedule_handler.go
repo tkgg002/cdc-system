@@ -6,48 +6,37 @@ import (
 	"strings"
 	"time"
 
+	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/model"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
 
+// ScheduleHandler — /api/worker-schedule. Read path (List) delegates
+// to `internal/app/queries/list_worker_schedules.go`; writes still
+// live here (P3 will move them to commands). The reader is kept on
+// the struct because Create + Update need to project the post-write
+// shape via GetResponseByID.
 type ScheduleHandler struct {
-	db *gorm.DB
+	db     *gorm.DB
+	reader queries.WorkerScheduleReader
+	listQ  *queries.ListWorkerSchedulesHandler
 }
 
-func NewScheduleHandler(db *gorm.DB) *ScheduleHandler {
-	return &ScheduleHandler{db: db}
+func NewScheduleHandler(
+	db *gorm.DB,
+	reader queries.WorkerScheduleReader,
+	listQ *queries.ListWorkerSchedulesHandler,
+) *ScheduleHandler {
+	return &ScheduleHandler{db: db, reader: reader, listQ: listQ}
 }
 
-type WorkerScheduleScope struct {
-	SourceObjectID   *int64  `json:"source_object_id,omitempty"`
-	SourceDatabase   *string `json:"source_database,omitempty"`
-	SourceSchema     *string `json:"source_schema,omitempty"`
-	SourceNamespace  *string `json:"source_namespace,omitempty"`
-	SourceTable      *string `json:"source_table,omitempty"`
-	ShadowBindingID  *int64  `json:"shadow_binding_id,omitempty"`
-	ShadowSchema     *string `json:"shadow_schema,omitempty"`
-	ShadowTable      *string `json:"shadow_table,omitempty"`
-	PhysicalTableFQN *string `json:"physical_table_fqn,omitempty"`
-	ScopeAmbiguous   bool    `json:"scope_ambiguous"`
-}
-
-type WorkerScheduleResponse struct {
-	ID              uint                `json:"id"`
-	Operation       string              `json:"operation"`
-	TargetTable     *string             `json:"target_table"`
-	IntervalMinutes int                 `json:"interval_minutes"`
-	IsEnabled       bool                `json:"is_enabled"`
-	LastRunAt       *time.Time          `json:"last_run_at"`
-	NextRunAt       *time.Time          `json:"next_run_at"`
-	RunCount        int64               `json:"run_count"`
-	LastError       *string             `json:"last_error"`
-	Notes           *string             `json:"notes"`
-	CreatedAt       time.Time           `json:"created_at"`
-	UpdatedAt       time.Time           `json:"updated_at"`
-	Scope           WorkerScheduleScope `json:"scope"`
-}
+// WorkerScheduleScope / WorkerScheduleResponse re-exported from
+// queries via type alias so Swagger tooling and any external callers
+// keep compiling.
+type WorkerScheduleScope = queries.WorkerScheduleScope
+type WorkerScheduleResponse = queries.WorkerScheduleResponse
 
 type WorkerScheduleCreateRequest struct {
 	Operation       string  `json:"operation"`
@@ -82,129 +71,11 @@ type workerScheduleScopeCandidate struct {
 	PhysicalTableFQN *string
 }
 
-type workerScheduleScanRow struct {
-	ID               uint       `gorm:"column:id"`
-	Operation        string     `gorm:"column:operation"`
-	TargetTable      *string    `gorm:"column:target_table"`
-	IntervalMinutes  int        `gorm:"column:interval_minutes"`
-	IsEnabled        bool       `gorm:"column:is_enabled"`
-	LastRunAt        *time.Time `gorm:"column:last_run_at"`
-	NextRunAt        *time.Time `gorm:"column:next_run_at"`
-	RunCount         int64      `gorm:"column:run_count"`
-	LastError        *string    `gorm:"column:last_error"`
-	Notes            *string    `gorm:"column:notes"`
-	CreatedAt        time.Time  `gorm:"column:created_at"`
-	UpdatedAt        time.Time  `gorm:"column:updated_at"`
-	SourceObjectID   *int64     `gorm:"column:source_object_id"`
-	SourceDatabase   *string    `gorm:"column:source_database"`
-	SourceSchema     *string    `gorm:"column:source_schema"`
-	SourceNamespace  *string    `gorm:"column:source_namespace"`
-	SourceTable      *string    `gorm:"column:source_table"`
-	ShadowBindingID  *int64     `gorm:"column:shadow_binding_id"`
-	ShadowSchema     *string    `gorm:"column:shadow_schema"`
-	ShadowTable      *string    `gorm:"column:shadow_table"`
-	PhysicalTableFQN *string    `gorm:"column:physical_table_fqn"`
-	ScopeAmbiguous   bool       `gorm:"column:scope_ambiguous"`
-}
-
-func (h *ScheduleHandler) listResponses(ctx *fiber.Ctx) ([]WorkerScheduleResponse, error) {
-	var scan []workerScheduleScanRow
-	err := h.db.WithContext(ctx.Context()).Raw(`
-		SELECT
-			ws.id,
-			ws.operation,
-			ws.target_table,
-			ws.interval_minutes,
-			ws.is_enabled,
-			ws.last_run_at,
-			ws.next_run_at,
-			ws.run_count,
-			ws.last_error,
-			ws.notes,
-			ws.created_at,
-			ws.updated_at,
-			sb.source_object_id,
-			so.source_database,
-			so.source_schema,
-			so.source_namespace,
-			so.source_object_name AS source_table,
-			sb.shadow_binding_id,
-			sb.shadow_schema,
-			sb.shadow_table,
-			sb.physical_table_fqn,
-			COALESCE(scope_counts.binding_count, 0) > 1 AS scope_ambiguous
-		FROM cdc_system.cdc_worker_schedule ws
-		LEFT JOIN LATERAL (
-			SELECT
-				s.id AS shadow_binding_id,
-				s.source_object_id,
-				s.shadow_schema,
-				s.shadow_table,
-				s.physical_table_fqn
-			FROM cdc_system.shadow_binding s
-			WHERE ws.target_table IS NOT NULL
-			  AND s.shadow_table = ws.target_table
-			  AND s.is_active = TRUE
-			ORDER BY s.updated_at DESC, s.id DESC
-			LIMIT 1
-		) sb ON TRUE
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*)::int AS binding_count
-			FROM cdc_system.shadow_binding s
-			WHERE ws.target_table IS NOT NULL
-			  AND s.shadow_table = ws.target_table
-			  AND s.is_active = TRUE
-		) scope_counts ON TRUE
-		LEFT JOIN cdc_system.source_object_registry so
-		  ON so.id = sb.source_object_id
-		ORDER BY ws.operation, ws.target_table NULLS FIRST, ws.id
-	`).Scan(&scan).Error
-	if err != nil {
-		return nil, err
-	}
-	rows := make([]WorkerScheduleResponse, 0, len(scan))
-	for _, s := range scan {
-		rows = append(rows, WorkerScheduleResponse{
-			ID:              s.ID,
-			Operation:       s.Operation,
-			TargetTable:     s.TargetTable,
-			IntervalMinutes: s.IntervalMinutes,
-			IsEnabled:       s.IsEnabled,
-			LastRunAt:       s.LastRunAt,
-			NextRunAt:       s.NextRunAt,
-			RunCount:        s.RunCount,
-			LastError:       s.LastError,
-			Notes:           s.Notes,
-			CreatedAt:       s.CreatedAt,
-			UpdatedAt:       s.UpdatedAt,
-			Scope: WorkerScheduleScope{
-				SourceObjectID:   s.SourceObjectID,
-				SourceDatabase:   s.SourceDatabase,
-				SourceSchema:     s.SourceSchema,
-				SourceNamespace:  s.SourceNamespace,
-				SourceTable:      s.SourceTable,
-				ShadowBindingID:  s.ShadowBindingID,
-				ShadowSchema:     s.ShadowSchema,
-				ShadowTable:      s.ShadowTable,
-				PhysicalTableFQN: s.PhysicalTableFQN,
-				ScopeAmbiguous:   s.ScopeAmbiguous,
-			},
-		})
-	}
-	return rows, nil
-}
-
+// getResponseByID is a thin shim over the reader so post-write paths
+// (Create / Update) can project the canonical response shape without
+// owning SQL. Kept as a method to preserve the existing call sites.
 func (h *ScheduleHandler) getResponseByID(ctx *fiber.Ctx, id uint) (*WorkerScheduleResponse, error) {
-	rows, err := h.listResponses(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range rows {
-		if rows[i].ID == id {
-			return &rows[i], nil
-		}
-	}
-	return nil, gorm.ErrRecordNotFound
+	return h.reader.GetResponseByID(ctx.UserContext(), id)
 }
 
 func trimmed(v *string) *string {
@@ -313,11 +184,11 @@ func boolValue(ptr *bool, fallback bool) bool {
 // @Security     BearerAuth
 // @Router       /api/worker-schedule [get]
 func (h *ScheduleHandler) List(c *fiber.Ctx) error {
-	rows, err := h.listResponses(c)
+	res, err := h.listQ.Handle(c.UserContext(), queries.ListWorkerSchedulesQuery{})
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"data": rows})
+	return c.JSON(fiber.Map{"data": res.Data})
 }
 
 // Update godoc

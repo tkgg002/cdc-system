@@ -18,8 +18,7 @@ import (
 
 // @title           CDC CMS Service API
 // @version         1.0
-// @description     CMS Service for CDC Integration - Schema change approval, table registry, mapping rules management.
-// @host            localhost:8080
+// @description     CMS Service for CDC Integration.
 // @BasePath        /
 // @securityDefinitions.apikey BearerAuth
 // @in header

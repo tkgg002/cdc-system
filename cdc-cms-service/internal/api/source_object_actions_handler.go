@@ -1,12 +1,14 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
@@ -18,11 +20,12 @@ import (
 type SourceObjectActionsHandler struct {
 	registry *RegistryHandler
 	db       *gorm.DB
+	bus      ports.CommandBus
 	logger   *zap.Logger
 }
 
-func NewSourceObjectActionsHandler(registry *RegistryHandler, db *gorm.DB, logger *zap.Logger) *SourceObjectActionsHandler {
-	return &SourceObjectActionsHandler{registry: registry, db: db, logger: logger}
+func NewSourceObjectActionsHandler(registry *RegistryHandler, db *gorm.DB, bus ports.CommandBus, logger *zap.Logger) *SourceObjectActionsHandler {
+	return &SourceObjectActionsHandler{registry: registry, db: db, bus: bus, logger: logger}
 }
 
 type sourceObjectDispatchScope struct {
@@ -261,18 +264,19 @@ func (h *SourceObjectActionsHandler) CreateDefaultColumnsV2(c *fiber.Ctx) error 
 		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"source_object_id":  id,
-		"target_table":      scope.TargetTable,
-		"shadow_schema":     scope.ShadowSchema,
-		"source_table":      scope.SourceTable,
-		"primary_key_field": scope.PrimaryKeyField,
-		"primary_key_type":  scope.PrimaryKeyType,
-	})
-
-	if err := h.registry.natsClient.Conn.Publish("cdc.cmd.create-default-columns", payload); err != nil {
-		h.registry.logAction("create-default-columns", scope.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.CreateDefaultColumnsCommand{
+		SourceObjectID:  id,
+		TargetTable:     scope.TargetTable,
+		ShadowSchema:    scope.ShadowSchema,
+		SourceTable:     scope.SourceTable,
+		PrimaryKeyField: scope.PrimaryKeyField,
+		PrimaryKeyType:  scope.PrimaryKeyType,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.registry.logAction("create-default-columns", scope.TargetTable, "error", nil, derr.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + derr.Error()})
 	}
 
 	h.registry.logAction("create-default-columns", scope.TargetTable, "success", map[string]interface{}{
@@ -339,14 +343,16 @@ func (h *SourceObjectActionsHandler) StandardizeV2(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"source_object_id": id,
-		"target_table":     scope.TargetTable,
-		"shadow_schema":    scope.ShadowSchema,
-	})
-	if err := h.registry.natsClient.Conn.Publish("cdc.cmd.standardize", payload); err != nil {
-		h.registry.logAction("standardize", scope.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch standardize command: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.StandardizeCommand{
+		SourceObjectID: id,
+		TargetTable:    scope.TargetTable,
+		ShadowSchema:   scope.ShadowSchema,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.registry.logAction("standardize", scope.TargetTable, "error", nil, derr.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch standardize command: " + derr.Error()})
 	}
 
 	h.registry.logAction("standardize", scope.TargetTable, "success", map[string]interface{}{
@@ -409,16 +415,18 @@ func (h *SourceObjectActionsHandler) ScanFieldsV2(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"source_object_id": id,
-		"target_table":     scope.TargetTable,
-		"source_table":     scope.SourceTable,
-		"sync_engine":      "debezium",
-		"source_type":      scope.SourceType,
-	})
-	if err := h.registry.natsClient.Conn.Publish("cdc.cmd.scan-fields", payload); err != nil {
-		h.registry.logAction("scan-fields", scope.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.ScanFieldsCommand{
+		SourceObjectID: id,
+		TargetTable:    scope.TargetTable,
+		SourceTable:    scope.SourceTable,
+		SyncEngine:     "debezium",
+		SourceType:     scope.SourceType,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.registry.logAction("scan-fields", scope.TargetTable, "error", nil, derr.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
 	h.registry.logAction("scan-fields", scope.TargetTable, "accepted", map[string]interface{}{
@@ -579,16 +587,18 @@ func (h *SourceObjectActionsHandler) DetectTimestampFieldV2(c *fiber.Ctx) error 
 		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"source_object_id": id,
-		"target_table":     scope.TargetTable,
-		"source_table":     scope.SourceTable,
-		"source_db":        scope.SourceDatabase,
-		"source_type":      scope.SourceType,
-	})
-	if err := h.registry.natsClient.Conn.Publish("cdc.cmd.detect-timestamp-field", payload); err != nil {
-		h.registry.logAction("detect-timestamp-field", scope.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.DetectTimestampFieldCommand{
+		SourceObjectID: id,
+		TargetTable:    scope.TargetTable,
+		SourceTable:    scope.SourceTable,
+		SourceDB:       scope.SourceDatabase,
+		SourceType:     scope.SourceType,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.registry.logAction("detect-timestamp-field", scope.TargetTable, "error", nil, derr.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
 	h.registry.logAction("detect-timestamp-field", scope.TargetTable, "accepted", map[string]interface{}{

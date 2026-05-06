@@ -3,9 +3,15 @@ package server
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"cdc-cms-service/config"
 	"cdc-cms-service/internal/api"
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/queries"
+	infrahttp "cdc-cms-service/internal/infra/http"
+	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/internal/router"
@@ -37,6 +43,9 @@ type Server struct {
 	// Phase 6 — alert state machine + background resolver.
 	alertMgr            *service.AlertManager
 	alertResolverCancel context.CancelFunc
+	// Phase 2 v2 / P3.T3.12 — stuck-job reaper (per-type timeout).
+	stuckJobReaper       *service.StuckJobReaper
+	stuckJobReaperCancel context.CancelFunc
 }
 
 func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
@@ -78,33 +87,136 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	sourceRepo := repository.NewSourceRepo(db)
 	wizardRepo := repository.NewWizardRepo(db)
 
-	// No external client wiring required.
+	// Phase 2 v2 / P2 — CQRS Q-side adapters. New ports-backed repos
+	// live alongside the legacy `internal/repository/` ones; each
+	// migration moves one handler method (here: GET /api/mapping-rules
+	// list path, GET /api/v1/source-objects, GET /api/v1/source-objects/
+	// registry/:id) onto the new stack. Phase 2 v2 / P4 will retire the
+	// legacy repo for these aggregates.
+	mappingRuleRepoV2 := persistence.NewMappingRuleRepo(db)
+	listMappingRulesH := queries.NewListMappingRulesHandler(mappingRuleRepoV2)
+
+	sourceObjectReader := persistence.NewSourceObjectReadRepo(db)
+	listSourceObjectsH := queries.NewListSourceObjectsHandler(sourceObjectReader)
+	getSourceMappingContextH := queries.NewGetSourceObjectMappingContextHandler(sourceObjectReader)
+
+	masterReader := persistence.NewMasterReadRepo(db)
+	listMastersH := queries.NewListMastersHandler(masterReader)
+
+	// Phase 2 v2 / P2.T2.4 — Reconciliation Q-side. One reader powers
+	// 3 list endpoints (LatestReport, TableHistory, ListFailedLogs).
+	reconReader := persistence.NewReconReadRepo(db)
+	listLatestReportsH := queries.NewListLatestReportsHandler(reconReader)
+	getTableHistoryH := queries.NewGetTableHistoryHandler(reconReader)
+	listFailedLogsH := queries.NewListFailedLogsHandler(reconReader)
+
+	// Phase 2 v2 / P2.T2.5 — SyncHealth Q-side. SystemHealth Snapshot
+	// (Redis cache reader) skipped per CLAUDE.md §6 elegance — it has
+	// no SQL surface to migrate.
+	syncHealthReader := persistence.NewSyncHealthReadRepo(db)
+	getSyncHealthH := queries.NewGetSyncHealthHandler(syncHealthReader)
+
+	// Phase 2 v2 / P2.T2.6 — Connectors Q-side. One Kafka Connect
+	// client backs all 8 connector endpoints (3 reads via query
+	// handlers, 5 writes still on the legacy handler path until P3
+	// moves them to commands).
+	kafkaConnectClient := infrahttp.NewKafkaConnectClient(cfg.System.KafkaConnectURL)
+	listConnectorsH := queries.NewListConnectorsHandler(kafkaConnectClient)
+	getConnectorH := queries.NewGetConnectorHandler(kafkaConnectClient)
+	listConnectorPluginsH := queries.NewListConnectorPluginsHandler(kafkaConnectClient)
+
+	// Phase 2 v2 / P2.T2.7 — ActivityLog Q-side. Heavy SQL with
+	// LATERAL joins on shadow_binding + source_object_registry,
+	// extracted from the legacy handler.
+	activityLogReader := persistence.NewActivityLogReadRepo(db)
+	listActivityLogsH := queries.NewListActivityLogsHandler(activityLogReader)
+	getActivityStatsH := queries.NewGetActivityStatsHandler(activityLogReader)
+
+	// Phase 2 v2 / P2.T2.7 — TransmuteSchedule List Q-side.
+	transmuteScheduleReader := persistence.NewTransmuteScheduleReadRepo(db)
+	listTransmuteSchedulesH := queries.NewListTransmuteSchedulesHandler(transmuteScheduleReader)
+
+	// Phase 2 v2 / P2.T2.7 — Sources + Wizard reads. Existing
+	// `*SourceRepo` and `*WizardRepo` already satisfy the reader
+	// ports — no new persistence adapter needed (Strangler Fig:
+	// defer adapter rewrite to P4).
+	listSourcesH := queries.NewListSourcesHandler(sourceRepo)
+	getSourceH := queries.NewGetSourceHandler(sourceRepo)
+	getWizardSessionH := queries.NewGetWizardSessionHandler(wizardRepo)
+	getWizardProgressH := queries.NewGetWizardProgressHandler(wizardRepo)
+
+	// Phase 2 v2 / P2.T2.7 — WorkerSchedule List Q-side. Reader is
+	// shared between List (Q-side) and Create/Update (post-write
+	// projection) — P3 will fold the latter into command handlers.
+	workerScheduleReader := persistence.NewWorkerScheduleReadRepo(db)
+	listWorkerSchedulesH := queries.NewListWorkerSchedulesHandler(workerScheduleReader)
+
+	// Phase 2 v2 / P3.T3.10 — Job tracker Q-side. The same `*jobRepoGorm`
+	// the CommandBus writes through satisfies the read port (it has
+	// GetByID). One adapter, two consumers.
+	jobRepo := persistence.NewJobRepo(db)
+	getJobH := queries.NewGetJobHandler(jobRepo)
+
+	// Phase 2 v2 / P3.T3.3 — NATSCommandBus. One bus is wired here and
+	// shared by every API handler that mutates state. Sync handlers run
+	// in-process; subject mappings publish onto JetStream-retained
+	// subjects the worker subscribes.
+	cmdBus := messaging.NewNATSCommandBus(natsClient.Conn, jobRepo, logger)
+
+	// P3.T3.4 — sync metadata commands. Each line wires one command
+	// type to its in-process handler. The bus closes the cdc_jobs row
+	// on success/failure and surfaces the result inline so the API
+	// handler can respond 200 + body without a polling round-trip.
+	//
+	// Sync registrations that depend on services not yet built are
+	// deferred to just below the corresponding service init (e.g.
+	// alert.ack waits for alertMgr).
+
+	// P3.T3.5 — async NATS subjects. Adding a new async command is one
+	// RegisterSubject call here + a Command struct under
+	// `internal/app/commands/`. The worker repo owns the consumer side.
+	cmdBus.RegisterSubject("recon.check", "cdc.cmd.recon-check")
+	cmdBus.RegisterSubject("recon.heal", "cdc.cmd.recon-heal")
+	cmdBus.RegisterSubject("recon.retry-failed", "cdc.cmd.retry-failed")
+	cmdBus.RegisterSubject("recon.backfill-source-ts", "cdc.cmd.recon-backfill-source-ts")
+	cmdBus.RegisterSubject("debezium.signal", "cdc.cmd.debezium-signal")
+	cmdBus.RegisterSubject("debezium.snapshot", "cdc.cmd.debezium-snapshot")
+	cmdBus.RegisterSubject("debezium.restart", "cdc.cmd.restart-debezium")
+	cmdBus.RegisterSubject("source.create-default-columns", "cdc.cmd.create-default-columns")
+	cmdBus.RegisterSubject("source.standardize", "cdc.cmd.standardize")
+	cmdBus.RegisterSubject("source.scan-fields", "cdc.cmd.scan-fields")
+	cmdBus.RegisterSubject("source.detect-timestamp-field", "cdc.cmd.detect-timestamp-field")
+	cmdBus.RegisterSubject("mapping.backfill", "cdc.cmd.backfill")
+	cmdBus.RegisterSubject("mapping.alter-column", "cdc.cmd.alter-column")
+	cmdBus.RegisterSubject("transmute.run", "cdc.cmd.transmute")
+	cmdBus.RegisterSubject("master.create", "cdc.cmd.master-create")
 
 	// Services
 	approvalSvc := service.NewApprovalService(db, pendingRepo, mappingRepo, schemaLogRepo, registryRepo, natsClient, logger)
 	reconSvc := service.NewReconciliationService(registryRepo, mappingRepo, db, logger)
 	shadowAutomator := service.NewShadowAutomator(db, logger)
 	sourceObjectV2Sync := service.NewSourceObjectV2SyncService(db, logger)
-	masterSwap := service.NewMasterSwap(db, logger)
+	masterSwap := service.NewMasterSwap(db, jobRepo, logger)
 
 	// Handlers
 	healthHandler := api.NewHealthHandler(db)
 	schemaHandler := api.NewSchemaChangeHandler(pendingRepo, schemaLogRepo, approvalSvc)
-	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, shadowAutomator, sourceObjectV2Sync, logger)
-	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger)
-	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(registryHandler, db, logger)
-	systemConnectorsHandler := api.NewSystemConnectorsHandler(cfg.System.KafkaConnectURL, sourceRepo, logger)
-	sourcesHandler := api.NewSourcesHandler(sourceRepo, logger)
-	wizardHandler := api.NewWizardHandler(wizardRepo, logger)
-	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, masterSwap, logger)
+	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, cmdBus, shadowAutomator, sourceObjectV2Sync, logger, getSyncHealthH)
+	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger, listSourceObjectsH, getSourceMappingContextH)
+	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(registryHandler, db, cmdBus, logger)
+	systemConnectorsHandler := api.NewSystemConnectorsHandler(kafkaConnectClient, sourceRepo, logger, listConnectorsH, getConnectorH, listConnectorPluginsH)
+	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH)
+	wizardHandler := api.NewWizardHandler(wizardRepo, logger, getWizardSessionH, getWizardProgressH, cmdBus)
+	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, masterSwap, logger, listMastersH, cmdBus)
 	schemaProposalHandler := api.NewSchemaProposalHandler(db, logger)
-	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, logger)
+	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, logger, listTransmuteSchedulesH)
 	mappingPreviewHandler := api.NewMappingPreviewHandler(db, logger)
-	mappingHandler := api.NewMappingRuleHandler(mappingRepo, registryRepo, natsClient, db)
+	mappingHandler := api.NewMappingRuleHandler(mappingRepo, registryRepo, natsClient, cmdBus, listMappingRulesH, db)
 	introspectionHandler := api.NewIntrospectionHandler(natsClient)
-	activityLogHandler := api.NewActivityLogHandler(db)
-	scheduleHandler := api.NewScheduleHandler(db)
-	reconHandler := api.NewReconciliationHandler(db, natsClient)
+	activityLogHandler := api.NewActivityLogHandler(listActivityLogsH, getActivityStatsH)
+	scheduleHandler := api.NewScheduleHandler(db, workerScheduleReader, listWorkerSchedulesH)
+	reconHandler := api.NewReconciliationHandler(db, natsClient, cmdBus, listLatestReportsH, getTableHistoryH, listFailedLogsH)
+	jobHandler := api.NewJobHandler(getJobH)
 	// Phase 0 — System Health Background Collector.
 	// Builds a Prometheus client (path A + fallback) and a Collector that
 	// writes a cached snapshot to Redis every 15s. The handler just reads
@@ -130,6 +242,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	systemHealthHandler := api.NewSystemHealthHandler(
 		redisCache,
 		natsClient,
+		cmdBus,
 		cfg.System.KafkaConnectURL,
 		cfg.System.HealthCacheKey,
 		cfg.System.DebeziumConnector,
@@ -143,7 +256,16 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	// surface.
 	alertMgr := service.NewAlertManager(db, redisCache, logger)
 	healthCollector.SetAlertManager(alertMgr)
-	alertsHandler := api.NewAlertsHandler(alertMgr, logger)
+	// P3.T3.4 — sync metadata commands. Each handler runs in-process via
+	// bus.Execute. Bus persists a cdc_jobs row for audit + idempotency.
+	cmdBus.RegisterSync("alert.ack", commands.NewAckAlertHandler(alertMgr))
+	cmdBus.RegisterSync("mapping.update-status", commands.NewUpdateMappingRuleHandler(db, natsClient, logger))
+	cmdBus.RegisterSync("mapping.create", commands.NewCreateMappingRuleHandler(db, logger))
+	cmdBus.RegisterSync("master.reject", commands.NewRejectMasterHandler(db, logger))
+	cmdBus.RegisterSync("master.create", commands.NewCreateMasterHandler(db, logger))
+	cmdBus.RegisterSync("wizard.create", commands.NewCreateWizardHandler(wizardRepo, logger))
+	cmdBus.RegisterSync("wizard.patch", commands.NewPatchWizardHandler(wizardRepo, logger))
+	alertsHandler := api.NewAlertsHandler(alertMgr, cmdBus, logger)
 
 	// Source Provisioning Mode (workspace feature-cdc-integration / phase
 	// provisioning_mode). CMS owns the synchronous trigger surface;
@@ -168,7 +290,9 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	app.Get("/swagger/*", swagger.HandlerDefault)
 
 	// Routes
-	router.SetupRoutes(app, cfg, healthHandler, schemaHandler, registryHandler, sourceObjectsHandler, sourceObjectActionsHandler, systemConnectorsHandler, sourcesHandler, wizardHandler, masterRegistryHandler, schemaProposalHandler, scheduleHandler2, mappingPreviewHandler, mappingHandler, introspectionHandler, activityLogHandler, scheduleHandler, reconHandler, systemHealthHandler, alertsHandler, provisioningHandler, destructiveMW)
+	router.SetupRoutes(app, cfg, healthHandler, schemaHandler, registryHandler, sourceObjectsHandler, sourceObjectActionsHandler, systemConnectorsHandler, sourcesHandler, wizardHandler, masterRegistryHandler, schemaProposalHandler, scheduleHandler2, mappingPreviewHandler, mappingHandler, introspectionHandler, activityLogHandler, scheduleHandler, reconHandler, systemHealthHandler, alertsHandler, provisioningHandler, jobHandler, destructiveMW)
+
+	stuckJobReaper := service.NewStuckJobReaper(db, logger, 30*time.Second, nil)
 
 	return &Server{
 		cfg: cfg, logger: logger, db: db,
@@ -177,6 +301,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 		healthCollector: healthCollector,
 		auditLogger:     auditLogger,
 		alertMgr:        alertMgr,
+		stuckJobReaper:  stuckJobReaper,
 	}, nil
 }
 
@@ -210,6 +335,13 @@ func (s *Server) Start() error {
 		s.logger.Info("alert background resolver started")
 	}
 
+	// Phase 2 v2 / P3.T3.12 — stuck job reaper (per-type timeout).
+	if s.stuckJobReaper != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.stuckJobReaperCancel = cancel
+		go s.stuckJobReaper.Run(ctx)
+	}
+
 	return s.app.Listen(s.cfg.Server.Port)
 }
 
@@ -223,6 +355,9 @@ func (s *Server) Shutdown() {
 	}
 	if s.alertResolverCancel != nil {
 		s.alertResolverCancel()
+	}
+	if s.stuckJobReaperCancel != nil {
+		s.stuckJobReaperCancel()
 	}
 	s.app.Shutdown()
 	s.nats.Close()

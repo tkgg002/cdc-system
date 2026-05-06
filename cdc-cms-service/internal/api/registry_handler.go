@@ -7,6 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/app/queries"
+	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
 	"cdc-cms-service/internal/repository"
@@ -19,24 +23,38 @@ import (
 )
 
 type RegistryHandler struct {
-	repo        *repository.RegistryRepo
-	mappingRepo *repository.MappingRuleRepo
-	db          *gorm.DB
-	natsClient  *natsconn.NatsClient
-	automator   *service.ShadowAutomator
-	v2sync      *service.SourceObjectV2SyncService
-	logger      *zap.Logger
+	repo          *repository.RegistryRepo
+	mappingRepo   *repository.MappingRuleRepo
+	db            *gorm.DB
+	natsClient    *natsconn.NatsClient
+	bus           ports.CommandBus
+	automator     *service.ShadowAutomator
+	v2sync        *service.SourceObjectV2SyncService
+	logger        *zap.Logger
+	syncHealthQ   *queries.GetSyncHealthHandler
 }
 
-func NewRegistryHandler(repo *repository.RegistryRepo, mappingRepo *repository.MappingRuleRepo, db *gorm.DB, nats *natsconn.NatsClient, automator *service.ShadowAutomator, v2sync *service.SourceObjectV2SyncService, logger *zap.Logger) *RegistryHandler {
+func NewRegistryHandler(
+	repo *repository.RegistryRepo,
+	mappingRepo *repository.MappingRuleRepo,
+	db *gorm.DB,
+	nats *natsconn.NatsClient,
+	bus ports.CommandBus,
+	automator *service.ShadowAutomator,
+	v2sync *service.SourceObjectV2SyncService,
+	logger *zap.Logger,
+	syncHealthQ *queries.GetSyncHealthHandler,
+) *RegistryHandler {
 	return &RegistryHandler{
 		repo:        repo,
 		mappingRepo: mappingRepo,
 		db:          db,
 		natsClient:  nats,
+		bus:         bus,
 		automator:   automator,
 		v2sync:      v2sync,
 		logger:      logger,
+		syncHealthQ: syncHealthQ,
 	}
 }
 
@@ -122,15 +140,17 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 
 	dispatched := []string{}
 
-	createColsPayload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":       entry.ID,
-		"target_table":      entry.TargetTable,
-		"source_table":      entry.SourceTable,
-		"primary_key_field": entry.PrimaryKeyField,
-		"primary_key_type":  entry.PrimaryKeyType,
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.create-default-columns", createColsPayload); err != nil {
-		h.logger.Warn("publish create-default-columns failed", zap.Error(err))
+	user := middleware.GetUsername(c)
+	dispatchCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	createCmd := commands.CreateDefaultColumnsCommand{
+		RegistryID:      entry.ID,
+		TargetTable:     entry.TargetTable,
+		SourceTable:     entry.SourceTable,
+		PrimaryKeyField: entry.PrimaryKeyField,
+		PrimaryKeyType:  entry.PrimaryKeyType,
+	}
+	if _, derr := h.bus.Dispatch(dispatchCtx, createCmd); derr != nil {
+		h.logger.Warn("publish create-default-columns failed", zap.Error(derr))
 	} else {
 		dispatched = append(dispatched, "cdc.cmd.create-default-columns")
 	}
@@ -299,16 +319,18 @@ func (h *RegistryHandler) BulkRegister(c *fiber.Ctx) error {
 		tables = append(tables, e.TargetTable)
 	}
 	h.db.Where("target_table IN ?", tables).Find(&createdEntries)
+	user := middleware.GetUsername(c)
+	dispatchCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
 	for _, e := range createdEntries {
-		payload, _ := json.Marshal(map[string]interface{}{
-			"registry_id":       e.ID,
-			"target_table":      e.TargetTable,
-			"source_table":      e.SourceTable,
-			"primary_key_field": e.PrimaryKeyField,
-			"primary_key_type":  e.PrimaryKeyType,
-		})
-		if err := h.natsClient.Conn.Publish("cdc.cmd.create-default-columns", payload); err != nil {
-			h.logger.Warn("publish create-default-columns failed", zap.Error(err), zap.String("table", e.TargetTable))
+		cmd := commands.CreateDefaultColumnsCommand{
+			RegistryID:      e.ID,
+			TargetTable:     e.TargetTable,
+			SourceTable:     e.SourceTable,
+			PrimaryKeyField: e.PrimaryKeyField,
+			PrimaryKeyType:  e.PrimaryKeyType,
+		}
+		if _, derr := h.bus.Dispatch(dispatchCtx, cmd); derr != nil {
+			h.logger.Warn("publish create-default-columns failed", zap.Error(derr), zap.String("table", e.TargetTable))
 			continue
 		}
 		dispatched++
@@ -356,16 +378,18 @@ func (h *RegistryHandler) Standardize(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "registry entry not found"})
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":  entry.ID,
-		"target_table": entry.TargetTable,
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.standardize", payload); err != nil {
-		h.logAction("standardize", entry.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch standardize command: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.StandardizeCommand{
+		RegistryID:  entry.ID,
+		TargetTable: entry.TargetTable,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.logAction("standardize", entry.TargetTable, "error", nil, derr.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch standardize command: " + derr.Error()})
 	}
 
-	h.logAction("standardize", entry.TargetTable, "success", map[string]interface{}{"user": middleware.GetUsername(c)}, "")
+	h.logAction("standardize", entry.TargetTable, "success", map[string]interface{}{"user": user}, "")
 	return c.Status(202).JSON(fiber.Map{
 		"message":      "standardize command accepted",
 		"target_table": entry.TargetTable,
@@ -391,21 +415,23 @@ func (h *RegistryHandler) ScanFields(c *fiber.Ctx) error {
 	}
 
 	// Debezium-native scan: worker looks up Mongo source via source_db +
-	payload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":  entry.ID,
-		"sync_engine":  entry.SyncEngine,
-		"source_type":  entry.SourceType,
-		"source_db":    entry.SourceDB,
-		"source_table": entry.SourceTable,
-		"target_table": entry.TargetTable,
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.scan-fields", payload); err != nil {
-		h.logAction("scan-fields", entry.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.ScanFieldsCommand{
+		RegistryID:  entry.ID,
+		SyncEngine:  entry.SyncEngine,
+		SourceType:  entry.SourceType,
+		SourceDB:    entry.SourceDB,
+		SourceTable: entry.SourceTable,
+		TargetTable: entry.TargetTable,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.logAction("scan-fields", entry.TargetTable, "error", nil, derr.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
 	h.logAction("scan-fields", entry.TargetTable, "accepted", map[string]interface{}{
-		"user":        middleware.GetUsername(c),
+		"user":        user,
 		"sync_engine": entry.SyncEngine,
 	}, "")
 
@@ -418,25 +444,16 @@ func (h *RegistryHandler) ScanFields(c *fiber.Ctx) error {
 
 // (removed: inferSQLType) — schema inference now lives in Worker
 
-// SyncHealth returns overall sync health summary
+// SyncHealth returns overall sync health summary. Delegates the
+// 5 aggregate counts to queries.GetSyncHealthHandler. The JSON
+// surface stays byte-identical because queries.SyncHealthSnapshot
+// owns the wire tags.
 func (h *RegistryHandler) SyncHealth(c *fiber.Ctx) error {
-	var totalRegistry, activeRegistry, tablesCreated int64
-	var pendingRules, approvedRules int64
-
-	h.db.Model(&model.TableRegistry{}).Count(&totalRegistry)
-	h.db.Model(&model.TableRegistry{}).Where("is_active = ?", true).Count(&activeRegistry)
-	h.db.Model(&model.TableRegistry{}).Where("is_table_created = ?", true).Count(&tablesCreated)
-
-	h.db.Table("cdc_mapping_rules").Where("status = ?", "pending").Count(&pendingRules)
-	h.db.Table("cdc_mapping_rules").Where("status = ?", "approved").Count(&approvedRules)
-
-	return c.JSON(fiber.Map{
-		"total_registered_cms":   totalRegistry,
-		"active_tables":          activeRegistry,
-		"tables_created":         tablesCreated,
-		"pending_mapping_rules":  pendingRules,
-		"approved_mapping_rules": approvedRules,
-	})
+	res, err := h.syncHealthQ.Handle(c.UserContext(), queries.GetSyncHealthQuery{})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(res.Snapshot)
 }
 
 func intQuery(c *fiber.Ctx, key string, defaultVal int) int {
@@ -522,23 +539,24 @@ func (h *RegistryHandler) CreateDefaultColumns(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "registry entry not found"})
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":       entry.ID,
-		"target_table":      entry.TargetTable,
-		"source_table":      entry.SourceTable,
-		"primary_key_field": entry.PrimaryKeyField,
-		"primary_key_type":  entry.PrimaryKeyType,
-	})
-
-	if err := h.natsClient.Conn.Publish("cdc.cmd.create-default-columns", payload); err != nil {
-		h.logAction("create-default-columns", entry.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.CreateDefaultColumnsCommand{
+		RegistryID:      entry.ID,
+		TargetTable:     entry.TargetTable,
+		SourceTable:     entry.SourceTable,
+		PrimaryKeyField: entry.PrimaryKeyField,
+		PrimaryKeyType:  entry.PrimaryKeyType,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.logAction("create-default-columns", entry.TargetTable, "error", nil, derr.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + derr.Error()})
 	}
 
 	h.logAction("create-default-columns", entry.TargetTable, "success", map[string]interface{}{
 		"pk_field": entry.PrimaryKeyField,
 		"pk_type":  entry.PrimaryKeyType,
-		"user":     middleware.GetUsername(c),
+		"user":     user,
 	}, "")
 
 	return c.Status(202).JSON(fiber.Map{
@@ -615,20 +633,22 @@ func (h *RegistryHandler) DetectTimestampField(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "not found"})
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"registry_id":  entry.ID,
-		"target_table": entry.TargetTable,
-		"source_table": entry.SourceTable,
-		"source_db":    entry.SourceDB,
-		"source_type":  entry.SourceType,
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.detect-timestamp-field", payload); err != nil {
-		h.logAction("detect-timestamp-field", entry.TargetTable, "error", nil, err.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.DetectTimestampFieldCommand{
+		RegistryID:  entry.ID,
+		TargetTable: entry.TargetTable,
+		SourceTable: entry.SourceTable,
+		SourceDB:    entry.SourceDB,
+		SourceType:  entry.SourceType,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.logAction("detect-timestamp-field", entry.TargetTable, "error", nil, derr.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
 	h.logAction("detect-timestamp-field", entry.TargetTable, "accepted", map[string]interface{}{
-		"user":         middleware.GetUsername(c),
+		"user":         user,
 		"source_table": entry.SourceTable,
 	}, "")
 

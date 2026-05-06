@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"github.com/gofiber/fiber/v2"
@@ -15,67 +16,45 @@ import (
 )
 
 // TransmuteScheduleHandler — Sprint 5 dashboard UI for Cron/Immediate/
-// Post-ingest schedules. Mounts under /api/v1/schedules/*.
+// Post-ingest schedules. Mounts under /api/v1/schedules/*. Reads
+// delegate to `internal/app/queries/list_transmute_schedules.go`;
+// writes still live here (P3 will move them to commands).
 type TransmuteScheduleHandler struct {
 	db     *gorm.DB
 	nats   *natsconn.NatsClient
 	logger *zap.Logger
 	cronP  cron.Parser
+	listQ  *queries.ListTransmuteSchedulesHandler
 }
 
-func NewTransmuteScheduleHandler(db *gorm.DB, nats *natsconn.NatsClient, logger *zap.Logger) *TransmuteScheduleHandler {
+func NewTransmuteScheduleHandler(
+	db *gorm.DB,
+	nats *natsconn.NatsClient,
+	logger *zap.Logger,
+	listQ *queries.ListTransmuteSchedulesHandler,
+) *TransmuteScheduleHandler {
 	return &TransmuteScheduleHandler{
 		db:     db,
 		nats:   nats,
 		logger: logger,
 		cronP:  cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
+		listQ:  listQ,
 	}
 }
 
 var schedNameRe = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
-type ScheduleRow struct {
-	ID          int64           `json:"id"`
-	MasterTable string          `json:"master_table"`
-	Mode        string          `json:"mode"`
-	CronExpr    *string         `json:"cron_expr,omitempty"`
-	LastRunAt   *time.Time      `json:"last_run_at,omitempty"`
-	NextRunAt   *time.Time      `json:"next_run_at,omitempty"`
-	LastStatus  *string         `json:"last_status,omitempty"`
-	LastError   *string         `json:"last_error,omitempty"`
-	LastStats   json.RawMessage `json:"last_stats,omitempty"`
-	IsEnabled   bool            `json:"is_enabled"`
-	CreatedBy   *string         `json:"created_by,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-}
+// ScheduleRow re-exported from queries via type alias so any external
+// caller / Swagger tooling keeps compiling.
+type ScheduleRow = queries.TransmuteScheduleRow
 
 // List — GET /api/v1/schedules
 func (h *TransmuteScheduleHandler) List(c *fiber.Ctx) error {
-	var rows []ScheduleRow
-	err := h.db.WithContext(c.Context()).Raw(`
-		SELECT
-			ts.id,
-			mb.master_table        AS master_table,
-			ts.mode,
-			ts.cron_expr,
-			ts.last_run_at,
-			ts.next_run_at,
-			ts.last_status,
-			ts.last_error,
-			ts.last_stats,
-			ts.is_enabled,
-			ts.created_by,
-			ts.created_at,
-			ts.updated_at
-		FROM cdc_system.transmute_schedule ts
-		LEFT JOIN cdc_system.master_binding mb ON mb.id = ts.master_binding_id
-		ORDER BY mb.master_table NULLS LAST, ts.mode
-	`).Scan(&rows).Error
+	res, err := h.listQ.Handle(c.UserContext(), queries.ListTransmuteSchedulesQuery{})
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-	return c.JSON(fiber.Map{"data": rows, "count": len(rows)})
+	return c.JSON(fiber.Map{"data": res.Data, "count": res.Count})
 }
 
 type ScheduleCreateRequest struct {

@@ -206,6 +206,16 @@ func (p *PromClient) scrapeWorkerPercentile(ctx context.Context, quantile float6
 		return math.NaN(), fmt.Errorf("fetch worker /metrics: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		// admin-api /metrics is auth-gated post Phase F1. Treat as no-data
+		// (NaN, no error) so latency section degrades to source=unknown
+		// instead of bubbling a critical alert.
+		if p.logger != nil {
+			p.logger.Debug("worker /metrics auth-gated; skipping fallback",
+				zap.Int("status", resp.StatusCode))
+		}
+		return math.NaN(), nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return math.NaN(), fmt.Errorf("worker /metrics status %d", resp.StatusCode)
 	}

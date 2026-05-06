@@ -75,6 +75,7 @@ func SetupRoutes(
 	systemHealthHandler *api.SystemHealthHandler,
 	alertsHandler *api.AlertsHandler,
 	provisioningHandler *api.ProvisioningHandler,
+	jobHandler *api.JobHandler,
 	destructive DestructiveMiddleware,
 ) {
 	app.Get("/health", healthHandler.Health)
@@ -286,6 +287,11 @@ func SetupRoutes(
 	shared.Get("/v1/schema-proposals", schemaProposalHandler.List)
 	shared.Get("/v1/schema-proposals/:id", schemaProposalHandler.Get)
 	shared.Get("/v1/schedules", scheduleV1Handler.List)
+	// Phase 2 v2 / P3.T3.10 — Job tracker. CommandBus writes here on
+	// Dispatch; worker JobMonitor closes the row on cdc.evt.X.completed.
+	if jobHandler != nil {
+		shared.Get("/jobs/:id", jobHandler.Get)
+	}
 
 	// --- Admin only routes ---
 	admin := apiGroup.Group("", middleware.RequireRole("admin"))

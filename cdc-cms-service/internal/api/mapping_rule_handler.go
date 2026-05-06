@@ -1,11 +1,17 @@
 package api
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/app/queries"
+	"cdc-cms-service/internal/domain/mapping"
+	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/pkgs/natsconn"
@@ -18,15 +24,60 @@ type MappingRuleHandler struct {
 	repo         *repository.MappingRuleRepo
 	registryRepo *repository.RegistryRepo
 	natsClient   *natsconn.NatsClient
+	bus          ports.CommandBus
+	listQuery    *queries.ListMappingRulesHandler
 	db           *gorm.DB
 }
 
-func NewMappingRuleHandler(repo *repository.MappingRuleRepo, registryRepo *repository.RegistryRepo, nats *natsconn.NatsClient, db ...*gorm.DB) *MappingRuleHandler {
-	h := &MappingRuleHandler{repo: repo, registryRepo: registryRepo, natsClient: nats}
+// NewMappingRuleHandler — Phase 2 v2 / P3: bus drives async dispatch
+// (cdc.cmd.backfill / cdc.cmd.alter-column) via the CommandBus port.
+// listQuery is the CQRS Q-side adapter for GET /api/mapping-rules.
+func NewMappingRuleHandler(repo *repository.MappingRuleRepo, registryRepo *repository.RegistryRepo, nats *natsconn.NatsClient, bus ports.CommandBus, listQuery *queries.ListMappingRulesHandler, db ...*gorm.DB) *MappingRuleHandler {
+	h := &MappingRuleHandler{repo: repo, registryRepo: registryRepo, natsClient: nats, bus: bus, listQuery: listQuery}
 	if len(db) > 0 {
 		h.db = db[0]
 	}
 	return h
+}
+
+// formatPgOF mirrors the Postgres `TO_CHAR(t, 'YYYY-MM-DD"T"HH24:MI:SSOF')`
+// output the previous handler emitted. The DB connection runs at UTC, so
+// the original wire contract was always +00; we force UTC here so the
+// output stays identical regardless of where the Go process runs.
+func formatPgOF(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05") + "+00"
+}
+
+// ruleToRow maps the domain mapping.Rule onto the legacy MappingRuleRow
+// JSON shape so the wire contract for /api/mapping-rules stays identical.
+func ruleToRow(r mapping.Rule) MappingRuleRow {
+	return MappingRuleRow{
+		ID:              r.ID,
+		SourceObjectID:  r.SourceObjectID,
+		MasterBindingID: r.MasterBindingID,
+		SourceDatabase:  r.SourceDatabase,
+		SourceSchema:    r.SourceSchema,
+		SourceNamespace: r.SourceNamespace,
+		SourceTable:     r.SourceTable,
+		ShadowSchema:    r.ShadowSchema,
+		ShadowTable:     r.ShadowTable,
+		SourceField:     r.SourceField,
+		SourcePath:      r.SourcePath,
+		TargetColumn:    r.TargetColumn,
+		DataType:        r.DataType,
+		SourceFormat:    r.SourceFormat,
+		TransformFn:     r.TransformFn,
+		IsNullable:      r.IsNullable,
+		IsActive:        r.IsActive,
+		Status:          string(r.Status),
+		Notes:           r.Notes,
+		CreatedBy:       r.CreatedBy,
+		UpdatedBy:       r.UpdatedBy,
+		CreatedAt:       formatPgOF(r.CreatedAt),
+		UpdatedAt:       formatPgOF(r.UpdatedAt),
+		RuleType:        "mapping",
+		IsEnriched:      r.IsEnriched,
+	}
 }
 
 type MappingRuleRow struct {
@@ -242,117 +293,55 @@ func (h *MappingRuleHandler) getRuleByID(c *fiber.Ctx, id int64) (*MappingRuleRo
 // @Security     BearerAuth
 // @Router       /api/mapping-rules [get]
 func (h *MappingRuleHandler) List(c *fiber.Ctx) error {
-	status := c.Query("status")
-	ruleType := c.Query("rule_type")
-	sourceTable := c.Query("source_table")
-	legacyTable := c.Query("table")
-	tableName := c.Query("table_name")
-	sourceDatabase := ptrTrim(func() *string { s := c.Query("source_database"); return &s }())
-	shadowSchema := ptrTrim(func() *string { s := c.Query("shadow_schema"); return &s }())
-	shadowTable := ptrTrim(func() *string { s := c.Query("shadow_table"); return &s }())
-	sourceObjectIDStr := strings.TrimSpace(c.Query("source_object_id"))
-
-	filterSourceTable := strings.TrimSpace(sourceTable)
+	// Source-table filter accepts three aliases for back-compat with older
+	// FE clients: source_table (canonical), table (legacy), table_name.
+	filterSourceTable := strings.TrimSpace(c.Query("source_table"))
 	if filterSourceTable == "" {
-		filterSourceTable = strings.TrimSpace(legacyTable)
+		filterSourceTable = strings.TrimSpace(c.Query("table"))
 	}
 	if filterSourceTable == "" {
-		filterSourceTable = strings.TrimSpace(tableName)
+		filterSourceTable = strings.TrimSpace(c.Query("table_name"))
+	}
+
+	var sourceObjectID int64
+	if s := strings.TrimSpace(c.Query("source_object_id")); s != "" {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+			sourceObjectID = v
+		}
 	}
 
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	pageSize, _ := strconv.Atoi(c.Query("page_size", "50"))
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 200 {
-		pageSize = 50
+
+	q := queries.ListMappingRulesQuery{
+		Filter: mapping.Filter{
+			Status:         mapping.Status(strings.TrimSpace(c.Query("status"))),
+			RuleType:       mapping.RuleType(strings.TrimSpace(c.Query("rule_type"))),
+			SourceObjectID: sourceObjectID,
+			SourceDatabase: strings.TrimSpace(c.Query("source_database")),
+			SourceTable:    filterSourceTable,
+			ShadowSchema:   strings.TrimSpace(c.Query("shadow_schema")),
+			ShadowTable:    strings.TrimSpace(c.Query("shadow_table")),
+		},
+		Page:     page,
+		PageSize: pageSize,
 	}
 
-	query := `
-		SELECT
-			mr.id,
-			mr.source_object_id,
-			mr.master_binding_id,
-			so.source_database,
-			so.source_schema,
-			so.source_namespace,
-			so.source_object_name AS source_table,
-			sb.shadow_schema,
-			sb.shadow_table,
-			mr.source_field,
-			mr.source_path,
-			mr.target_column,
-			mr.data_type,
-			mr.source_format,
-			mr.transform_fn,
-			mr.is_nullable,
-			mr.is_active,
-			mr.status,
-			mr.notes,
-			mr.created_by,
-			mr.updated_by,
-			TO_CHAR(mr.created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS created_at,
-			TO_CHAR(mr.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS updated_at,
-			'mapping' AS rule_type,
-			false AS is_enriched
-		FROM cdc_system.mapping_rule_v2 mr
-		JOIN cdc_system.source_object_registry so
-		  ON so.id = mr.source_object_id
-		LEFT JOIN cdc_system.shadow_binding sb
-		  ON sb.source_object_id = mr.source_object_id
-		 AND sb.is_active = TRUE
-		WHERE 1=1
-	`
-	args := make([]interface{}, 0, 8)
-	if sourceObjectIDStr != "" {
-		query += ` AND mr.source_object_id = ?`
-		args = append(args, sourceObjectIDStr)
-	}
-	if sourceDatabase != nil {
-		query += ` AND so.source_database = ?`
-		args = append(args, *sourceDatabase)
-	}
-	if filterSourceTable != "" {
-		query += ` AND so.source_object_name = ?`
-		args = append(args, filterSourceTable)
-	}
-	if shadowSchema != nil {
-		query += ` AND sb.shadow_schema = ?`
-		args = append(args, *shadowSchema)
-	}
-	if shadowTable != nil {
-		query += ` AND sb.shadow_table = ?`
-		args = append(args, *shadowTable)
-	}
-	if status != "" {
-		query += ` AND mr.status = ?`
-		args = append(args, status)
-	}
-	if ruleType != "" && ruleType != "mapping" {
-		query += ` AND 1=0`
-	}
-
-	countQuery := `SELECT COUNT(*) FROM (` + query + `) AS mapping_rules`
-	var total int64
-	if err := h.db.WithContext(c.Context()).Raw(countQuery, args...).Scan(&total).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to count mapping rules: " + err.Error()})
-	}
-
-	query += ` ORDER BY so.source_object_name, mr.source_field OFFSET ? LIMIT ?`
-	args = append(args, (page-1)*pageSize, pageSize)
-
-	var rules []MappingRuleRow
-	if err := h.db.WithContext(c.Context()).Raw(query, args...).Scan(&rules).Error; err != nil {
+	res, err := h.listQuery.Handle(c.Context(), q)
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to fetch mapping rules: " + err.Error()})
 	}
 
+	rows := make([]MappingRuleRow, len(res.Data))
+	for i, r := range res.Data {
+		rows[i] = ruleToRow(r)
+	}
 	return c.JSON(fiber.Map{
-		"data":      rules,
-		"count":     len(rules),
-		"total":     total,
-		"page":      page,
-		"page_size": pageSize,
+		"data":      rows,
+		"count":     len(rows),
+		"total":     res.Total,
+		"page":      res.Page,
+		"page_size": res.PageSize,
 	})
 }
 
@@ -386,78 +375,52 @@ func (h *MappingRuleHandler) Create(c *fiber.Ctx) error {
 	if req.SourceField == "" || req.TargetColumn == "" || req.DataType == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "source_field, target_column, data_type are required"})
 	}
-	if req.SourceFormat == "" {
-		req.SourceFormat = "raw"
-	}
-	if req.Status == "" {
-		req.Status = "pending"
-	}
 
-	scope, err := h.resolveScope(c, req.SourceObjectID, req.SourceDatabase, req.SourceSchema, req.SourceNamespace, req.SourceTable, req.ShadowSchema, req.ShadowTable)
-	if err != nil {
-		switch err.Error() {
-		case "ambiguous_mapping_scope":
-			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_mapping_scope"})
-		default:
-			if err == gorm.ErrRecordNotFound {
-				return c.Status(404).JSON(fiber.Map{"error": "mapping_scope_not_found"})
-			}
-			return c.Status(500).JSON(fiber.Map{"error": "failed to resolve mapping scope: " + err.Error()})
-		}
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
 
 	username := middleware.GetUsername(c)
-	isNullable := boolDefault(req.IsNullable, true)
-	isActive := boolDefault(req.IsActive, true)
-	var insertedID int64
-	err = h.db.WithContext(c.Context()).Raw(`
-		INSERT INTO cdc_system.mapping_rule_v2 (
-			source_object_id,
-			master_binding_id,
-			source_field,
-			source_path,
-			target_column,
-			data_type,
-			source_format,
-			transform_fn,
-			is_nullable,
-			is_active,
-			status,
-			notes,
-			created_by,
-			updated_by,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-		RETURNING id
-	`,
-		scope.SourceObjectID,
-		req.MasterBindingID,
-		req.SourceField,
-		ptrTrim(req.SourcePath),
-		req.TargetColumn,
-		req.DataType,
-		req.SourceFormat,
-		ptrTrim(req.TransformFn),
-		isNullable,
-		isActive,
-		req.Status,
-		ptrTrim(req.Notes),
-		username,
-		username,
-	).Scan(&insertedID).Error
-	if err != nil {
-		if strings.Contains(err.Error(), "ux_v2_mapping_rule_identity") || strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
-			return c.Status(409).JSON(fiber.Map{"error": "mapping_rule_already_exists"})
-		}
-		return c.Status(500).JSON(fiber.Map{"error": "failed to create mapping rule: " + err.Error()})
+	cmd := commands.CreateMappingRuleCommand{
+		SourceObjectID:  req.SourceObjectID,
+		MasterBindingID: req.MasterBindingID,
+		SourceDatabase:  req.SourceDatabase,
+		SourceSchema:    req.SourceSchema,
+		SourceNamespace: req.SourceNamespace,
+		SourceTable:     req.SourceTable,
+		ShadowSchema:    req.ShadowSchema,
+		ShadowTable:     req.ShadowTable,
+		SourceField:     req.SourceField,
+		SourcePath:      req.SourcePath,
+		TargetColumn:    req.TargetColumn,
+		DataType:        req.DataType,
+		SourceFormat:    req.SourceFormat,
+		TransformFn:     req.TransformFn,
+		IsNullable:      req.IsNullable,
+		IsActive:        req.IsActive,
+		Status:          req.Status,
+		Notes:           req.Notes,
+		UpdatedBy:       username,
 	}
+	ctx := messaging.WithMetadata(c.UserContext(), username, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
 
-	row, err := h.getRuleByID(c, insertedID)
+	res, err := h.bus.Execute(ctx, cmd)
 	if err != nil {
-		return c.Status(201).JSON(fiber.Map{"message": "mapping rule created", "id": insertedID})
+		switch {
+		case errors.Is(err, commands.ErrMappingScopeNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "mapping_scope_not_found"})
+		case errors.Is(err, commands.ErrMappingScopeAmbiguous):
+			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_mapping_scope"})
+		case errors.Is(err, commands.ErrMappingRuleAlreadyExists):
+			return c.Status(409).JSON(fiber.Map{"error": "mapping_rule_already_exists"})
+		case strings.Contains(err.Error(), "required"):
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "failed to create mapping rule: " + err.Error()})
+		}
 	}
-	return c.Status(201).JSON(fiber.Map{"message": "mapping rule created", "data": row})
+	c.Set("Content-Type", "application/json")
+	return c.Status(201).Send(res.ResultBody)
 }
 
 // Reload godoc
@@ -541,33 +504,36 @@ func (h *MappingRuleHandler) UpdateStatus(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-	body.Status = strings.TrimSpace(body.Status)
-	if body.Status == "" {
+	status := strings.TrimSpace(body.Status)
+	if status == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "status is required"})
 	}
 
-	rule, err := h.getRuleByID(c, int64(id))
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "mapping rule not found"})
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
 
 	username := middleware.GetUsername(c)
-	updates := map[string]interface{}{"status": body.Status, "updated_by": username}
-	if body.Status == "rejected" {
-		updates["is_active"] = false
+	cmd := commands.UpdateMappingRuleCommand{
+		ID:        int64(id),
+		Status:    status,
+		UpdatedBy: username,
 	}
-	if body.Status == "approved" {
-		updates["is_active"] = true
-	}
-	if err := h.db.WithContext(c.Context()).Table("cdc_system.mapping_rule_v2").Where("id = ?", id).Updates(updates).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to update mapping rule: " + err.Error()})
-	}
+	ctx := messaging.WithMetadata(c.UserContext(), username, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
 
-	if rule.ShadowTable != nil {
-		h.natsClient.PublishReload(*rule.ShadowTable, middleware.GetUsername(c), "mapping_status_update", "")
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		switch {
+		case errors.Is(err, commands.ErrMappingRuleNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+		case strings.Contains(err.Error(), "required"):
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "failed to update mapping rule: " + err.Error()})
+		}
 	}
-
-	return c.JSON(fiber.Map{"message": "mapping rule updated", "id": id, "status": body.Status})
+	c.Set("Content-Type", "application/json")
+	return c.Status(200).Send(res.ResultBody)
 }
 
 // Backfill godoc
@@ -591,14 +557,16 @@ func (h *MappingRuleHandler) Backfill(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "shadow_target_not_found"})
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"target_table":  *rule.ShadowTable,
-		"source_field":  rule.SourceField,
-		"target_column": rule.TargetColumn,
-		"data_type":     rule.DataType,
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.backfill", payload); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch backfill command: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.BackfillCommand{
+		TargetTable:  *rule.ShadowTable,
+		SourceField:  rule.SourceField,
+		TargetColumn: rule.TargetColumn,
+		DataType:     rule.DataType,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch backfill command: " + derr.Error()})
 	}
 
 	return c.Status(202).JSON(fiber.Map{
@@ -649,24 +617,25 @@ func (h *MappingRuleHandler) BatchUpdate(c *fiber.Ctx) error {
 		updated++
 
 		if body.Status == "approved" && rule.ShadowTable != nil {
-			alterPayload, _ := json.Marshal(map[string]interface{}{
-				"target_table": *rule.ShadowTable,
-				"column_name":  rule.TargetColumn,
-				"data_type":    rule.DataType,
-				"action":       "add",
-			})
-			if err := h.natsClient.Conn.Publish("cdc.cmd.alter-column", alterPayload); err == nil {
+			ctx := messaging.WithMetadata(c.UserContext(), username, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+			alterCmd := commands.AlterColumnCommand{
+				TargetTable: *rule.ShadowTable,
+				ColumnName:  rule.TargetColumn,
+				DataType:    rule.DataType,
+				Action:      "add",
+			}
+			if _, derr := h.bus.Dispatch(ctx, alterCmd); derr == nil {
 				dispatched++
 			}
 
 			if body.AutoBackfill {
-				payload, _ := json.Marshal(map[string]interface{}{
-					"target_table":  *rule.ShadowTable,
-					"source_field":  rule.SourceField,
-					"target_column": rule.TargetColumn,
-					"data_type":     rule.DataType,
-				})
-				if err := h.natsClient.Conn.Publish("cdc.cmd.backfill", payload); err == nil {
+				bfCmd := commands.BackfillCommand{
+					TargetTable:  *rule.ShadowTable,
+					SourceField:  rule.SourceField,
+					TargetColumn: rule.TargetColumn,
+					DataType:     rule.DataType,
+				}
+				if _, derr := h.bus.Dispatch(ctx, bfCmd); derr == nil {
 					backfilled++
 				}
 			}

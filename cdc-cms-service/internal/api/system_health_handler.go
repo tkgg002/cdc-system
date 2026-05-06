@@ -28,6 +28,10 @@ import (
 	"errors"
 	"time"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 	"cdc-cms-service/pkgs/rediscache"
@@ -41,6 +45,7 @@ import (
 type SystemHealthHandler struct {
 	redisCache      *rediscache.RedisCache
 	natsClient      *natsconn.NatsClient
+	bus             ports.CommandBus
 	kafkaConnectURL string
 	cacheKey        string
 	debeziumName    string
@@ -51,6 +56,7 @@ type SystemHealthHandler struct {
 func NewSystemHealthHandler(
 	redisCache *rediscache.RedisCache,
 	natsClient *natsconn.NatsClient,
+	bus ports.CommandBus,
 	kafkaConnectURL string,
 	cacheKey string,
 	debeziumName string,
@@ -65,6 +71,7 @@ func NewSystemHealthHandler(
 	return &SystemHealthHandler{
 		redisCache:      redisCache,
 		natsClient:      natsClient,
+		bus:             bus,
 		kafkaConnectURL: kafkaConnectURL,
 		cacheKey:        cacheKey,
 		debeziumName:    debeziumName,
@@ -114,23 +121,27 @@ func (h *SystemHealthHandler) Health(c *fiber.Ctx) error {
 	return c.JSON(snap)
 }
 
-// RestartDebezium dispatches a restart command via NATS. CMS không còn gọi
+// RestartDebezium dispatches a restart command via CommandBus. CMS không còn gọi
 // Kafka Connect REST trực tiếp (Rule B: external mutate thuộc Worker).
 func (h *SystemHealthHandler) RestartDebezium(c *fiber.Ctx) error {
-	if h.natsClient == nil || h.natsClient.Conn == nil {
-		return c.Status(503).JSON(fiber.Map{"error": "nats not configured"})
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not configured"})
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
-		"connector_name":    h.debeziumName,
-		"kafka_connect_url": h.kafkaConnectURL,
-	})
-	if err := h.natsClient.Conn.Publish("cdc.cmd.restart-debezium", payload); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.RestartDebeziumCommand{
+		ConnectorName:   h.debeziumName,
+		KafkaConnectURL: h.kafkaConnectURL,
+	}
+	res, derr := h.bus.Dispatch(ctx, cmd)
+	if derr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":        "restart-debezium command accepted",
 		"connector_name": h.debeziumName,
+		"job_id":         res.JobID,
 	})
 }

@@ -9,7 +9,7 @@ FROM alpine:3.20
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /app/cms-service .
-COPY --from=builder /app/config/config-local.yml ./config/config-local.yml
+COPY --from=builder /app/config ./config
 COPY --from=builder /app/docs ./docs
-EXPOSE 8080
+EXPOSE 8083
 CMD ["./cms-service"]

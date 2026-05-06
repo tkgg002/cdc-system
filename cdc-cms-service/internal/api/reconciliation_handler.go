@@ -6,6 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/app/queries"
+	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
 	"cdc-cms-service/pkgs/natsconn"
 
@@ -73,13 +78,37 @@ func ComputeDriftStatus(sourceCount *int64, destCount int64, errorCode string) (
 }
 
 type ReconciliationHandler struct {
-	db   *gorm.DB
-	nats *natsconn.NatsClient
+	db           *gorm.DB
+	nats         *natsconn.NatsClient
+	bus          ports.CommandBus
+	listLatestQ  *queries.ListLatestReportsHandler
+	getHistoryQ  *queries.GetTableHistoryHandler
+	listFailedQ  *queries.ListFailedLogsHandler
 }
 
-func NewReconciliationHandler(db *gorm.DB, nats *natsconn.NatsClient) *ReconciliationHandler {
-	return &ReconciliationHandler{db: db, nats: nats}
+func NewReconciliationHandler(
+	db *gorm.DB,
+	nats *natsconn.NatsClient,
+	bus ports.CommandBus,
+	listLatestQ *queries.ListLatestReportsHandler,
+	getHistoryQ *queries.GetTableHistoryHandler,
+	listFailedQ *queries.ListFailedLogsHandler,
+) *ReconciliationHandler {
+	return &ReconciliationHandler{
+		db:          db,
+		nats:        nats,
+		bus:         bus,
+		listLatestQ: listLatestQ,
+		getHistoryQ: getHistoryQ,
+		listFailedQ: listFailedQ,
+	}
 }
+
+// ReportRow + FailedLogRow are type aliases so external callers /
+// Swagger docs continue to see the legacy names; the canonical
+// definitions now live in `internal/app/queries/recon_read_models.go`.
+type ReportRow = queries.LatestReportRow
+type FailedLogRow = queries.FailedLogRow
 
 type reconScopeRequest struct {
 	Table           string `json:"table"`
@@ -164,138 +193,22 @@ func (h *ReconciliationHandler) resolveTargetTable(c *fiber.Ctx, scope reconScop
 // @Success      200  {object}  map[string]interface{}
 // @Router       /api/reconciliation/report [get]
 //
-// LatestReport returns the latest reconciliation report per table, enriched
-// with registry metadata (sync_engine, source_type, timestamp_field) so the
-// FE can render a Sync Engine column + tooltip without a second round-trip.
-//
-// Bug C/D fix (2026-04-20): earlier version did `SELECT *` on just the
-// report table — FE had no way to distinguish debezium-driven vs
-// rows for tables that have been removed from the registry still appear
-// (with NULL sync_engine) rather than disappearing.
+// LatestReport delegates the SQL to queries.ListLatestReportsHandler
+// (P2 / CQRS Q-side) and runs the enrichment loop here so the
+// drift/VI/source-method helpers stay colocated with their unit tests
+// (ComputeDriftStatus has 16 subtests in this package). The API
+// surface stays byte-identical with the pre-refactor wire shape — JSON
+// tags live on queries.LatestReportRow.
 func (h *ReconciliationHandler) LatestReport(c *fiber.Ctx) error {
-	// Row shape includes fields produced by migrations that may not exist on
-	// older DBs (timestamp_field_source, full_source_count, error_code, …).
-	// We use to_regclass + has_column tricks via COALESCE on column-not-found
-	// level — here we just LEFT JOIN and allow NULLs to flow through. GORM's
-	// Scan tolerates missing output columns because we bind via `gorm:"column:"`.
-	//
-	// For forward-compat with worker migration 017 we pull:
-	//   - error_code               (per-check code — populated by worker, NULL on success)
-	//   - timestamp_field_source   (auto | manual | override — from registry)
-	//   - timestamp_field_confidence (high | medium | low)
-	//   - full_source_count / full_dest_count / full_count_at — daily aggregate
-	//
-	// The to_jsonb(r.*) ->> 'error_code' trick is unnecessary now that we own
-	// the SELECT list — we project the column names directly and COALESCE to
-	// empty string / zero when absent via LEFT JOIN (worker writes into
-	// cdc_reconciliation_report). If worker hasn't shipped migration 017 the
-	// SELECT will error — handled by fallback query below.
-	type reportRow struct {
-		model.ReconciliationReport
-		SourceObjectID           *int64     `gorm:"column:source_object_id" json:"source_object_id,omitempty"`
-		SourceTable              *string    `gorm:"column:source_table" json:"source_table,omitempty"`
-		ShadowSchema             *string    `gorm:"column:shadow_schema" json:"shadow_schema,omitempty"`
-		ShadowTable              *string    `gorm:"column:shadow_table" json:"shadow_table,omitempty"`
-		ScopeAmbiguous           bool       `gorm:"column:scope_ambiguous" json:"scope_ambiguous"`
-		SyncEngine               *string    `gorm:"column:sync_engine" json:"sync_engine"`
-		SourceType               *string    `gorm:"column:source_type" json:"source_type"`
-		TimestampField           *string    `gorm:"column:timestamp_field" json:"timestamp_field"`
-		TimestampFieldSource     *string    `gorm:"column:timestamp_field_source" json:"timestamp_field_source,omitempty"`
-		TimestampFieldConfidence *string    `gorm:"column:timestamp_field_confidence" json:"timestamp_field_confidence,omitempty"`
-		FullSourceCount          *int64     `gorm:"column:full_source_count" json:"full_source_count,omitempty"`
-		FullDestCount            *int64     `gorm:"column:full_dest_count" json:"full_dest_count,omitempty"`
-		FullCountAt              *time.Time `gorm:"column:full_count_at" json:"full_count_at,omitempty"`
-		// NULLable source_count — when worker hits SRC_TIMEOUT/SRC_CONNECTION
-		// we don't want to conflate "no rows" with "query failed". The base
-		// model's SourceCount is int64 (non-null by default=0); we overlay
-		// NullableSourceCount by reading the same column into a pointer.
-		NullableSourceCount *int64  `gorm:"column:nullable_source_count" json:"nullable_source_count,omitempty"`
-		ErrorCode           *string `gorm:"column:error_code" json:"error_code,omitempty"`
-		ErrorMessageVI      string  `gorm:"-" json:"error_message_vi,omitempty"`
-		DriftPct            float64 `gorm:"-" json:"drift_pct"`
-		ComputedStatus      string  `gorm:"-" json:"computed_status"`
-		SourceQueryMethod   string  `gorm:"-" json:"source_query_method"`
+	res, err := h.listLatestQ.Handle(c.UserContext(), queries.ListLatestReportsQuery{})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
+	rows := res.Data
 
-	var rows []reportRow
-	// Primary query — expects worker migration 017 (new fields). LEFT JOIN
-	// keeps tables present even if registry row is stale.
-	primary := `
-		SELECT r.*,
-		       r.source_count AS nullable_source_count,
-		       reg.sync_engine, reg.source_type, reg.timestamp_field,
-		       reg.timestamp_field_source, reg.timestamp_field_confidence,
-		       reg.full_source_count, reg.full_dest_count, reg.full_count_at,
-		       r.error_code,
-		       sb.source_object_id,
-		       so.source_object_name AS source_table,
-		       sb.shadow_schema,
-		       sb.shadow_table,
-		       COALESCE(scope_counts.binding_count, 0) > 1 AS scope_ambiguous
-		  FROM (
-			SELECT DISTINCT ON (target_table) *
-			  FROM cdc_reconciliation_report
-			 ORDER BY target_table, checked_at DESC
-		  ) r
-		  LEFT JOIN cdc_table_registry reg ON reg.target_table = r.target_table
-		  LEFT JOIN LATERAL (
-			SELECT source_object_id, shadow_schema, shadow_table
-			FROM cdc_system.shadow_binding
-			WHERE shadow_table = r.target_table
-			  AND is_active = TRUE
-			ORDER BY updated_at DESC, id DESC
-			LIMIT 1
-		  ) sb ON TRUE
-		  LEFT JOIN LATERAL (
-			SELECT COUNT(*)::int AS binding_count
-			FROM cdc_system.shadow_binding
-			WHERE shadow_table = r.target_table
-			  AND is_active = TRUE
-		  ) scope_counts ON TRUE
-		  LEFT JOIN cdc_system.source_object_registry so ON so.id = sb.source_object_id
-		 ORDER BY r.target_table
-	`
-	if err := h.db.Raw(primary).Scan(&rows).Error; err != nil {
-		// Migration 017 not applied yet — fall back to legacy SELECT. Keeps
-		// the endpoint up on older envs. New fields come out nil/0 which the
-		// FE already knows to render as "—".
-		rows = rows[:0]
-		legacy := `
-			SELECT r.*, r.source_count AS nullable_source_count,
-			       reg.sync_engine, reg.source_type, reg.timestamp_field,
-			       sb.source_object_id,
-			       so.source_object_name AS source_table,
-			       sb.shadow_schema,
-			       sb.shadow_table,
-			       COALESCE(scope_counts.binding_count, 0) > 1 AS scope_ambiguous
-			  FROM (
-				SELECT DISTINCT ON (target_table) *
-				  FROM cdc_reconciliation_report
-				 ORDER BY target_table, checked_at DESC
-			  ) r
-			  LEFT JOIN cdc_table_registry reg ON reg.target_table = r.target_table
-			  LEFT JOIN LATERAL (
-				SELECT source_object_id, shadow_schema, shadow_table
-				FROM cdc_system.shadow_binding
-				WHERE shadow_table = r.target_table
-				  AND is_active = TRUE
-				ORDER BY updated_at DESC, id DESC
-				LIMIT 1
-			  ) sb ON TRUE
-			  LEFT JOIN LATERAL (
-				SELECT COUNT(*)::int AS binding_count
-				FROM cdc_system.shadow_binding
-				WHERE shadow_table = r.target_table
-				  AND is_active = TRUE
-			  ) scope_counts ON TRUE
-			  LEFT JOIN cdc_system.source_object_registry so ON so.id = sb.source_object_id
-			 ORDER BY r.target_table
-		`
-		h.db.Raw(legacy).Scan(&rows)
-	}
-
-	// Enrich each row: drift computation (FIX 2) + VI error message (FIX 5)
-	// + source query method tooltip (legacy).
+	// Enrich each row: drift computation + VI error message
+	// + source query method tooltip. Helpers live in this package so
+	// the existing ComputeDriftStatus test matrix stays in place.
 	for i := range rows {
 		errCode := ""
 		if rows[i].ErrorCode != nil {
@@ -353,25 +266,20 @@ func deriveSourceQueryMethod(tsField *string, checkType string) string {
 // @Success      200  {object}  map[string]interface{}
 // @Router       /api/reconciliation/report/{table} [get]
 //
-// TableHistory returns reconciliation history for a specific table
+// TableHistory returns reconciliation history for a specific table.
+// Delegates the SQL+pagination to queries.GetTableHistoryHandler.
 func (h *ReconciliationHandler) TableHistory(c *fiber.Ctx) error {
-	table := c.Params("table")
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	pageSize, _ := strconv.Atoi(c.Query("page_size", "20"))
-	if page < 1 {
-		page = 1
+	res, err := h.getHistoryQ.Handle(c.UserContext(), queries.GetTableHistoryQuery{
+		Table:    c.Params("table"),
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 20
-	}
-
-	var reports []model.ReconciliationReport
-	var total int64
-	h.db.Model(&model.ReconciliationReport{}).Where("target_table = ?", table).Count(&total)
-	h.db.Where("target_table = ?", table).Order("checked_at DESC").
-		Offset((page - 1) * pageSize).Limit(pageSize).Find(&reports)
-
-	return c.JSON(fiber.Map{"data": reports, "total": total, "page": page})
+	return c.JSON(fiber.Map{"data": res.Data, "total": res.Total, "page": res.Page})
 }
 
 // TriggerCheck godoc
@@ -408,17 +316,17 @@ func (h *ReconciliationHandler) TriggerCheck(c *fiber.Ctx) error {
 		table = resolved
 	}
 
-	payload, _ := json.Marshal(map[string]string{
-		"tier":  tier,
-		"table": table,
-	})
+	cmd := commands.ReconCheckCommand{Tier: tier, Table: table}
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
 
-	subject := "cdc.cmd.recon-check"
-	if err := h.nats.Conn.Publish(subject, payload); err != nil {
+	res, err := h.bus.Dispatch(ctx, cmd)
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// Log activity
+	// Log activity (audit trail mirrors the cdc_jobs row).
+	payload, _ := json.Marshal(cmd)
 	now := time.Now()
 	h.db.Create(&model.ActivityLog{
 		Operation:   "recon-check",
@@ -430,7 +338,12 @@ func (h *ReconciliationHandler) TriggerCheck(c *fiber.Ctx) error {
 		CompletedAt: &now,
 	})
 
-	return c.Status(202).JSON(fiber.Map{"message": "reconciliation check dispatched", "tier": tier, "table": table})
+	return c.Status(202).JSON(fiber.Map{
+		"message": "reconciliation check dispatched",
+		"tier":    tier,
+		"table":   table,
+		"job_id":  res.JobID,
+	})
 }
 
 // TriggerCheckAll godoc
@@ -451,21 +364,19 @@ func (h *ReconciliationHandler) TriggerCheckAll(c *fiber.Ctx) error {
 	var scope reconScopeRequest
 	_ = c.BodyParser(&scope)
 	tier := c.Query("tier", "1")
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+
 	table, err := h.resolveTargetTable(c, scope)
 	if err == nil && table != "" {
-		payload, _ := json.Marshal(map[string]string{
-			"tier":  tier,
-			"table": table,
-		})
-		if err := h.nats.Conn.Publish("cdc.cmd.recon-check", payload); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		if _, derr := h.bus.Dispatch(ctx, commands.ReconCheckCommand{Tier: tier, Table: table}); derr != nil {
+			return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
 		}
 		return c.Status(202).JSON(fiber.Map{"message": "reconciliation check dispatched", "tier": tier, "table": table})
 	}
 
-	payload := []byte(`{"tier":"1","table":"*"}`)
-	if err := h.nats.Conn.Publish("cdc.cmd.recon-check", payload); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	if _, derr := h.bus.Dispatch(ctx, commands.ReconCheckCommand{Tier: "1", Table: "*"}); derr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
 	}
 	return c.Status(202).JSON(fiber.Map{"message": "tier 1 check dispatched for all tables"})
 }
@@ -502,10 +413,12 @@ func (h *ReconciliationHandler) TriggerHeal(c *fiber.Ctx) error {
 		}
 		table = resolved
 	}
-	payload, _ := json.Marshal(map[string]string{"table": table})
 
-	if err := h.nats.Conn.Publish("cdc.cmd.recon-heal", payload); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	res, derr := h.bus.Dispatch(ctx, commands.ReconHealCommand{Table: table})
+	if derr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
 	}
 
 	now := time.Now()
@@ -518,7 +431,7 @@ func (h *ReconciliationHandler) TriggerHeal(c *fiber.Ctx) error {
 		CompletedAt: &now,
 	})
 
-	return c.Status(202).JSON(fiber.Map{"message": "heal dispatched", "table": table})
+	return c.Status(202).JSON(fiber.Map{"message": "heal dispatched", "table": table, "job_id": res.JobID})
 }
 
 // ListFailedLogs godoc
@@ -534,95 +447,24 @@ func (h *ReconciliationHandler) TriggerHeal(c *fiber.Ctx) error {
 // @Success      200  {object}  map[string]interface{}
 // @Router       /api/failed-sync-logs [get]
 //
-// ListFailedLogs returns failed sync logs (paginated, filterable)
+// ListFailedLogs returns failed sync logs (paginated, filterable).
+// Delegates the SQL+pagination to queries.ListFailedLogsHandler.
 func (h *ReconciliationHandler) ListFailedLogs(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	pageSize, _ := strconv.Atoi(c.Query("page_size", "30"))
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 200 {
-		pageSize = 30
-	}
-
-	query := `
-		SELECT
-			f.id,
-			f.target_table,
-			f.source_table,
-			f.source_db,
-			f.record_id,
-			f.operation,
-			f.raw_json,
-			f.error_message,
-			f.error_type,
-			f.kafka_topic,
-			f.kafka_partition,
-			f.kafka_offset,
-			f.retry_count,
-			f.max_retries,
-			f.status,
-			f.created_at,
-			f.last_retry_at,
-			f.resolved_at,
-			f.resolved_by,
-			so.source_object_name AS resolved_source_table,
-			sb.shadow_schema,
-			sb.shadow_table,
-			COALESCE(scope_counts.binding_count, 0) > 1 AS scope_ambiguous
-		FROM failed_sync_logs f
-		LEFT JOIN LATERAL (
-			SELECT source_object_id, shadow_schema, shadow_table
-			FROM cdc_system.shadow_binding
-			WHERE shadow_table = f.target_table
-			  AND is_active = TRUE
-			ORDER BY updated_at DESC, id DESC
-			LIMIT 1
-		) sb ON TRUE
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*)::int AS binding_count
-			FROM cdc_system.shadow_binding
-			WHERE shadow_table = f.target_table
-			  AND is_active = TRUE
-		) scope_counts ON TRUE
-		LEFT JOIN cdc_system.source_object_registry so ON so.id = sb.source_object_id
-		WHERE 1=1
-	`
-	args := make([]interface{}, 0, 4)
-	if t := c.Query("target_table"); t != "" {
-		query += ` AND f.target_table = ?`
-		args = append(args, t)
-	}
-	if s := c.Query("status"); s != "" {
-		query += ` AND f.status = ?`
-		args = append(args, s)
-	}
-	if et := c.Query("error_type"); et != "" {
-		query += ` AND f.error_type = ?`
-		args = append(args, et)
-	}
-	var total int64
-	countQuery := `SELECT COUNT(*) FROM (` + query + `) AS failed_logs`
-	if err := h.db.Raw(countQuery, args...).Scan(&total).Error; err != nil {
+	res, err := h.listFailedQ.Handle(c.UserContext(), queries.ListFailedLogsQuery{
+		Filter: queries.FailedLogFilter{
+			TargetTable: c.Query("target_table"),
+			Status:      c.Query("status"),
+			ErrorType:   c.Query("error_type"),
+		},
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	query += ` ORDER BY f.created_at DESC OFFSET ? LIMIT ?`
-	args = append(args, (page-1)*pageSize, pageSize)
-
-	type failedLogRow struct {
-		model.FailedSyncLog
-		ResolvedSourceTable *string `gorm:"column:resolved_source_table" json:"resolved_source_table,omitempty"`
-		ShadowSchema        *string `gorm:"column:shadow_schema" json:"shadow_schema,omitempty"`
-		ShadowTable         *string `gorm:"column:shadow_table" json:"shadow_table,omitempty"`
-		ScopeAmbiguous      bool    `gorm:"column:scope_ambiguous" json:"scope_ambiguous"`
-	}
-	var logs []failedLogRow
-	if err := h.db.Raw(query, args...).Scan(&logs).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	return c.JSON(fiber.Map{"data": logs, "total": total, "page": page})
+	return c.JSON(fiber.Map{"data": res.Data, "total": res.Total, "page": res.Page})
 }
 
 // RetryFailedLog retries a single failed record
@@ -681,21 +523,23 @@ func (h *ReconciliationHandler) RetryFailedLog(c *fiber.Ctx) error {
 	`
 	_ = h.db.Raw(scopeQuery, id).Scan(&scope).Error
 
-	// Dispatch retry via NATS
-	payload, _ := json.Marshal(map[string]interface{}{
-		"failed_log_id":   log.ID,
-		"target_table":    log.TargetTable,
-		"record_id":       log.RecordID,
-		"raw_json":        string(log.RawJSON),
-		"source_database": stringOrNil(scope.SourceDatabase),
-		"source_table":    stringOrNil(scope.ResolvedSourceTable),
-		"shadow_schema":   stringOrNil(scope.ShadowSchema),
-		"shadow_table":    stringOrNil(scope.ShadowTable),
-		"scope_ambiguous": scope.ScopeAmbiguous,
-	})
-
-	if err := h.nats.Conn.Publish("cdc.cmd.retry-failed", payload); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	// Dispatch retry via CommandBus.
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.RetryFailedCommand{
+		FailedLogID:    log.ID,
+		TargetTable:    log.TargetTable,
+		RecordID:       log.RecordID,
+		RawJSON:        string(log.RawJSON),
+		SourceDatabase: scope.SourceDatabase,
+		SourceTable:    scope.ResolvedSourceTable,
+		ShadowSchema:   scope.ShadowSchema,
+		ShadowTable:    scope.ShadowTable,
+		ScopeAmbiguous: scope.ScopeAmbiguous,
+	}
+	res, derr := h.bus.Dispatch(ctx, cmd)
+	if derr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
 	}
 
 	// Update status
@@ -709,6 +553,7 @@ func (h *ReconciliationHandler) RetryFailedLog(c *fiber.Ctx) error {
 	return c.Status(202).JSON(fiber.Map{
 		"message": "retry dispatched",
 		"id":      id,
+		"job_id":  res.JobID,
 		"scope": fiber.Map{
 			"source_database": stringOrNil(scope.SourceDatabase),
 			"source_table":    stringOrNil(scope.ResolvedSourceTable),
@@ -729,14 +574,18 @@ func (h *ReconciliationHandler) ResetDebeziumOffset(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	payload, _ := json.Marshal(map[string]string{
-		"type":       "signal-snapshot",
-		"database":   body.Database,
-		"collection": body.Collection,
-	})
-	h.nats.Conn.Publish("cdc.cmd.debezium-signal", payload)
-
-	return c.Status(202).JSON(fiber.Map{"message": "debezium signal dispatched"})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.DebeziumSignalCommand{
+		Type_:      "signal-snapshot",
+		Database:   body.Database,
+		Collection: body.Collection,
+	}
+	res, derr := h.bus.Dispatch(ctx, cmd)
+	if derr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
+	}
+	return c.Status(202).JSON(fiber.Map{"message": "debezium signal dispatched", "job_id": res.JobID})
 }
 
 // TriggerBackfillSourceTs dispatches the _source_ts backfill job.
@@ -761,23 +610,26 @@ func (h *ReconciliationHandler) TriggerBackfillSourceTs(c *fiber.Ctx) error {
 	}
 
 	runID := uuid.NewString()
-	payload, _ := json.Marshal(map[string]interface{}{
-		"table":      body.Table,
-		"run_id":     runID,
-		"batch_size": body.BatchSize,
-	})
-
-	subject := "cdc.cmd.recon-backfill-source-ts"
-	if err := h.nats.Conn.Publish(subject, payload); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.ReconBackfillSourceTsCommand{
+		Table:     body.Table,
+		RunID:     runID,
+		BatchSize: body.BatchSize,
+	}
+	res, derr := h.bus.Dispatch(ctx, cmd)
+	if derr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
 	}
 
+	// Audit details mirror the on-wire payload (raw command marshal).
+	details, _ := json.Marshal(cmd)
 	now := time.Now()
 	h.db.Create(&model.ActivityLog{
 		Operation:   "recon-backfill-source-ts",
 		TargetTable: body.Table,
 		Status:      "dispatched",
-		Details:     payload,
+		Details:     details,
 		TriggeredBy: "manual",
 		StartedAt:   now,
 		CompletedAt: &now,
@@ -787,6 +639,7 @@ func (h *ReconciliationHandler) TriggerBackfillSourceTs(c *fiber.Ctx) error {
 		"message":    "backfill dispatched",
 		"run_id":     runID,
 		"table":      body.Table,
+		"job_id":     res.JobID,
 		"status_url": "/api/recon/backfill-source-ts/status",
 	})
 }
@@ -888,7 +741,11 @@ func pgIdent(name string) string {
 // Tools: Trigger snapshot for a table
 func (h *ReconciliationHandler) TriggerSnapshot(c *fiber.Ctx) error {
 	table := c.Params("table")
-	payload, _ := json.Marshal(map[string]string{"table": table})
-	h.nats.Conn.Publish("cdc.cmd.debezium-snapshot", payload)
-	return c.Status(202).JSON(fiber.Map{"message": "snapshot signal dispatched", "table": table})
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	res, derr := h.bus.Dispatch(ctx, commands.DebeziumSnapshotCommand{Table: table})
+	if derr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
+	}
+	return c.Status(202).JSON(fiber.Map{"message": "snapshot signal dispatched", "table": table, "job_id": res.JobID})
 }

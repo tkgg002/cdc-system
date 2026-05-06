@@ -14,6 +14,9 @@ import (
 	"errors"
 	"time"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/service"
 
@@ -22,15 +25,21 @@ import (
 )
 
 // AlertsHandler exposes the state machine over HTTP.
+//
+// Reads (Active/Silenced/History) talk to the manager directly.
+// Writes (Ack/Silence) — Phase 2 v2 / P3 — route through the
+// CommandBus so every state-mutating action is recorded in
+// `cdc_system.cdc_jobs` for audit + idempotency.
 type AlertsHandler struct {
 	am     *service.AlertManager
+	bus    ports.CommandBus
 	logger *zap.Logger
 }
 
 // NewAlertsHandler wires the handler. The manager may be nil in degraded
 // startup (e.g. DB offline); all routes will return 503 in that case.
-func NewAlertsHandler(am *service.AlertManager, logger *zap.Logger) *AlertsHandler {
-	return &AlertsHandler{am: am, logger: logger}
+func NewAlertsHandler(am *service.AlertManager, bus ports.CommandBus, logger *zap.Logger) *AlertsHandler {
+	return &AlertsHandler{am: am, bus: bus, logger: logger}
 }
 
 // Active returns firing + acknowledged alerts.
@@ -110,6 +119,9 @@ func (h *AlertsHandler) Ack(c *fiber.Ctx) error {
 	if h.am == nil {
 		return c.Status(503).JSON(fiber.Map{"error": "alerts manager not ready"})
 	}
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
 	fp := c.Params("fingerprint")
 	if fp == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "fingerprint required"})
@@ -118,8 +130,13 @@ func (h *AlertsHandler) Ack(c *fiber.Ctx) error {
 	_ = c.BodyParser(&body)
 
 	user := middleware.GetUsername(c)
-	if err := h.am.Ack(c.Context(), fp, user); err != nil {
-		if errors.Is(err, errors.New("alert not firing or not found")) || err.Error() == "alert not firing or not found" {
+	cmd := commands.AckAlertCommand{Fingerprint: fp, User: user, Reason: body.Reason}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		if err.Error() == "alert not firing or not found" ||
+			errors.Is(err, errors.New("alert not firing or not found")) {
 			return c.Status(404).JSON(fiber.Map{"error": err.Error()})
 		}
 		h.logger.Warn("ack failed", zap.String("fingerprint", fp), zap.Error(err))
@@ -128,8 +145,11 @@ func (h *AlertsHandler) Ack(c *fiber.Ctx) error {
 	h.logger.Info("alert acknowledged",
 		zap.String("fingerprint", fp),
 		zap.String("user", user),
-		zap.String("reason", body.Reason))
-	return c.JSON(fiber.Map{"ok": true})
+		zap.String("reason", body.Reason),
+		zap.String("job_id", res.JobID))
+	// Body comes from the sync handler; pass through verbatim.
+	c.Type("application/json")
+	return c.Status(200).Send(res.ResultBody)
 }
 
 // silenceRequest is the JSON body for /silence.

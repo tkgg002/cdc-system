@@ -2,11 +2,16 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/app/queries"
+	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 
@@ -18,15 +23,23 @@ import (
 // MasterRegistryHandler — Sprint 5 §R8 admin plane for master tables.
 // Mounts under /api/v1/masters/*. Write ops go through destructive chain;
 // read ops are shared (admin|operator).
+//
+// Phase 2 v2 / P2 — `List` delegates to the CQRS Q-side handler in
+// `internal/app/queries/list_masters.go`; raw SQL lives in
+// `internal/infra/persistence/master_read_repo_gorm.go`. Write ops
+// (Create / Approve / Reject / ToggleActive / Swap) move to
+// `app/commands/` in P3.
 type MasterRegistryHandler struct {
 	db     *gorm.DB
 	nats   *natsconn.NatsClient
 	swap   *service.MasterSwap
 	logger *zap.Logger
+	listQ  *queries.ListMastersHandler
+	bus    ports.CommandBus
 }
 
-func NewMasterRegistryHandler(db *gorm.DB, nats *natsconn.NatsClient, swap *service.MasterSwap, logger *zap.Logger) *MasterRegistryHandler {
-	return &MasterRegistryHandler{db: db, nats: nats, swap: swap, logger: logger}
+func NewMasterRegistryHandler(db *gorm.DB, nats *natsconn.NatsClient, swap *service.MasterSwap, logger *zap.Logger, listQ *queries.ListMastersHandler, bus ports.CommandBus) *MasterRegistryHandler {
+	return &MasterRegistryHandler{db: db, nats: nats, swap: swap, logger: logger, listQ: listQ, bus: bus}
 }
 
 var (
@@ -34,33 +47,10 @@ var (
 	namespaceName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 )
 
-type MasterRow struct {
-	ID                   int64           `json:"id"`
-	BindingCode          string          `json:"binding_code"`
-	MasterName           string          `json:"master_name"`
-	MasterSchema         string          `json:"master_schema"`
-	MasterDatabase       *string         `json:"master_database,omitempty"`
-	MasterConnectionCode *string         `json:"master_connection_code,omitempty"`
-	SourceShadow         string          `json:"source_shadow"`
-	SourceDatabase       *string         `json:"source_database,omitempty"`
-	SourceSchema         *string         `json:"source_schema,omitempty"`
-	SourceNamespace      *string         `json:"source_namespace,omitempty"`
-	SourceTable          *string         `json:"source_table,omitempty"`
-	ShadowBindingID      *int64          `json:"shadow_binding_id,omitempty"`
-	ShadowSchema         *string         `json:"shadow_schema,omitempty"`
-	ShadowTable          *string         `json:"shadow_table,omitempty"`
-	PhysicalTableFQN     *string         `json:"physical_table_fqn,omitempty"`
-	TransformType        string          `json:"transform_type"`
-	Spec                 json.RawMessage `json:"spec"`
-	IsActive             bool            `json:"is_active"`
-	SchemaStatus         string          `json:"schema_status"`
-	SchemaReviewedBy     *string         `json:"schema_reviewed_by,omitempty"`
-	SchemaReviewedAt     *time.Time      `json:"schema_reviewed_at,omitempty"`
-	RejectionReason      *string         `json:"rejection_reason,omitempty"`
-	CreatedBy            *string         `json:"created_by,omitempty"`
-	CreatedAt            time.Time       `json:"created_at"`
-	UpdatedAt            time.Time       `json:"updated_at"`
-}
+// MasterRow is the wire shape of one row in /api/v1/masters. Aliased
+// to the Q-side read model so server-side callers + Swagger see the
+// same type.
+type MasterRow = queries.MasterListItem
 
 type masterConnectionTarget struct {
 	ID              int64
@@ -95,48 +85,12 @@ type masterBindingTarget struct {
 // @Security     BearerAuth
 // @Router       /api/v1/masters [get]
 func (h *MasterRegistryHandler) List(c *fiber.Ctx) error {
-	var rows []MasterRow
-	err := h.db.WithContext(c.Context()).Raw(
-		`SELECT
-			mb.id,
-			mb.binding_code,
-			mb.master_table AS master_name,
-			mb.master_schema,
-			mb.master_database,
-			mc.connection_code AS master_connection_code,
-			COALESCE(sb.shadow_schema || '.' || sb.shadow_table, sb.shadow_table, '') AS source_shadow,
-			so.source_database,
-			so.source_schema,
-			so.source_namespace,
-			so.source_object_name AS source_table,
-			mb.shadow_binding_id,
-			sb.shadow_schema,
-			sb.shadow_table,
-			mb.physical_table_fqn,
-			mb.transform_type,
-			mb.transform_spec AS spec,
-			mb.is_active,
-			mb.schema_status,
-			mb.schema_reviewed_by,
-			mb.schema_reviewed_at,
-			mb.rejection_reason,
-			mb.created_by,
-			mb.created_at,
-			mb.updated_at
-		FROM cdc_system.master_binding mb
-		LEFT JOIN cdc_system.shadow_binding sb
-		  ON sb.id = mb.shadow_binding_id
-		LEFT JOIN cdc_system.source_object_registry so
-		  ON so.id = mb.source_object_id
-		LEFT JOIN cdc_system.connection_registry mc
-		  ON mc.id = mb.master_connection_id
-		ORDER BY mb.master_schema, mb.master_table`,
-	).Scan(&rows).Error
+	res, err := h.listQ.Handle(c.Context(), queries.ListMastersQuery{})
 	if err != nil {
 		h.logger.Error("master list failed", zap.Error(err))
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-	return c.JSON(fiber.Map{"data": rows, "count": len(rows)})
+	return c.JSON(fiber.Map{"data": res.Data, "count": res.Count})
 }
 
 type CreateRequest struct {
@@ -344,84 +298,57 @@ func (h *MasterRegistryHandler) Create(c *fiber.Ctx) error {
 			"detail": "one of copy_1_to_1|filter|aggregate|group_by|join|custom_sql",
 		})
 	}
-	if len(req.Spec) == 0 {
-		req.Spec = json.RawMessage("{}")
-	}
 	if len(strings.TrimSpace(req.Reason)) < 10 {
 		return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
 	}
 
-	shadowBinding, err := h.resolveShadowBinding(c, req)
-	if err != nil {
-		switch err.Error() {
-		case "ambiguous_shadow_binding":
-			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_shadow_binding"})
-		default:
-			if err == gorm.ErrRecordNotFound {
-				return c.Status(404).JSON(fiber.Map{"error": "shadow_binding_not_found"})
-			}
-			h.logger.Error("resolve shadow binding failed", zap.Error(err))
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-		}
-	}
-
-	masterConn, err := h.resolveMasterConnection(c, req)
-	if err != nil {
-		switch err.Error() {
-		case "ambiguous_master_connection":
-			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_master_connection"})
-		default:
-			if err == gorm.ErrRecordNotFound {
-				return c.Status(404).JSON(fiber.Map{"error": "master_connection_not_found"})
-			}
-			h.logger.Error("resolve master connection failed", zap.Error(err))
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-		}
-	}
-
-	if req.MasterSchema == "public" && masterConn.DefaultSchema != nil && strings.TrimSpace(*masterConn.DefaultSchema) != "" {
-		req.MasterSchema = strings.TrimSpace(*masterConn.DefaultSchema)
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
 
 	actor := getActor(c)
-	bindingCode := normalizeBindingCode("mb", req.MasterSchema, req.MasterName, fmt.Sprintf("%d", time.Now().UTC().Unix()))
-	physicalTableFQN := req.MasterSchema + "." + req.MasterName
-
-	err = h.db.WithContext(c.Context()).Exec(
-		`INSERT INTO cdc_system.master_binding
-		   (binding_code, source_object_id, shadow_binding_id, master_connection_id,
-		    master_database, master_schema, master_table, physical_table_fqn,
-		    transform_type, transform_spec, schema_status, is_active, created_by, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'pending_review', false, ?, NOW(), NOW())`,
-		bindingCode,
-		shadowBinding.SourceObjectID,
-		shadowBinding.ShadowBindingID,
-		masterConn.ID,
-		masterConn.DefaultDatabase,
-		req.MasterSchema,
-		req.MasterName,
-		physicalTableFQN,
-		req.TransformType,
-		string(req.Spec),
-		actor,
-	).Error
-	if err != nil {
-		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
-			return c.Status(409).JSON(fiber.Map{"error": "master_already_exists", "master_name": req.MasterName})
-		}
-		h.logger.Error("master create failed", zap.Error(err))
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	cmd := commands.CreateMasterCommand{
+		MasterName:           req.MasterName,
+		MasterSchema:         req.MasterSchema,
+		MasterConnectionCode: req.MasterConnectionCode,
+		SourceShadow:         req.SourceShadow,
+		SourceDatabase:       req.SourceDatabase,
+		SourceSchema:         req.SourceSchema,
+		SourceNamespace:      req.SourceNamespace,
+		SourceTable:          req.SourceTable,
+		ShadowSchema:         req.ShadowSchema,
+		ShadowTable:          req.ShadowTable,
+		TransformType:        req.TransformType,
+		Spec:                 req.Spec,
+		Reason:               req.Reason,
+		UpdatedBy:            actor,
 	}
+	ctx := messaging.WithMetadata(c.UserContext(), actor, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
 
-	return c.Status(201).JSON(fiber.Map{
-		"master_name":            req.MasterName,
-		"master_schema":          req.MasterSchema,
-		"master_connection_code": masterConn.ConnectionCode,
-		"shadow_schema":          shadowBinding.ShadowSchema,
-		"shadow_table":           shadowBinding.ShadowTable,
-		"schema_status":          "pending_review",
-		"next":                   "POST /api/v1/masters/" + req.MasterName + "/approve",
-	})
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		switch {
+		case errors.Is(err, commands.ErrShadowBindingNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "shadow_binding_not_found"})
+		case errors.Is(err, commands.ErrShadowBindingAmbiguous):
+			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_shadow_binding"})
+		case errors.Is(err, commands.ErrMasterConnectionNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "master_connection_not_found"})
+		case errors.Is(err, commands.ErrMasterConnectionAmbiguous):
+			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_master_connection"})
+		case errors.Is(err, commands.ErrMasterAlreadyExists):
+			return c.Status(409).JSON(fiber.Map{"error": "master_already_exists", "master_name": req.MasterName})
+		case strings.Contains(err.Error(), "invalid_"):
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		case strings.Contains(err.Error(), "reason_required"):
+			return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
+		default:
+			h.logger.Error("master create failed", zap.Error(err))
+			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		}
+	}
+	c.Set("Content-Type", "application/json")
+	return c.Status(201).Send(res.ResultBody)
 }
 
 type ApproveRequest struct {
@@ -519,18 +446,6 @@ func (h *MasterRegistryHandler) Reject(c *fiber.Ctx) error {
 	if !masterNameRe.MatchString(name) {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_master_name"})
 	}
-	target, err := h.resolveMasterBindingByName(c, name)
-	if err != nil {
-		switch err.Error() {
-		case "ambiguous_master_name":
-			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_master_name"})
-		default:
-			if err == gorm.ErrRecordNotFound {
-				return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-			}
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-		}
-	}
 
 	var req ApproveRequest
 	_ = c.BodyParser(&req)
@@ -538,25 +453,36 @@ func (h *MasterRegistryHandler) Reject(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
 	}
 
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+
 	actor := getActor(c)
-	res := h.db.WithContext(c.Context()).Exec(
-		`UPDATE cdc_system.master_binding
-		    SET schema_status = 'rejected',
-		        schema_reviewed_by = ?,
-		        schema_reviewed_at = NOW(),
-		        rejection_reason = ?,
-		        is_active = false,
-		        updated_at = NOW()
-		  WHERE id = ?`,
-		actor, req.Reason, target.ID,
-	)
-	if res.Error != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	cmd := commands.RejectMasterCommand{
+		Name:      name,
+		Reason:    strings.TrimSpace(req.Reason),
+		UpdatedBy: actor,
 	}
-	if res.RowsAffected == 0 {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	ctx := messaging.WithMetadata(c.UserContext(), actor, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		switch {
+		case errors.Is(err, commands.ErrMasterNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		case errors.Is(err, commands.ErrMasterNameAmbiguous):
+			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_master_name"})
+		case strings.Contains(err.Error(), "invalid_master_name"):
+			return c.Status(400).JSON(fiber.Map{"error": "invalid_master_name"})
+		case strings.Contains(err.Error(), "reason_required"):
+			return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
+		default:
+			h.logger.Error("master reject failed", zap.Error(err))
+			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		}
 	}
-	return c.JSON(fiber.Map{"status": "rejected", "master_name": name})
+	c.Set("Content-Type", "application/json")
+	return c.Status(200).Send(res.ResultBody)
 }
 
 // ToggleActive godoc
@@ -614,14 +540,14 @@ type SwapRequest struct {
 }
 
 // Swap godoc
-// @Summary      Swap physical master tables
-// @Description  Performs atomic table swap for a master table name. Current implementation still targets the physical table name and assumes unique master_table naming.
+// @Summary      Swap physical master tables (async)
+// @Description  Kicks off an atomic master-table swap as a background job. Returns 202 + JobID; poll GET /api/jobs/:id for terminal status. Refuses with 409 if another swap for the same master is still in flight.
 // @Tags         Masters
 // @Accept       json
 // @Produce      json
 // @Param        name path string true "Master table name"
 // @Param        body body SwapRequest true "Swap payload"
-// @Success      200 {object} map[string]interface{}
+// @Success      202 {object} map[string]interface{}
 // @Failure      400 {object} map[string]string
 // @Failure      409 {object} map[string]string
 // @Failure      500 {object} map[string]string
@@ -646,14 +572,26 @@ func (h *MasterRegistryHandler) Swap(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
 	}
 
-	if err := h.swap.Swap(c.Context(), name, req.NewTableName, req.Reason); err != nil {
-		if strings.Contains(err.Error(), "lock timeout") || strings.Contains(err.Error(), "canceling statement") {
-			return c.Status(409).JSON(fiber.Map{"error": "lock_timeout", "detail": err.Error()})
+	createdBy := getActor(c)
+	correlationID, _ := c.Locals("correlation_id").(string)
+	idempotencyKey := c.Get("Idempotency-Key")
+
+	jobID, err := h.swap.SwapAsync(c.Context(), name, req.NewTableName, req.Reason, createdBy, correlationID, idempotencyKey)
+	if err != nil {
+		if strings.Contains(err.Error(), "master_swap_in_flight") {
+			return c.Status(409).JSON(fiber.Map{"error": "master_swap_in_flight", "detail": err.Error()})
 		}
-		h.logger.Error("master swap failed", zap.String("master", name), zap.String("new_table", req.NewTableName), zap.Error(err))
-		return c.Status(500).JSON(fiber.Map{"error": "swap failed: " + err.Error()})
+		if strings.Contains(err.Error(), "invalid_") {
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
+		h.logger.Error("master swap dispatch failed", zap.String("master", name), zap.String("new_table", req.NewTableName), zap.Error(err))
+		return c.Status(500).JSON(fiber.Map{"error": "swap dispatch failed: " + err.Error()})
 	}
-	return c.Status(200).JSON(fiber.Map{"status": "swapped", "master_name": name})
+	return c.Status(202).JSON(fiber.Map{
+		"status":      "accepted",
+		"master_name": name,
+		"job_id":      jobID,
+	})
 }
 
 func getActor(c *fiber.Ctx) string {

@@ -2,27 +2,39 @@ package api
 
 import (
 	"encoding/json"
-	"strings"
+	"errors"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/app/queries"
+	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/model"
 	"cdc-cms-service/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 // WizardHandler serves the Source->Master automation state machine.
 // Create/Execute are destructive (mutate state + kick off pipelines);
-// Get/Progress are reads for the FE poll loop.
+// Get/Progress are reads — these now delegate to query handlers in
+// `internal/app/queries/get_wizard_session.go`.
 type WizardHandler struct {
-	repo   *repository.WizardRepo
-	logger *zap.Logger
+	repo      *repository.WizardRepo
+	logger    *zap.Logger
+	getQ      *queries.GetWizardSessionHandler
+	progressQ *queries.GetWizardProgressHandler
+	bus       ports.CommandBus
 }
 
-func NewWizardHandler(repo *repository.WizardRepo, logger *zap.Logger) *WizardHandler {
-	return &WizardHandler{repo: repo, logger: logger}
+func NewWizardHandler(
+	repo *repository.WizardRepo,
+	logger *zap.Logger,
+	getQ *queries.GetWizardSessionHandler,
+	progressQ *queries.GetWizardProgressHandler,
+	bus ports.CommandBus,
+) *WizardHandler {
+	return &WizardHandler{repo: repo, logger: logger, getQ: getQ, progressQ: progressQ, bus: bus}
 }
 
 type createWizardReq struct {
@@ -37,34 +49,35 @@ func (h *WizardHandler) Create(c *fiber.Ctx) error {
 	var req createWizardReq
 	_ = c.BodyParser(&req)
 
-	var payload []byte
-	if len(req.Payload) > 0 {
-		payload = []byte(req.Payload)
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
-	s := &model.WizardSession{
-		ID:          uuid.NewString(),
-		SourceName:  strings.TrimSpace(req.SourceName),
-		Status:      "draft",
-		CurrentStep: 0,
-		StepPayload: payload,
-		CreatedBy:   middleware.GetUsername(c),
+
+	user := middleware.GetUsername(c)
+	cmd := commands.CreateWizardCommand{
+		SourceName: req.SourceName,
+		Payload:    req.Payload,
+		CreatedBy:  user,
 	}
-	if err := h.repo.Create(c.Context(), s); err != nil {
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "create wizard: " + err.Error()})
 	}
-	return c.Status(201).JSON(s)
+	c.Set("Content-Type", "application/json")
+	return c.Status(201).Send(res.ResultBody)
 }
 
 // Get returns the full session row. Used on mount/refresh to rehydrate
 // the FE state machine.
 // GET /api/v1/wizard/sessions/:id
 func (h *WizardHandler) Get(c *fiber.Ctx) error {
-	id := c.Params("id")
-	s, err := h.repo.Get(c.Context(), id)
+	res, err := h.getQ.Handle(c.UserContext(), queries.GetWizardSessionQuery{ID: c.Params("id")})
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "not found"})
 	}
-	return c.JSON(s)
+	return c.JSON(res.Session)
 }
 
 type patchWizardReq struct {
@@ -85,38 +98,37 @@ func (h *WizardHandler) Patch(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "bad_json"})
 	}
-	updates := map[string]interface{}{}
-	if req.CurrentStep != nil {
-		updates["current_step"] = *req.CurrentStep
+
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
-	if req.Status != nil {
-		switch *req.Status {
-		case "draft", "running", "done", "failed":
-			updates["status"] = *req.Status
-		default:
+
+	user := middleware.GetUsername(c)
+	cmd := commands.PatchWizardCommand{
+		ID:          id,
+		CurrentStep: req.CurrentStep,
+		Status:      req.Status,
+		MasterName:  req.MasterName,
+		ConnectorID: req.ConnectorID,
+		RegistryID:  req.RegistryID,
+		StepPayload: req.StepPayload,
+		UpdatedBy:   user,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		switch {
+		case errors.Is(err, commands.ErrWizardInvalidStatus):
 			return c.Status(400).JSON(fiber.Map{"error": "invalid status"})
+		case errors.Is(err, commands.ErrWizardNothingToPatch):
+			return c.Status(400).JSON(fiber.Map{"error": "nothing to update"})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "update: " + err.Error()})
 		}
 	}
-	if req.MasterName != nil {
-		updates["master_name"] = *req.MasterName
-	}
-	if req.ConnectorID != nil {
-		updates["connector_id"] = *req.ConnectorID
-	}
-	if req.RegistryID != nil {
-		updates["registry_id"] = *req.RegistryID
-	}
-	if len(req.StepPayload) > 0 {
-		updates["step_payload"] = []byte(req.StepPayload)
-	}
-	if len(updates) == 0 {
-		return c.Status(400).JSON(fiber.Map{"error": "nothing to update"})
-	}
-	if err := h.repo.Update(c.Context(), id, updates); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "update: " + err.Error()})
-	}
-	s, _ := h.repo.Get(c.Context(), id)
-	return c.JSON(s)
+	c.Set("Content-Type", "application/json")
+	return c.Status(200).Send(res.ResultBody)
 }
 
 // Execute flips status->running and logs the intent. The actual
@@ -152,16 +164,9 @@ func (h *WizardHandler) Execute(c *fiber.Ctx) error {
 // Progress — GET /api/v1/wizard/sessions/:id/progress
 // Compact snapshot for the FE progress bar (doesn't ship step_payload).
 func (h *WizardHandler) Progress(c *fiber.Ctx) error {
-	id := c.Params("id")
-	s, err := h.repo.Get(c.Context(), id)
+	res, err := h.progressQ.Handle(c.UserContext(), queries.GetWizardProgressQuery{ID: c.Params("id")})
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "not found"})
 	}
-	return c.JSON(fiber.Map{
-		"session_id":   s.ID,
-		"current_step": s.CurrentStep,
-		"status":       s.Status,
-		"progress_log": json.RawMessage(s.ProgressLog),
-		"updated_at":   s.UpdatedAt,
-	})
+	return c.JSON(res.Progress)
 }
