@@ -206,7 +206,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	schemaHandler := api.NewSchemaChangeHandler(pendingRepo, schemaLogRepo, approvalSvc)
 	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, cmdBus, shadowAutomator, sourceObjectV2Sync, activityLogger, logger, getSyncHealthH)
 	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger, listSourceObjectsH, getSourceMappingContextH)
-	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(registryHandler, db, cmdBus, activityLogger, logger)
+	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(db, cmdBus, activityLogger, logger)
 	systemConnectorsHandler := api.NewSystemConnectorsHandler(kafkaConnectClient, sourceRepo, cmdBus, logger, listConnectorsH, getConnectorH, listConnectorPluginsH)
 	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH)
 	wizardHandler := api.NewWizardHandler(wizardRepo, logger, getWizardSessionH, getWizardProgressH, cmdBus)

@@ -17,10 +17,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// SourceObjectActionsHandler provides V2-aware aliases for operator actions
-// that still require the legacy registry bridge internally.
+// SourceObjectActionsHandler exposes V2-namespace endpoints that operate
+// directly on cdc_system.source_object_registry + shadow_binding without
+// going through the legacy table_registry bridge. T14 P4 removed the
+// thin-delegate methods that used to forward to RegistryHandler — those
+// routes now mount RegistryHandler directly via the router.
 type SourceObjectActionsHandler struct {
-	registry       *RegistryHandler
 	db             *gorm.DB
 	bus            ports.CommandBus
 	activityLogger *service.ActivityLogger
@@ -28,14 +30,12 @@ type SourceObjectActionsHandler struct {
 }
 
 func NewSourceObjectActionsHandler(
-	registry *RegistryHandler,
 	db *gorm.DB,
 	bus ports.CommandBus,
 	activityLogger *service.ActivityLogger,
 	logger *zap.Logger,
 ) *SourceObjectActionsHandler {
 	return &SourceObjectActionsHandler{
-		registry:       registry,
 		db:             db,
 		bus:            bus,
 		activityLogger: activityLogger,
@@ -90,39 +90,9 @@ func (h *SourceObjectActionsHandler) resolveDispatchScopeBySourceObjectID(id int
 	return &rows[0], nil
 }
 
-// Register godoc
-// @Summary      Register a source object through the V2 namespace
-// @Description  Delegates to the current registry-backed write model while exposing the create action under the V2 source-objects namespace.
-// @Tags         Source Objects
-// @Accept       json
-// @Produce      json
-// @Param        body body model.TableRegistry true "Source object registration payload"
-// @Success      202 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/register [post]
-func (h *SourceObjectActionsHandler) Register(c *fiber.Ctx) error {
-	return h.registry.Register(c)
-}
-
-// UpdateBridge godoc
-// @Summary      Update a bridged source object through the V2 namespace
-// @Description  Delegates to the current registry-backed write model while exposing the update action under the V2 source-objects namespace.
-// @Tags         Source Objects
-// @Accept       json
-// @Produce      json
-// @Param        id path int true "Legacy registry bridge ID"
-// @Param        body body object true "Fields to update"
-// @Success      202 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/registry/{id} [patch]
-func (h *SourceObjectActionsHandler) UpdateBridge(c *fiber.Ctx) error {
-	return h.registry.Update(c)
-}
+// T14 P4 — Register / UpdateBridge thin-delegate methods removed.
+// Routes /api/v1/source-objects/register + /api/v1/source-objects/registry/:id [patch]
+// now mount RegistryHandler.Register / RegistryHandler.Update directly via router.
 
 // UpdateV2 godoc
 // @Summary      Update a V2 source object directly
@@ -189,37 +159,8 @@ func (h *SourceObjectActionsHandler) UpdateV2(c *fiber.Ctx) error {
 	return c.Status(200).Send(res.ResultBody)
 }
 
-// BulkRegister godoc
-// @Summary      Bulk register source objects through the V2 namespace
-// @Description  Delegates to the current registry-backed bulk write model while exposing the import action under the V2 source-objects namespace.
-// @Tags         Source Objects
-// @Accept       json
-// @Produce      json
-// @Param        body body []model.TableRegistry true "Array of source object registrations"
-// @Success      202 {object} map[string]interface{}
-// @Failure      400 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/register-batch [post]
-func (h *SourceObjectActionsHandler) BulkRegister(c *fiber.Ctx) error {
-	return h.registry.BulkRegister(c)
-}
-
-// CreateDefaultColumns godoc
-// @Summary      Create default columns for a bridged source object
-// @Description  Dispatches create-default-columns through the current registry bridge while exposing the action under the V2 source-objects namespace.
-// @Tags         Source Objects
-// @Accept       json
-// @Produce      json
-// @Param        id path int true "Legacy registry bridge ID"
-// @Success      202 {object} map[string]interface{}
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/registry/{id}/create-default-columns [post]
-func (h *SourceObjectActionsHandler) CreateDefaultColumns(c *fiber.Ctx) error {
-	return h.registry.CreateDefaultColumns(c)
-}
+// T14 P4 — BulkRegister / CreateDefaultColumns thin-delegate methods removed
+// (mount registryHandler.BulkRegister / .CreateDefaultColumns trực tiếp).
 
 // CreateDefaultColumnsV2 godoc
 // @Summary      Create default columns for a V2 source object
@@ -289,21 +230,7 @@ func (h *SourceObjectActionsHandler) CreateDefaultColumnsV2(c *fiber.Ctx) error 
 	})
 }
 
-// Standardize godoc
-// @Summary      Standardize a bridged source object
-// @Description  Dispatches standardize through the current registry bridge while exposing the action under the V2 source-objects namespace.
-// @Tags         Source Objects
-// @Accept       json
-// @Produce      json
-// @Param        id path int true "Legacy registry bridge ID"
-// @Success      202 {object} map[string]interface{}
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/registry/{id}/standardize [post]
-func (h *SourceObjectActionsHandler) Standardize(c *fiber.Ctx) error {
-	return h.registry.Standardize(c)
-}
+// T14 P4 — Standardize thin-delegate removed (route mounts registryHandler.Standardize).
 
 // StandardizeV2 godoc
 // @Summary      Standardize a V2 source object
@@ -366,21 +293,7 @@ func (h *SourceObjectActionsHandler) StandardizeV2(c *fiber.Ctx) error {
 	})
 }
 
-// ScanFields godoc
-// @Summary      Scan fields for a bridged source object
-// @Description  Dispatches scan-fields through the current registry bridge while exposing the action under the V2 source-objects namespace.
-// @Tags         Source Objects
-// @Accept       json
-// @Produce      json
-// @Param        id path int true "Legacy registry bridge ID"
-// @Success      202 {object} map[string]interface{}
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/registry/{id}/scan-fields [post]
-func (h *SourceObjectActionsHandler) ScanFields(c *fiber.Ctx) error {
-	return h.registry.ScanFields(c)
-}
+// T14 P4 — ScanFields thin-delegate removed (route mounts registryHandler.ScanFields).
 
 // ScanFieldsV2 godoc
 // @Summary      Scan fields for a V2 source object
@@ -448,38 +361,8 @@ func (h *SourceObjectActionsHandler) ScanFieldsV2(c *fiber.Ctx) error {
 	})
 }
 
-// Transform godoc
-// @Summary      Trigger transform for a bridged source object
-// @Description  Dispatches batch-transform through the current registry bridge while exposing the action under the V2 source-objects namespace.
-// @Tags         Source Objects
-// @Accept       json
-// @Produce      json
-// @Param        id path int true "Legacy registry bridge ID"
-// @Success      202 {object} map[string]interface{}
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/registry/{id}/transform [post]
-func (h *SourceObjectActionsHandler) Transform(c *fiber.Ctx) error {
-	return h.registry.Transform(c)
-}
-
-// DispatchStatus godoc
-// @Summary      Get dispatch status for a bridged source-object action
-// @Description  Reads activity-log based dispatch status for V2 source-object actions that are still backed by the registry bridge.
-// @Tags         Source Objects
-// @Produce      json
-// @Param        id path int true "Legacy registry bridge ID"
-// @Param        subject query string false "Operation filter, e.g. scan-fields or detect-timestamp-field"
-// @Param        since query string false "RFC3339 timestamp lower bound"
-// @Success      200 {object} map[string]interface{}
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/registry/{id}/dispatch-status [get]
-func (h *SourceObjectActionsHandler) DispatchStatus(c *fiber.Ctx) error {
-	return h.registry.DispatchStatus(c)
-}
+// T14 P4 — Transform / DispatchStatus thin-delegate removed (router mounts
+// registryHandler.Transform / .DispatchStatus directly).
 
 // DispatchStatusV2 godoc
 // @Summary      Get dispatch status for a V2 source-object action
@@ -543,21 +426,8 @@ func (h *SourceObjectActionsHandler) DispatchStatusV2(c *fiber.Ctx) error {
 	})
 }
 
-// DetectTimestampField godoc
-// @Summary      Re-detect timestamp field for a bridged source object
-// @Description  Dispatches timestamp-field auto-detection through the current registry bridge while exposing the action under the V2 source-objects namespace.
-// @Tags         Source Objects
-// @Accept       json
-// @Produce      json
-// @Param        id path int true "Legacy registry bridge ID"
-// @Success      202 {object} map[string]interface{}
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/registry/{id}/detect-timestamp-field [post]
-func (h *SourceObjectActionsHandler) DetectTimestampField(c *fiber.Ctx) error {
-	return h.registry.DetectTimestampField(c)
-}
+// T14 P4 — DetectTimestampField thin-delegate removed (route mounts
+// registryHandler.DetectTimestampField).
 
 // DetectTimestampFieldV2 godoc
 // @Summary      Re-detect timestamp field for a V2 source object
@@ -624,20 +494,8 @@ func (h *SourceObjectActionsHandler) DetectTimestampFieldV2(c *fiber.Ctx) error 
 	})
 }
 
-// TransformStatus godoc
-// @Summary      Get transform status for a bridged source object
-// @Description  Returns transform progress through the current registry bridge while exposing the read under the V2 source-objects namespace.
-// @Tags         Source Objects
-// @Produce      json
-// @Param        id path int true "Legacy registry bridge ID"
-// @Success      200 {object} map[string]interface{}
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Security     BearerAuth
-// @Router       /api/v1/source-objects/registry/{id}/transform-status [get]
-func (h *SourceObjectActionsHandler) TransformStatus(c *fiber.Ctx) error {
-	return h.registry.TransformStatus(c)
-}
+// T14 P4 — TransformStatus thin-delegate removed (route mounts
+// registryHandler.TransformStatus).
 
 // TransformStatusV2 godoc
 // @Summary      Get transform progress for a V2 source object
