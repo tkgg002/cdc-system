@@ -83,7 +83,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	registryRepo := repository.NewRegistryRepo(db)
 	mappingRepo := repository.NewMappingRuleRepo(db)
 	pendingRepo := repository.NewPendingFieldRepo(db)
-	schemaLogRepo := repository.NewSchemaLogRepo(db)
+	schemaLogRepo := persistence.NewSchemaLogRepo(db)
 	sourceRepo := repository.NewSourceRepo(db)
 	wizardRepo := repository.NewWizardRepo(db)
 

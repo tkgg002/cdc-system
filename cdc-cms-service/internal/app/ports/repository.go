@@ -17,6 +17,7 @@ import (
 	"cdc-cms-service/internal/domain/master"
 	"cdc-cms-service/internal/domain/reconciliation"
 	"cdc-cms-service/internal/domain/source"
+	"cdc-cms-service/internal/model"
 )
 
 // MappingRuleRepo wraps `cdc_system.mapping_rule_v2`.
@@ -65,4 +66,13 @@ type FailedSyncLogRepo interface {
 	List(ctx context.Context, f reconciliation.LogFilter) ([]reconciliation.FailedLog, error)
 	GetByID(ctx context.Context, id int64) (*reconciliation.FailedLog, error)
 	UpdateStatus(ctx context.Context, id int64, status reconciliation.FailedLogStatus) error
+}
+
+// SchemaLogRepo wraps `schema_change_logs`. The domain is shallow
+// (audit-only), so the model type is reused rather than promoted to
+// `internal/domain/...` — see ADR-CMS-HEX §3 "audit aggregates skip
+// the domain layer until they grow behaviour".
+type SchemaLogRepo interface {
+	Create(ctx context.Context, log *model.SchemaChangeLog) error
+	GetByTable(ctx context.Context, tableName *string, sourceDB *string) ([]model.SchemaChangeLog, error)
 }

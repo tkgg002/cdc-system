@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/model"
 	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/pkgs/natsconn"
@@ -17,7 +18,7 @@ type ApprovalService struct {
 	db            *gorm.DB
 	pendingRepo   *repository.PendingFieldRepo
 	mappingRepo   *repository.MappingRuleRepo
-	schemaLogRepo *repository.SchemaLogRepo
+	schemaLogRepo ports.SchemaLogRepo
 	registryRepo  *repository.RegistryRepo
 	natsClient    *natsconn.NatsClient
 	logger        *zap.Logger
@@ -27,7 +28,7 @@ func NewApprovalService(
 	db *gorm.DB,
 	pendingRepo *repository.PendingFieldRepo,
 	mappingRepo *repository.MappingRuleRepo,
-	schemaLogRepo *repository.SchemaLogRepo,
+	schemaLogRepo ports.SchemaLogRepo,
 	registryRepo *repository.RegistryRepo,
 	nats *natsconn.NatsClient,
 	logger *zap.Logger,

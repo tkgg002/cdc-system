@@ -3,6 +3,7 @@ package api
 import (
 	"strconv"
 
+	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/internal/service"
@@ -12,13 +13,13 @@ import (
 
 type SchemaChangeHandler struct {
 	pendingRepo   *repository.PendingFieldRepo
-	schemaLogRepo *repository.SchemaLogRepo
+	schemaLogRepo ports.SchemaLogRepo
 	approvalSvc   *service.ApprovalService
 }
 
 func NewSchemaChangeHandler(
 	pendingRepo *repository.PendingFieldRepo,
-	schemaLogRepo *repository.SchemaLogRepo,
+	schemaLogRepo ports.SchemaLogRepo,
 	approvalSvc *service.ApprovalService,
 ) *SchemaChangeHandler {
 	return &SchemaChangeHandler{pendingRepo: pendingRepo, schemaLogRepo: schemaLogRepo, approvalSvc: approvalSvc}
