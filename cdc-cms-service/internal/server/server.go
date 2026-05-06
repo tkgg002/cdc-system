@@ -116,6 +116,11 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	syncHealthReader := persistence.NewSyncHealthReadRepo(db)
 	getSyncHealthH := queries.NewGetSyncHealthHandler(syncHealthReader)
 
+	// Task #18 đợt B — BridgeStatus reader. Powers TransformStatus
+	// (registry tier) + V2 transform-status + DispatchStatusV2 (source-
+	// object tier) so the API layer no longer issues raw SQL.
+	bridgeStatusReader := persistence.NewBridgeStatusRepo(db)
+
 	// Phase 2 v2 / P2.T2.6 — Connectors Q-side. One Kafka Connect
 	// client backs all 8 connector endpoints (3 reads via query
 	// handlers, 5 writes still on the legacy handler path until P3
@@ -204,9 +209,9 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	// Handlers
 	healthHandler := api.NewHealthHandler(db)
 	schemaHandler := api.NewSchemaChangeHandler(pendingRepo, schemaLogRepo, approvalSvc)
-	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, cmdBus, shadowAutomator, sourceObjectV2Sync, activityLogger, logger, getSyncHealthH)
+	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, cmdBus, shadowAutomator, sourceObjectV2Sync, activityLogger, logger, getSyncHealthH, bridgeStatusReader)
 	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger, listSourceObjectsH, getSourceMappingContextH)
-	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(db, cmdBus, activityLogger, logger)
+	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(bridgeStatusReader, cmdBus, activityLogger, logger)
 	systemConnectorsHandler := api.NewSystemConnectorsHandler(kafkaConnectClient, sourceRepo, cmdBus, logger, listConnectorsH, getConnectorH, listConnectorPluginsH)
 	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH)
 	wizardHandler := api.NewWizardHandler(wizardRepo, logger, getWizardSessionH, getWizardProgressH, cmdBus)

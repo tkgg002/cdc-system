@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -24,16 +23,17 @@ import (
 )
 
 type RegistryHandler struct {
-	repo            *repository.RegistryRepo
-	mappingRepo     *repository.MappingRuleRepo
-	db              *gorm.DB
-	natsClient      *natsconn.NatsClient
-	bus             ports.CommandBus
-	automator       *service.ShadowAutomator
-	v2sync          *service.SourceObjectV2SyncService
-	activityLogger  *service.ActivityLogger
-	logger          *zap.Logger
-	syncHealthQ     *queries.GetSyncHealthHandler
+	repo           *repository.RegistryRepo
+	mappingRepo    *repository.MappingRuleRepo
+	db             *gorm.DB
+	natsClient     *natsconn.NatsClient
+	bus            ports.CommandBus
+	automator      *service.ShadowAutomator
+	v2sync         *service.SourceObjectV2SyncService
+	activityLogger *service.ActivityLogger
+	logger         *zap.Logger
+	syncHealthQ    *queries.GetSyncHealthHandler
+	bridgeReader   queries.BridgeStatusReader
 }
 
 func NewRegistryHandler(
@@ -47,6 +47,7 @@ func NewRegistryHandler(
 	activityLogger *service.ActivityLogger,
 	logger *zap.Logger,
 	syncHealthQ *queries.GetSyncHealthHandler,
+	bridgeReader queries.BridgeStatusReader,
 ) *RegistryHandler {
 	return &RegistryHandler{
 		repo:           repo,
@@ -59,6 +60,7 @@ func NewRegistryHandler(
 		activityLogger: activityLogger,
 		logger:         logger,
 		syncHealthQ:    syncHealthQ,
+		bridgeReader:   bridgeReader,
 	}
 }
 
@@ -489,10 +491,11 @@ func (h *RegistryHandler) TransformStatus(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "registry entry not found"})
 	}
 
-	// Check table exists
-	var tableExists bool
-	h.db.Raw("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = 'public')", entry.TargetTable).Scan(&tableExists)
-	if !tableExists {
+	probe, err := h.bridgeReader.ProbeBridgeStatus(c.UserContext(), "public", entry.TargetTable)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !probe.Exists {
 		return c.JSON(fiber.Map{
 			"target_table":   entry.TargetTable,
 			"total_rows":     0,
@@ -503,21 +506,11 @@ func (h *RegistryHandler) TransformStatus(c *fiber.Ctx) error {
 		})
 	}
 
-	var totalRows, rawDataRows int64
-	h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, entry.TargetTable)).Scan(&totalRows)
-
-	// Check _raw_data column exists
-	var hasRawData bool
-	h.db.Raw("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = '_raw_data')", entry.TargetTable).Scan(&hasRawData)
-	if hasRawData {
-		h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE _raw_data IS NOT NULL AND _raw_data != '{}'::jsonb`, entry.TargetTable)).Scan(&rawDataRows)
-	}
-
 	return c.JSON(fiber.Map{
 		"target_table":   entry.TargetTable,
-		"total_rows":     totalRows,
-		"bridged_rows":   rawDataRows,
-		"pending_bridge": totalRows - rawDataRows,
+		"total_rows":     probe.TotalRows,
+		"bridged_rows":   probe.RawDataRows,
+		"pending_bridge": probe.TotalRows - probe.RawDataRows,
 		"last_bridge_at": entry.LastBridgeAt,
 	})
 }

@@ -287,6 +287,25 @@ func (s *stubReconReader) ListFailedLogs(_ context.Context, f FailedLogFilter, p
 	return s.failed, s.failedN, s.failedErr
 }
 
+// Stubs for the P4 closure methods. The handler-tier tests in this
+// file only exercise List/History/Failed; the new methods exist on
+// the port to satisfy the interface contract.
+func (s *stubReconReader) ResolveTargetTableByScope(context.Context, ReconScopeFilter) (string, error) {
+	return "", nil
+}
+func (s *stubReconReader) GetFailedLogByID(context.Context, int64) (*model.FailedSyncLog, error) {
+	return nil, nil
+}
+func (s *stubReconReader) GetRetryScopeByLogID(context.Context, int64) (FailedLogRetryScope, error) {
+	return FailedLogRetryScope{}, nil
+}
+func (s *stubReconReader) ListBackfillRuns(context.Context, string, string, int) ([]BackfillRunRow, error) {
+	return nil, nil
+}
+func (s *stubReconReader) CountTableRows(context.Context, string) (int64, int64, error) {
+	return 0, 0, nil
+}
+
 func TestListLatestReportsHandler(t *testing.T) {
 	r := &stubReconReader{latest: []LatestReportRow{{}, {}}}
 	h := NewListLatestReportsHandler(r)

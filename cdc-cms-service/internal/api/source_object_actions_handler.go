@@ -1,14 +1,15 @@
 package api
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"cdc-cms-service/internal/app/commands"
 	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/service"
@@ -23,71 +24,38 @@ import (
 // thin-delegate methods that used to forward to RegistryHandler — those
 // routes now mount RegistryHandler directly via the router.
 type SourceObjectActionsHandler struct {
-	db             *gorm.DB
+	bridgeReader   queries.BridgeStatusReader
 	bus            ports.CommandBus
 	activityLogger *service.ActivityLogger
 	logger         *zap.Logger
 }
 
 func NewSourceObjectActionsHandler(
-	db *gorm.DB,
+	bridgeReader queries.BridgeStatusReader,
 	bus ports.CommandBus,
 	activityLogger *service.ActivityLogger,
 	logger *zap.Logger,
 ) *SourceObjectActionsHandler {
 	return &SourceObjectActionsHandler{
-		db:             db,
+		bridgeReader:   bridgeReader,
 		bus:            bus,
 		activityLogger: activityLogger,
 		logger:         logger,
 	}
 }
 
-type sourceObjectDispatchScope struct {
-	SourceObjectID  int64  `gorm:"column:source_object_id"`
-	TargetTable     string `gorm:"column:target_table"`
-	ShadowSchema    string `gorm:"column:shadow_schema"`
-	SourceDatabase  string `gorm:"column:source_database"`
-	SourceTable     string `gorm:"column:source_table"`
-	SourceType      string `gorm:"column:source_type"`
-	PrimaryKeyField string `gorm:"column:primary_key_field"`
-	PrimaryKeyType  string `gorm:"column:primary_key_type"`
-}
-
-func (h *SourceObjectActionsHandler) resolveDispatchScopeBySourceObjectID(id int64) (*sourceObjectDispatchScope, error) {
-	var rows []sourceObjectDispatchScope
-	err := h.db.Raw(`
-		SELECT
-			so.id AS source_object_id,
-			sb.shadow_table AS target_table,
-			COALESCE(sb.shadow_schema, 'public') AS shadow_schema,
-			COALESCE(so.source_database, '') AS source_database,
-			so.source_object_name AS source_table,
-			so.source_engine_type AS source_type,
-			so.primary_key_field AS primary_key_field,
-			COALESCE(so.primary_key_type, '') AS primary_key_type
-		FROM cdc_system.source_object_registry so
-		LEFT JOIN cdc_system.shadow_binding sb
-		  ON sb.source_object_id = so.id
-		 AND sb.is_active = TRUE
-		WHERE so.id = ?
-		  AND so.is_active = TRUE
-		ORDER BY sb.updated_at DESC NULLS LAST, sb.id DESC NULLS LAST
-		LIMIT 2
-	`, id).Scan(&rows).Error
+func (h *SourceObjectActionsHandler) resolveDispatchScopeBySourceObjectID(ctx context.Context, id int64) (*queries.DispatchScope, error) {
+	scope, err := h.bridgeReader.ResolveDispatchScopeBySourceObjectID(ctx, id)
 	if err != nil {
+		if errors.Is(err, queries.ErrAmbiguousDispatchScope) {
+			return nil, fiber.NewError(fiber.StatusConflict, "ambiguous_source_object_scope")
+		}
+		if errors.Is(err, queries.ErrSourceObjectNoActiveShadow) {
+			return nil, fiber.NewError(fiber.StatusConflict, "source_object_has_no_active_shadow_binding")
+		}
 		return nil, err
 	}
-	if len(rows) == 0 {
-		return nil, gorm.ErrRecordNotFound
-	}
-	if len(rows) > 1 {
-		return nil, fiber.NewError(fiber.StatusConflict, "ambiguous_source_object_scope")
-	}
-	if strings.TrimSpace(rows[0].TargetTable) == "" {
-		return nil, fiber.NewError(fiber.StatusConflict, "source_object_has_no_active_shadow_binding")
-	}
-	return &rows[0], nil
+	return scope, nil
 }
 
 // T14 P4 — Register / UpdateBridge thin-delegate methods removed.
@@ -182,7 +150,7 @@ func (h *SourceObjectActionsHandler) CreateDefaultColumnsV2(c *fiber.Ctx) error 
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
 	}
 
-	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	scope, err := h.resolveDispatchScopeBySourceObjectID(c.UserContext(), id)
 	if err != nil {
 		if ferr, ok := err.(*fiber.Error); ok {
 			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
@@ -252,7 +220,7 @@ func (h *SourceObjectActionsHandler) StandardizeV2(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
 	}
 
-	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	scope, err := h.resolveDispatchScopeBySourceObjectID(c.UserContext(), id)
 	if err != nil {
 		if ferr, ok := err.(*fiber.Error); ok {
 			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
@@ -315,7 +283,7 @@ func (h *SourceObjectActionsHandler) ScanFieldsV2(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
 	}
 
-	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	scope, err := h.resolveDispatchScopeBySourceObjectID(c.UserContext(), id)
 	if err != nil {
 		if ferr, ok := err.(*fiber.Error); ok {
 			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
@@ -385,7 +353,7 @@ func (h *SourceObjectActionsHandler) DispatchStatusV2(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
 	}
 
-	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	scope, err := h.resolveDispatchScopeBySourceObjectID(c.UserContext(), id)
 	if err != nil {
 		if ferr, ok := err.(*fiber.Error); ok {
 			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
@@ -400,18 +368,15 @@ func (h *SourceObjectActionsHandler) DispatchStatusV2(c *fiber.Ctx) error {
 	subject := strings.TrimSpace(strings.TrimPrefix(c.Query("subject"), "cdc.cmd."))
 	sinceStr := strings.TrimSpace(c.Query("since"))
 
-	q := h.db.Table("cdc_system.cdc_activity_log").Where("target_table = ?", scope.TargetTable)
-	if subject != "" {
-		q = q.Where("operation = ?", subject)
-	}
+	since := time.Time{}
 	if sinceStr != "" {
 		if ts, parseErr := time.Parse(time.RFC3339, sinceStr); parseErr == nil {
-			q = q.Where("started_at >= ?", ts)
+			since = ts
 		}
 	}
 
-	var entries []map[string]interface{}
-	if err := q.Order("started_at DESC").Limit(50).Find(&entries).Error; err != nil {
+	entries, err := h.bridgeReader.ListDispatchActivity(c.UserContext(), scope.TargetTable, subject, since)
+	if err != nil {
 		h.logger.Error("query source object dispatch status failed", zap.Int64("source_object_id", id), zap.Error(err))
 		return c.Status(500).JSON(fiber.Map{"error": "query_dispatch_status_failed"})
 	}
@@ -449,7 +414,7 @@ func (h *SourceObjectActionsHandler) DetectTimestampFieldV2(c *fiber.Ctx) error 
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
 	}
 
-	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	scope, err := h.resolveDispatchScopeBySourceObjectID(c.UserContext(), id)
 	if err != nil {
 		if ferr, ok := err.(*fiber.Error); ok {
 			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
@@ -516,7 +481,7 @@ func (h *SourceObjectActionsHandler) TransformStatusV2(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
 	}
 
-	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	scope, err := h.resolveDispatchScopeBySourceObjectID(c.UserContext(), id)
 	if err != nil {
 		if ferr, ok := err.(*fiber.Error); ok {
 			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
@@ -528,13 +493,15 @@ func (h *SourceObjectActionsHandler) TransformStatusV2(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
 	}
 
-	var tableExists bool
-	h.db.Raw(
-		"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = ?)",
-		scope.TargetTable,
-		scope.ShadowSchema,
-	).Scan(&tableExists)
-	if !tableExists {
+	// Legacy handler swallowed Raw errors silently (zeroed counts on
+	// partial failure). Reader now propagates errors; we mirror the
+	// legacy contract — log and continue with whatever values came
+	// back, keeping the wire shape stable.
+	probe, err := h.bridgeReader.ProbeBridgeStatus(c.UserContext(), scope.ShadowSchema, scope.TargetTable)
+	if err != nil {
+		h.logger.Warn("probe bridge status partial failure", zap.Int64("source_object_id", id), zap.Error(err))
+	}
+	if !probe.Exists {
 		return c.JSON(fiber.Map{
 			"source_object_id": id,
 			"shadow_schema":    scope.ShadowSchema,
@@ -546,25 +513,12 @@ func (h *SourceObjectActionsHandler) TransformStatusV2(c *fiber.Ctx) error {
 		})
 	}
 
-	var totalRows, rawDataRows int64
-	h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"."%s"`, scope.ShadowSchema, scope.TargetTable)).Scan(&totalRows)
-
-	var hasRawData bool
-	h.db.Raw(
-		"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = '_raw_data')",
-		scope.ShadowSchema,
-		scope.TargetTable,
-	).Scan(&hasRawData)
-	if hasRawData {
-		h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"."%s" WHERE _raw_data IS NOT NULL AND _raw_data != '{}'::jsonb`, scope.ShadowSchema, scope.TargetTable)).Scan(&rawDataRows)
-	}
-
 	return c.JSON(fiber.Map{
 		"source_object_id": id,
 		"shadow_schema":    scope.ShadowSchema,
 		"target_table":     scope.TargetTable,
-		"total_rows":       totalRows,
-		"bridged_rows":     rawDataRows,
-		"pending_bridge":   totalRows - rawDataRows,
+		"total_rows":       probe.TotalRows,
+		"bridged_rows":     probe.RawDataRows,
+		"pending_bridge":   probe.TotalRows - probe.RawDataRows,
 	})
 }
