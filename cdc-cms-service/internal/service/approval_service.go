@@ -16,7 +16,7 @@ import (
 
 type ApprovalService struct {
 	db            *gorm.DB
-	pendingRepo   *repository.PendingFieldRepo
+	pendingRepo   ports.PendingFieldRepo
 	mappingRepo   *repository.MappingRuleRepo
 	schemaLogRepo ports.SchemaLogRepo
 	registryRepo  *repository.RegistryRepo
@@ -26,7 +26,7 @@ type ApprovalService struct {
 
 func NewApprovalService(
 	db *gorm.DB,
-	pendingRepo *repository.PendingFieldRepo,
+	pendingRepo ports.PendingFieldRepo,
 	mappingRepo *repository.MappingRuleRepo,
 	schemaLogRepo ports.SchemaLogRepo,
 	registryRepo *repository.RegistryRepo,

@@ -5,20 +5,19 @@ import (
 
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/internal/service"
 
 	"github.com/gofiber/fiber/v2"
 )
 
 type SchemaChangeHandler struct {
-	pendingRepo   *repository.PendingFieldRepo
+	pendingRepo   ports.PendingFieldRepo
 	schemaLogRepo ports.SchemaLogRepo
 	approvalSvc   *service.ApprovalService
 }
 
 func NewSchemaChangeHandler(
-	pendingRepo *repository.PendingFieldRepo,
+	pendingRepo ports.PendingFieldRepo,
 	schemaLogRepo ports.SchemaLogRepo,
 	approvalSvc *service.ApprovalService,
 ) *SchemaChangeHandler {

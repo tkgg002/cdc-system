@@ -76,3 +76,13 @@ type SchemaLogRepo interface {
 	Create(ctx context.Context, log *model.SchemaChangeLog) error
 	GetByTable(ctx context.Context, tableName *string, sourceDB *string) ([]model.SchemaChangeLog, error)
 }
+
+// PendingFieldRepo wraps `pending_fields`. Same audit-skip rationale as
+// SchemaLogRepo: the model is a thin row carrier consumed by the
+// approval flow, not an aggregate with behaviour. CMS only reads &
+// updates rows; ingest (Worker) keeps its own write path.
+type PendingFieldRepo interface {
+	GetByID(ctx context.Context, id uint) (*model.PendingField, error)
+	GetByStatus(ctx context.Context, status string, sourceDB *string, tableName *string, page, pageSize int) ([]model.PendingField, int64, error)
+	Update(ctx context.Context, pf *model.PendingField) error
+}

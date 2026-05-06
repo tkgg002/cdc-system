@@ -35,7 +35,6 @@ type Server struct {
 	nats            *natsconn.NatsClient
 	redis           *rediscache.RedisCache
 	app             *fiber.App
-	reconSvc        *service.ReconciliationService
 	healthCollector *service.Collector
 	collectorCancel context.CancelFunc
 	auditLogger     *middleware.AuditLogger
@@ -82,7 +81,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	// Repositories
 	registryRepo := repository.NewRegistryRepo(db)
 	mappingRepo := repository.NewMappingRuleRepo(db)
-	pendingRepo := repository.NewPendingFieldRepo(db)
+	pendingRepo := persistence.NewPendingFieldRepo(db)
 	schemaLogRepo := persistence.NewSchemaLogRepo(db)
 	sourceRepo := repository.NewSourceRepo(db)
 	wizardRepo := repository.NewWizardRepo(db)
@@ -198,7 +197,6 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 
 	// Services
 	approvalSvc := service.NewApprovalService(db, pendingRepo, mappingRepo, schemaLogRepo, registryRepo, natsClient, logger)
-	reconSvc := service.NewReconciliationService(registryRepo, mappingRepo, db, logger)
 	shadowAutomator := service.NewShadowAutomator(db, logger)
 	sourceObjectV2Sync := service.NewSourceObjectV2SyncService(db, logger)
 	masterSwap := service.NewMasterSwap(db, jobRepo, logger)
@@ -324,7 +322,6 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	return &Server{
 		cfg: cfg, logger: logger, db: db,
 		nats: natsClient, redis: redisCache, app: app,
-		reconSvc:        reconSvc,
 		healthCollector: healthCollector,
 		auditLogger:     auditLogger,
 		alertMgr:        alertMgr,
@@ -334,9 +331,6 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 
 func (s *Server) Start() error {
 	s.logger.Info("CMS Service started", zap.String("port", s.cfg.Server.Port))
-
-	// Start background workers
-	go s.reconSvc.Start(context.Background())
 
 	// Phase 0 — system health collector (writes Redis snapshot every 15s).
 	if s.healthCollector != nil {
