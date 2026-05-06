@@ -99,3 +99,19 @@ type WizardRepo interface {
 	Update(ctx context.Context, id string, updates map[string]interface{}) error
 	AppendProgress(ctx context.Context, id string, entry map[string]interface{}) error
 }
+
+// SystemConnectorRepo wraps the Connection-Fingerprint registry table
+// (`cdc_sources`). Distinct from `SourceRepo` above — that one wraps
+// the V2 source-object registry; this one is the Debezium / Kafka
+// Connect connector audit row that backs the system-connectors UI
+// dropdown.
+//
+// Both `Upsert` and `MarkDeleted` are best-effort: connector lifecycle
+// is the source of truth (Kafka Connect REST). The legacy
+// `GetByConnectorName` is dropped — zero callers in CMS.
+type SystemConnectorRepo interface {
+	Upsert(ctx context.Context, s *model.Source) error
+	List(ctx context.Context) ([]model.Source, error)
+	GetByID(ctx context.Context, id int64) (*model.Source, error)
+	MarkDeleted(ctx context.Context, connectorName string) error
+}

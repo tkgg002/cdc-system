@@ -83,7 +83,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	mappingRepo := repository.NewMappingRuleRepo(db)
 	pendingRepo := persistence.NewPendingFieldRepo(db)
 	schemaLogRepo := persistence.NewSchemaLogRepo(db)
-	sourceRepo := repository.NewSourceRepo(db)
+	sourceRepo := persistence.NewSystemConnectorRepo(db)
 	wizardRepo := persistence.NewWizardRepo(db)
 
 	// Phase 2 v2 / P2 — CQRS Q-side adapters. New ports-backed repos

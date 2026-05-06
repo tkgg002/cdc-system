@@ -13,7 +13,6 @@ import (
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
-	"cdc-cms-service/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
@@ -33,7 +32,7 @@ import (
 // live here; P3 will move them to commands + worker.
 type SystemConnectorsHandler struct {
 	client     *infrahttp.KafkaConnectClient
-	sourceRepo *repository.SourceRepo
+	sourceRepo ports.SystemConnectorRepo
 	bus        ports.CommandBus
 	logger     *zap.Logger
 	listQ      *queries.ListConnectorsHandler
@@ -51,7 +50,7 @@ type SystemConnectorsHandler struct {
 // idempotency replay.
 func NewSystemConnectorsHandler(
 	client *infrahttp.KafkaConnectClient,
-	sourceRepo *repository.SourceRepo,
+	sourceRepo ports.SystemConnectorRepo,
 	bus ports.CommandBus,
 	logger *zap.Logger,
 	listQ *queries.ListConnectorsHandler,
