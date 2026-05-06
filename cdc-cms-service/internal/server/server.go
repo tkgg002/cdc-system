@@ -204,7 +204,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, cmdBus, shadowAutomator, sourceObjectV2Sync, logger, getSyncHealthH)
 	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger, listSourceObjectsH, getSourceMappingContextH)
 	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(registryHandler, db, cmdBus, logger)
-	systemConnectorsHandler := api.NewSystemConnectorsHandler(kafkaConnectClient, sourceRepo, logger, listConnectorsH, getConnectorH, listConnectorPluginsH)
+	systemConnectorsHandler := api.NewSystemConnectorsHandler(kafkaConnectClient, sourceRepo, cmdBus, logger, listConnectorsH, getConnectorH, listConnectorPluginsH)
 	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH)
 	wizardHandler := api.NewWizardHandler(wizardRepo, logger, getWizardSessionH, getWizardProgressH, cmdBus)
 	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, masterSwap, logger, listMastersH, cmdBus)
@@ -280,6 +280,9 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSync("worker-schedule.create", commands.NewCreateWorkerScheduleHandler(db))
 	cmdBus.RegisterSync("schema-proposal.reject", commands.NewRejectSchemaProposalHandler(db))
 	cmdBus.RegisterSync("schema-proposal.approve", commands.NewApproveSchemaProposalHandler(db))
+	cmdBus.RegisterSync("system-connector.create", commands.NewCreateSystemConnectorHandler(kafkaConnectClient, sourceRepo, logger))
+	cmdBus.RegisterSync("system-connector.delete", commands.NewDeleteSystemConnectorHandler(kafkaConnectClient, sourceRepo, logger))
+	cmdBus.RegisterSync("system-connector.lifecycle", commands.NewLifecycleSystemConnectorHandler(kafkaConnectClient, logger))
 	alertsHandler := api.NewAlertsHandler(alertMgr, cmdBus, logger)
 
 	// Source Provisioning Mode (workspace feature-cdc-integration / phase

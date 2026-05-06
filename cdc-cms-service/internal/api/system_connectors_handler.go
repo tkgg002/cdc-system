@@ -2,11 +2,15 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
 	infrahttp "cdc-cms-service/internal/infra/http"
+	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
 	"cdc-cms-service/internal/repository"
@@ -28,12 +32,13 @@ import (
 // handlers in `internal/app/queries/list_connectors.go`. Writes still
 // live here; P3 will move them to commands + worker.
 type SystemConnectorsHandler struct {
-	client       *infrahttp.KafkaConnectClient
-	sourceRepo   *repository.SourceRepo
-	logger       *zap.Logger
-	listQ        *queries.ListConnectorsHandler
-	getQ         *queries.GetConnectorHandler
-	pluginsQ     *queries.ListConnectorPluginsHandler
+	client     *infrahttp.KafkaConnectClient
+	sourceRepo *repository.SourceRepo
+	bus        ports.CommandBus
+	logger     *zap.Logger
+	listQ      *queries.ListConnectorsHandler
+	getQ       *queries.GetConnectorHandler
+	pluginsQ   *queries.ListConnectorPluginsHandler
 }
 
 // NewSystemConnectorsHandler wires the proxy with the Source fingerprint
@@ -41,10 +46,13 @@ type SystemConnectorsHandler struct {
 // best-effort Warn logging when it is missing.
 //
 // The same `client` is shared with the query handlers (one connection
-// pool / timeout config across all 8 endpoints).
+// pool / timeout config across all 8 endpoints). All 6 destructive
+// operations route through the CommandBus for cdc_jobs audit +
+// idempotency replay.
 func NewSystemConnectorsHandler(
 	client *infrahttp.KafkaConnectClient,
 	sourceRepo *repository.SourceRepo,
+	bus ports.CommandBus,
 	logger *zap.Logger,
 	listQ *queries.ListConnectorsHandler,
 	getQ *queries.GetConnectorHandler,
@@ -53,6 +61,7 @@ func NewSystemConnectorsHandler(
 	return &SystemConnectorsHandler{
 		client:     client,
 		sourceRepo: sourceRepo,
+		bus:        bus,
 		logger:     logger,
 		listQ:      listQ,
 		getQ:       getQ,
@@ -111,7 +120,7 @@ func (h *SystemConnectorsHandler) Restart(c *fiber.Ctx) error {
 	if !connectorNameRE.MatchString(name) {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_connector_name"})
 	}
-	if err := h.client.Restart(c.UserContext(), name); err != nil {
+	if err := h.dispatchLifecycle(c, name, "restart", ""); err != nil {
 		return c.Status(502).JSON(fiber.Map{"error": "restart_failed", "detail": err.Error()})
 	}
 	h.logger.Info("connector restarted", zap.String("connector", name))
@@ -129,7 +138,7 @@ func (h *SystemConnectorsHandler) RestartTask(c *fiber.Ctx) error {
 	if matched, _ := regexp.MatchString(`^\d{1,4}$`, taskID); !matched {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_task_id"})
 	}
-	if err := h.client.RestartTask(c.UserContext(), name, taskID); err != nil {
+	if err := h.dispatchLifecycle(c, name, "restart-task", taskID); err != nil {
 		return c.Status(502).JSON(fiber.Map{"error": "task_restart_failed", "detail": err.Error()})
 	}
 	h.logger.Info("connector task restarted",
@@ -157,19 +166,15 @@ func (h *SystemConnectorsHandler) Create(c *fiber.Ctx) error {
 	if _, ok := req.Config["connector.class"]; !ok {
 		return c.Status(400).JSON(fiber.Map{"error": "connector.class_required"})
 	}
-	resp, err := h.client.Create(c.UserContext(), req.Name, req.Config)
-	if err != nil {
-		return c.Status(502).JSON(fiber.Map{"error": "connector_create_failed", "detail": err.Error()})
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
-	h.logger.Info("connector created", zap.String("connector", req.Name))
-
-	// Systematic Flow (F-1.1): persist Connection Fingerprint so the
-	// Registry dropdown + wizard can read it back. Best-effort — connector
-	// is already live on Kafka Connect, don't fail the request.
+	user := middleware.GetUsername(c)
+	var fingerprint *model.Source
 	if h.sourceRepo != nil {
 		fp := parseFingerprint(req.Config)
 		rawCfg, _ := json.Marshal(infrahttp.FilterSafeConfig(req.Config))
-		src := &model.Source{
+		fingerprint = &model.Source{
 			ConnectorName:         req.Name,
 			SourceType:            fp.sourceType,
 			ConnectorClass:        req.Config["connector.class"],
@@ -179,15 +184,25 @@ func (h *SystemConnectorsHandler) Create(c *fiber.Ctx) error {
 			CollectionIncludeList: fp.collectionList,
 			RawConfigSanitized:    rawCfg,
 			Status:                "created",
-			CreatedBy:             middleware.GetUsername(c),
-		}
-		if err := h.sourceRepo.Upsert(c.Context(), src); err != nil {
-			h.logger.Warn("source fingerprint persist failed",
-				zap.String("connector", req.Name), zap.Error(err))
+			CreatedBy:             user,
 		}
 	}
+	cmd := commands.CreateSystemConnectorCommand{
+		Name:        req.Name,
+		Config:      req.Config,
+		Fingerprint: fingerprint,
+		CreatedBy:   user,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		return c.Status(502).JSON(fiber.Map{"error": "connector_create_failed", "detail": err.Error()})
+	}
+	h.logger.Info("connector created", zap.String("connector", req.Name))
 
-	return c.Status(201).JSON(resp)
+	var body map[string]interface{}
+	_ = json.Unmarshal(res.ResultBody, &body)
+	return c.Status(201).JSON(body)
 }
 
 // Delete removes a connector (use with care — consumer offsets may replay).
@@ -197,20 +212,16 @@ func (h *SystemConnectorsHandler) Delete(c *fiber.Ctx) error {
 	if !connectorNameRE.MatchString(name) {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_connector_name"})
 	}
-	if err := h.client.Delete(c.UserContext(), name); err != nil {
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+	user := middleware.GetUsername(c)
+	cmd := commands.DeleteSystemConnectorCommand{Name: name, DeletedBy: user}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	if _, err := h.bus.Execute(ctx, cmd); err != nil {
 		return c.Status(502).JSON(fiber.Map{"error": "delete_failed", "detail": err.Error()})
 	}
 	h.logger.Info("connector deleted", zap.String("connector", name))
-
-	// Systematic Flow (F-1.4): soft-delete the fingerprint so audit trail
-	// survives. Best-effort.
-	if h.sourceRepo != nil {
-		if err := h.sourceRepo.MarkDeleted(c.Context(), name); err != nil {
-			h.logger.Warn("source soft-delete failed",
-				zap.String("connector", name), zap.Error(err))
-		}
-	}
-
 	return c.Status(202).JSON(fiber.Map{"status": "delete_triggered", "connector": name})
 }
 
@@ -230,12 +241,31 @@ func (h *SystemConnectorsHandler) lifecycleOp(c *fiber.Ctx, op string) error {
 	if !connectorNameRE.MatchString(name) {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_connector_name"})
 	}
-	if err := h.client.Lifecycle(c.UserContext(), name, op); err != nil {
+	if err := h.dispatchLifecycle(c, name, op, ""); err != nil {
 		return c.Status(502).JSON(fiber.Map{"error": op + "_failed", "detail": err.Error()})
 	}
 	h.logger.Info("connector lifecycle op",
 		zap.String("connector", name), zap.String("op", op))
 	return c.Status(202).JSON(fiber.Map{"status": op + "_triggered", "connector": name})
+}
+
+// dispatchLifecycle is the shared bus.Execute wrapper for restart /
+// restart-task / pause / resume. Caller validates name + taskID and
+// maps the bus error back to its endpoint-specific 502 message.
+func (h *SystemConnectorsHandler) dispatchLifecycle(c *fiber.Ctx, name, op, taskID string) error {
+	if h.bus == nil {
+		return errors.New("command bus not ready")
+	}
+	user := middleware.GetUsername(c)
+	cmd := commands.LifecycleSystemConnectorCommand{
+		Name:      name,
+		Operation: op,
+		TaskID:    taskID,
+		Actor:     user,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	_, err := h.bus.Execute(ctx, cmd)
+	return err
 }
 
 // fingerprint is the minimal set of identity fields the CMS keeps
