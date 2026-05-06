@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -139,65 +140,39 @@ func (h *SourceObjectActionsHandler) UpdateV2(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	if req.Priority != nil || req.SyncInterval != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "priority/sync_interval still require legacy registry bridge"})
 	}
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
 
-	updates := map[string]interface{}{}
-	if req.IsActive != nil {
-		updates["is_active"] = *req.IsActive
-		if *req.IsActive {
-			updates["profile_status"] = "active"
-		} else {
-			updates["profile_status"] = "paused"
-		}
+	user := middleware.GetUsername(c)
+	cmd := commands.UpdateSourceObjectV2Command{
+		ID:             id,
+		IsActive:       req.IsActive,
+		Notes:          req.Notes,
+		TimestampField: req.TimestampField,
+		UpdatedBy:      user,
 	}
-	if req.Notes != nil {
-		updates["notes"] = *req.Notes
-	}
-	if req.TimestampField != nil {
-		if !isValidTimestampField(*req.TimestampField) {
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		switch {
+		case errors.Is(err, commands.ErrSourceObjectNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "source_object_not_found"})
+		case errors.Is(err, commands.ErrSourceObjectNoFields):
+			return c.Status(400).JSON(fiber.Map{"error": "no_supported_fields_to_update"})
+		case errors.Is(err, commands.ErrSourceObjectInvalidTSField):
 			return c.Status(400).JSON(fiber.Map{"error": "invalid timestamp_field: must match [A-Za-z_][A-Za-z0-9_]{0,63}"})
-		}
-		updates["timestamp_field"] = *req.TimestampField
-	}
-	if len(updates) == 0 {
-		return c.Status(400).JSON(fiber.Map{"error": "no_supported_fields_to_update"})
-	}
-	updates["updated_at"] = gorm.Expr("NOW()")
-
-	result := h.db.WithContext(c.Context()).Table("cdc_system.source_object_registry").Where("id = ?", id).Updates(updates)
-	if result.Error != nil {
-		h.logger.Error("update v2 source object failed", zap.Int64("source_object_id", id), zap.Error(result.Error))
-		return c.Status(500).JSON(fiber.Map{"error": "update_v2_source_object_failed"})
-	}
-	if result.RowsAffected == 0 {
-		return c.Status(404).JSON(fiber.Map{"error": "source_object_not_found"})
-	}
-
-	if req.IsActive != nil {
-		shadowUpdates := map[string]interface{}{
-			"is_active":  *req.IsActive,
-			"updated_at": gorm.Expr("NOW()"),
-		}
-		if !*req.IsActive {
-			shadowUpdates["ddl_status"] = gorm.Expr("ddl_status")
-		}
-		if err := h.db.WithContext(c.Context()).
-			Table("cdc_system.shadow_binding").
-			Where("source_object_id = ?", id).
-			Updates(shadowUpdates).Error; err != nil {
-			h.logger.Error("update v2 shadow binding active flag failed", zap.Int64("source_object_id", id), zap.Error(err))
-			return c.Status(500).JSON(fiber.Map{"error": "update_v2_shadow_binding_failed"})
+		default:
+			h.logger.Error("update v2 source object failed", zap.Int64("source_object_id", id), zap.Error(err))
+			return c.Status(500).JSON(fiber.Map{"error": "update_v2_source_object_failed"})
 		}
 	}
-
-	return c.JSON(fiber.Map{
-		"message":          "source object updated in v2 metadata",
-		"source_object_id": id,
-		"updated_fields":   updates,
-	})
+	c.Type("application/json")
+	return c.Status(200).Send(res.ResultBody)
 }
 
 // BulkRegister godoc

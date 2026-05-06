@@ -140,25 +140,27 @@ func (h *WizardHandler) Patch(c *fiber.Ctx) error {
 // POST /api/v1/wizard/sessions/:id/execute
 func (h *WizardHandler) Execute(c *fiber.Ctx) error {
 	id := c.Params("id")
-	s, err := h.repo.Get(c.Context(), id)
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+
+	user := middleware.GetUsername(c)
+	cmd := commands.WizardExecuteCommand{SessionID: id, Actor: user}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+
+	res, err := h.bus.Execute(ctx, cmd)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not found"})
+		switch {
+		case errors.Is(err, commands.ErrWizardNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "not found"})
+		case errors.Is(err, commands.ErrWizardAlreadyRunning):
+			return c.Status(409).JSON(fiber.Map{"error": "already running"})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "execute: " + err.Error()})
+		}
 	}
-	if s.Status == "running" {
-		return c.Status(409).JSON(fiber.Map{"error": "already running"})
-	}
-	if err := h.repo.Update(c.Context(), id, map[string]interface{}{
-		"status":       "running",
-		"current_step": 1,
-	}); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "execute: " + err.Error()})
-	}
-	_ = h.repo.AppendProgress(c.Context(), id, map[string]interface{}{
-		"step":    1,
-		"event":   "execute_started",
-		"actor":   middleware.GetUsername(c),
-	})
-	return c.Status(202).JSON(fiber.Map{"status": "running", "session_id": id})
+	c.Type("application/json")
+	return c.Status(202).Send(res.ResultBody)
 }
 
 // Progress — GET /api/v1/wizard/sessions/:id/progress

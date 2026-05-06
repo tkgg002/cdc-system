@@ -259,12 +259,16 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	// P3.T3.4 — sync metadata commands. Each handler runs in-process via
 	// bus.Execute. Bus persists a cdc_jobs row for audit + idempotency.
 	cmdBus.RegisterSync("alert.ack", commands.NewAckAlertHandler(alertMgr))
+	cmdBus.RegisterSync("alert.silence", commands.NewSilenceAlertHandler(alertMgr))
 	cmdBus.RegisterSync("mapping.update-status", commands.NewUpdateMappingRuleHandler(db, natsClient, logger))
 	cmdBus.RegisterSync("mapping.create", commands.NewCreateMappingRuleHandler(db, logger))
 	cmdBus.RegisterSync("master.reject", commands.NewRejectMasterHandler(db, logger))
 	cmdBus.RegisterSync("master.create", commands.NewCreateMasterHandler(db, logger))
+	cmdBus.RegisterSync("master.approve", commands.NewApproveMasterHandler(db, natsClient, logger))
 	cmdBus.RegisterSync("wizard.create", commands.NewCreateWizardHandler(wizardRepo, logger))
 	cmdBus.RegisterSync("wizard.patch", commands.NewPatchWizardHandler(wizardRepo, logger))
+	cmdBus.RegisterSync("wizard.execute", commands.NewWizardExecuteHandler(wizardRepo, logger))
+	cmdBus.RegisterSync("source.update-v2", commands.NewUpdateSourceObjectV2Handler(db, logger))
 	alertsHandler := api.NewAlertsHandler(alertMgr, cmdBus, logger)
 
 	// Source Provisioning Mode (workspace feature-cdc-integration / phase

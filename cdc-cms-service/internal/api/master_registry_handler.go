@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	"cdc-cms-service/internal/app/commands"
 	"cdc-cms-service/internal/app/ports"
@@ -375,55 +374,40 @@ func (h *MasterRegistryHandler) Approve(c *fiber.Ctx) error {
 	if !masterNameRe.MatchString(name) {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_master_name"})
 	}
-	target, err := h.resolveMasterBindingByName(c, name)
-	if err != nil {
-		switch err.Error() {
-		case "ambiguous_master_name":
-			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_master_name"})
-		default:
-			if err == gorm.ErrRecordNotFound {
-				return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-			}
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-		}
-	}
 
 	var req ApproveRequest
 	_ = c.BodyParser(&req)
 	if len(strings.TrimSpace(req.Reason)) < 10 {
 		return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
 	}
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
 
 	actor := getActor(c)
-	res := h.db.WithContext(c.Context()).Exec(
-		`UPDATE cdc_system.master_binding
-		    SET schema_status = 'approved',
-		        schema_reviewed_by = ?,
-		        schema_reviewed_at = NOW(),
-		        rejection_reason = NULL,
-		        updated_at = NOW()
-		  WHERE id = ?
-		    AND schema_status IN ('pending_review','rejected','failed')`,
-		actor, target.ID,
-	)
-	if res.Error != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	cmd := commands.ApproveMasterCommand{
+		Name:      name,
+		Reason:    strings.TrimSpace(req.Reason),
+		UpdatedBy: actor,
 	}
-	if res.RowsAffected == 0 {
-		return c.Status(409).JSON(fiber.Map{"error": "not_approvable", "detail": "master not found OR already approved"})
-	}
+	ctx := messaging.WithMetadata(c.UserContext(), actor, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
 
-	payload, _ := json.Marshal(map[string]string{
-		"master_table":   name,
-		"triggered_by":   actor,
-		"correlation_id": "approve-" + name + "-" + time.Now().UTC().Format(time.RFC3339Nano),
-	})
-	if err := h.nats.Conn.Publish("cdc.cmd.master-create", payload); err != nil {
-		h.logger.Warn("master-create publish failed", zap.String("master", name), zap.Error(err))
-		return c.Status(202).JSON(fiber.Map{"status": "approved_but_dispatch_failed", "master_name": name, "dispatch_err": err.Error()})
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		switch {
+		case errors.Is(err, commands.ErrMasterNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		case errors.Is(err, commands.ErrMasterNameAmbiguous):
+			return c.Status(409).JSON(fiber.Map{"error": "ambiguous_master_name"})
+		case errors.Is(err, commands.ErrMasterNotApprovable):
+			return c.Status(409).JSON(fiber.Map{"error": "not_approvable", "detail": "master not found OR already approved"})
+		default:
+			h.logger.Error("approve master failed", zap.String("master", name), zap.Error(err))
+			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		}
 	}
-
-	return c.Status(202).JSON(fiber.Map{"status": "approved", "master_name": name, "dispatched": "cdc.cmd.master-create"})
+	c.Type("application/json")
+	return c.Status(202).Send(res.ResultBody)
 }
 
 // Reject godoc

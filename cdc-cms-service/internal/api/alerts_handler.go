@@ -164,6 +164,9 @@ func (h *AlertsHandler) Silence(c *fiber.Ctx) error {
 	if h.am == nil {
 		return c.Status(503).JSON(fiber.Map{"error": "alerts manager not ready"})
 	}
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
 	fp := c.Params("fingerprint")
 	if fp == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "fingerprint required"})
@@ -172,15 +175,18 @@ func (h *AlertsHandler) Silence(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid JSON body"})
 	}
-	if body.Until.IsZero() {
-		return c.Status(400).JSON(fiber.Map{"error": "'until' is required (RFC3339)"})
-	}
-	if body.Reason == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "'reason' is required"})
-	}
 
 	user := middleware.GetUsername(c)
-	if err := h.am.Silence(c.Context(), fp, user, body.Until, body.Reason); err != nil {
+	cmd := commands.SilenceAlertCommand{
+		Fingerprint: fp,
+		User:        user,
+		Until:       body.Until,
+		Reason:      body.Reason,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
 		h.logger.Warn("silence failed", zap.String("fingerprint", fp), zap.Error(err))
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -188,6 +194,8 @@ func (h *AlertsHandler) Silence(c *fiber.Ctx) error {
 		zap.String("fingerprint", fp),
 		zap.String("user", user),
 		zap.Time("until", body.Until),
-		zap.String("reason", body.Reason))
-	return c.JSON(fiber.Map{"ok": true})
+		zap.String("reason", body.Reason),
+		zap.String("job_id", res.JobID))
+	c.Type("application/json")
+	return c.Status(200).Send(res.ResultBody)
 }
