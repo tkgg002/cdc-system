@@ -124,6 +124,9 @@ func NewIdempotency(cfg IdempotencyConfig) fiber.Handler {
 		if route == "" {
 			route = c.Path()
 		}
+		// Phase 4 D2 — fold /api/v1 alias into legacy form so legacy +
+		// canonical clients share the idempotency cache key.
+		route = CanonicalAPIRoute(route)
 		base := fmt.Sprintf("%s:%s:%s", cfg.KeyPrefix, route, key)
 		lockKey := base + ":lock"
 		respKey := base + ":response"

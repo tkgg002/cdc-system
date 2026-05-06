@@ -290,13 +290,16 @@ func (a *AuditLogger) Middleware() fiber.Handler {
 }
 
 // actionFor resolves a route pattern to its canonical action name.
+// Phase 4 D2 — strip the /api/v1 alias before lookup so the ActionMap
+// stays single-namespace across the migration.
 func (a *AuditLogger) actionFor(method, route string) string {
-	if action, ok := a.ActionMap[route]; ok {
+	canonical := CanonicalAPIRoute(route)
+	if action, ok := a.ActionMap[canonical]; ok {
 		return action
 	}
 	// Fallback: METHOD + path, lowercased with colons stripped.
 	return strings.ToLower(method) + "_" +
-		strings.ReplaceAll(strings.ReplaceAll(route, "/", "_"), ":", "")
+		strings.ReplaceAll(strings.ReplaceAll(canonical, "/", "_"), ":", "")
 }
 
 // defaultActionMap — route patterns → canonical action names used by

@@ -191,7 +191,7 @@ func (h *ReconciliationHandler) resolveTargetTable(c *fiber.Ctx, scope reconScop
 // @Tags         reconciliation
 // @Produce      json
 // @Success      200  {object}  map[string]interface{}
-// @Router       /api/reconciliation/report [get]
+// @Router       /api/v1/reconciliation/report [get]
 //
 // LatestReport delegates the SQL to queries.ListLatestReportsHandler
 // (P2 / CQRS Q-side) and runs the enrichment loop here so the
@@ -264,7 +264,7 @@ func deriveSourceQueryMethod(tsField *string, checkType string) string {
 // @Param        page       query  int     false  "Page number"
 // @Param        page_size  query  int     false  "Page size"
 // @Success      200  {object}  map[string]interface{}
-// @Router       /api/reconciliation/report/{table} [get]
+// @Router       /api/v1/reconciliation/report/{table} [get]
 //
 // TableHistory returns reconciliation history for a specific table.
 // Delegates the SQL+pagination to queries.GetTableHistoryHandler.
@@ -294,7 +294,7 @@ func (h *ReconciliationHandler) TableHistory(c *fiber.Ctx) error {
 // @Success      202    {object}  map[string]interface{}
 // @Failure      404    {object}  map[string]interface{}
 // @Failure      409    {object}  map[string]interface{}
-// @Router       /api/reconciliation/check/{table} [post]
+// @Router       /api/v1/reconciliation/check/{table} [post]
 //
 // TriggerCheck dispatches reconciliation check via NATS
 func (h *ReconciliationHandler) TriggerCheck(c *fiber.Ctx) error {
@@ -357,7 +357,7 @@ func (h *ReconciliationHandler) TriggerCheck(c *fiber.Ctx) error {
 // @Success      202   {object}  map[string]interface{}
 // @Failure      404   {object}  map[string]interface{}
 // @Failure      409   {object}  map[string]interface{}
-// @Router       /api/reconciliation/check [post]
+// @Router       /api/v1/reconciliation/check [post]
 //
 // TriggerCheckAll dispatches Tier 1 check for all tables
 func (h *ReconciliationHandler) TriggerCheckAll(c *fiber.Ctx) error {
@@ -392,8 +392,8 @@ func (h *ReconciliationHandler) TriggerCheckAll(c *fiber.Ctx) error {
 // @Success      202    {object}  map[string]interface{}
 // @Failure      404    {object}  map[string]interface{}
 // @Failure      409    {object}  map[string]interface{}
-// @Router       /api/reconciliation/heal [post]
-// @Router       /api/reconciliation/heal/{table} [post]
+// @Router       /api/v1/reconciliation/heal [post]
+// @Router       /api/v1/reconciliation/heal/{table} [post]
 //
 // TriggerHeal dispatches heal for a specific table
 func (h *ReconciliationHandler) TriggerHeal(c *fiber.Ctx) error {
@@ -445,7 +445,7 @@ func (h *ReconciliationHandler) TriggerHeal(c *fiber.Ctx) error {
 // @Param        page          query  int     false  "Page number"
 // @Param        page_size     query  int     false  "Page size"
 // @Success      200  {object}  map[string]interface{}
-// @Router       /api/failed-sync-logs [get]
+// @Router       /api/v1/failed-sync-logs [get]
 //
 // ListFailedLogs returns failed sync logs (paginated, filterable).
 // Delegates the SQL+pagination to queries.ListFailedLogsHandler.
@@ -478,7 +478,7 @@ func (h *ReconciliationHandler) ListFailedLogs(c *fiber.Ctx) error {
 // @Param        body  body      object  false  "Optional audit reason payload"
 // @Success      202   {object}  map[string]interface{}
 // @Failure      404   {object}  map[string]interface{}
-// @Router       /api/failed-sync-logs/{id}/retry [post]
+// @Router       /api/v1/failed-sync-logs/{id}/retry [post]
 //
 // RetryFailedLog retries a single failed record
 func (h *ReconciliationHandler) RetryFailedLog(c *fiber.Ctx) error {

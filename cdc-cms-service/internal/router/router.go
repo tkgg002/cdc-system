@@ -1,6 +1,7 @@
 package router
 
 import (
+	"strings"
 	"time"
 
 	"cdc-cms-service/config"
@@ -78,8 +79,16 @@ func SetupRoutes(
 	jobHandler *api.JobHandler,
 	destructive DestructiveMiddleware,
 ) {
+	// Phase 4 D2 — backwards-compat shim for /api/v1/* unify. Stamps
+	// RFC 8594 Sunset/Deprecation headers + a successor-version Link
+	// onto responses where the request hit /api/* but NOT /api/v1/*.
+	// Mounted at app level so /api/system/health (outside apiGroup)
+	// is also covered.
+	app.Use(middleware.DeprecateLegacyAPIPath("Tue, 31 Dec 2026 23:59:59 GMT"))
+
 	app.Get("/health", healthHandler.Health)
 	app.Get("/api/system/health", systemHealthHandler.Health)
+	app.Get("/api/v1/system/health", systemHealthHandler.Health)
 	app.Get("/ready", healthHandler.Ready)
 
 	// API Group
@@ -126,15 +135,45 @@ func SetupRoutes(
 	// Register destructive routes at the per-route level (not via
 	// Group-with-Use) so they do NOT leak middleware onto other
 	// subsequent handlers.
+	//
+	// Phase 4 D2 — dual-mount: when the path is not already /v1-prefixed
+	// the helper also exposes the /v1 alias so clients can migrate to
+	// the canonical /api/v1/* surface incrementally. Audit + Idempotency
+	// middlewares fold the alias back via CanonicalAPIRoute.
 	registerDestructive := func(path string, h fiber.Handler) {
 		handlers := append([]fiber.Handler{}, destructiveChain...)
 		handlers = append(handlers, h)
 		apiGroup.Post(path, handlers...)
+		if !strings.HasPrefix(path, "/v1") {
+			apiGroup.Post("/v1"+path, handlers...)
+		}
 	}
 	registerDestructiveRestart := func(path string, h fiber.Handler) {
 		handlers := append([]fiber.Handler{}, destructiveRestartChain...)
 		handlers = append(handlers, h)
 		apiGroup.Post(path, handlers...)
+		if !strings.HasPrefix(path, "/v1") {
+			apiGroup.Post("/v1"+path, handlers...)
+		}
+	}
+	// Phase 4 D2 — dual-mount helpers for the shared / admin Groups.
+	dualGet := func(g fiber.Router, path string, h fiber.Handler) {
+		g.Get(path, h)
+		if !strings.HasPrefix(path, "/v1") {
+			g.Get("/v1"+path, h)
+		}
+	}
+	dualPost := func(g fiber.Router, path string, h fiber.Handler) {
+		g.Post(path, h)
+		if !strings.HasPrefix(path, "/v1") {
+			g.Post("/v1"+path, h)
+		}
+	}
+	dualPatch := func(g fiber.Router, path string, h fiber.Handler) {
+		g.Patch(path, h)
+		if !strings.HasPrefix(path, "/v1") {
+			g.Patch("/v1"+path, h)
+		}
 	}
 
 	registerDestructive("/reconciliation/check", reconHandler.TriggerCheckAll)
@@ -256,13 +295,15 @@ func SetupRoutes(
 	//   POST /api/kafka/reset-offset    → kafka-side offset reset
 
 	// --- Shared routes (admin + operator) ---
+	// Phase 4 D2 — dualGet/dualPost/dualPatch register both legacy and
+	// /v1 alias for non-/v1 paths; /v1-prefixed paths register once.
 	shared := apiGroup.Group("", middleware.RequireRole("admin", "operator"))
-	shared.Get("/schema-changes/pending", schemaHandler.GetPending)
-	shared.Get("/schema-changes/history", schemaHandler.GetHistory)
-	shared.Get("/sync/health", registryHandler.SyncHealth)
-	shared.Get("/activity-log", activityLogHandler.List)
-	shared.Get("/activity-log/stats", activityLogHandler.Stats)
-	shared.Get("/worker-schedule", scheduleHandler.List)
+	dualGet(shared, "/schema-changes/pending", schemaHandler.GetPending)
+	dualGet(shared, "/schema-changes/history", schemaHandler.GetHistory)
+	dualGet(shared, "/sync/health", registryHandler.SyncHealth)
+	dualGet(shared, "/activity-log", activityLogHandler.List)
+	dualGet(shared, "/activity-log/stats", activityLogHandler.Stats)
+	dualGet(shared, "/worker-schedule", scheduleHandler.List)
 	shared.Get("/v1/source-objects/stats", sourceObjectsHandler.GetStats)
 	shared.Get("/v1/source-objects", sourceObjectsHandler.List)
 	shared.Get("/v1/source-objects/registry/:registry_id", sourceObjectsHandler.GetMappingContext)
@@ -271,9 +312,9 @@ func SetupRoutes(
 	shared.Get("/v1/source-objects/:id/transform-status", sourceObjectActionsHandler.TransformStatusV2)
 	shared.Get("/v1/source-objects/registry/:id/dispatch-status", sourceObjectActionsHandler.DispatchStatus)
 	shared.Get("/v1/source-objects/registry/:id/transform-status", sourceObjectActionsHandler.TransformStatus)
-	shared.Get("/mapping-rules", mappingHandler.List)
-	shared.Get("/introspection/scan/:table", introspectionHandler.Scan)
-	shared.Get("/introspection/scan-raw/:table", introspectionHandler.ScanRawData)
+	dualGet(shared, "/mapping-rules", mappingHandler.List)
+	dualGet(shared, "/introspection/scan/:table", introspectionHandler.Scan)
+	dualGet(shared, "/introspection/scan-raw/:table", introspectionHandler.ScanRawData)
 	shared.Get("/v1/system/connectors", systemConnectorsHandler.List)
 	shared.Get("/v1/system/connectors/:name", systemConnectorsHandler.Get)
 	shared.Get("/v1/system/connector-plugins", systemConnectorsHandler.Plugins)
@@ -290,13 +331,13 @@ func SetupRoutes(
 	// Phase 2 v2 / P3.T3.10 — Job tracker. CommandBus writes here on
 	// Dispatch; worker JobMonitor closes the row on cdc.evt.X.completed.
 	if jobHandler != nil {
-		shared.Get("/jobs/:id", jobHandler.Get)
+		dualGet(shared, "/jobs/:id", jobHandler.Get)
 	}
 
 	// --- Admin only routes ---
 	admin := apiGroup.Group("", middleware.RequireRole("admin"))
-	admin.Post("/schema-changes/:id/approve", schemaHandler.Approve)
-	admin.Post("/schema-changes/:id/reject", schemaHandler.Reject)
+	dualPost(admin, "/schema-changes/:id/approve", schemaHandler.Approve)
+	dualPost(admin, "/schema-changes/:id/reject", schemaHandler.Reject)
 	admin.Post("/v1/source-objects/register", sourceObjectActionsHandler.Register)
 	admin.Patch("/v1/source-objects/:id", sourceObjectActionsHandler.UpdateV2)
 	admin.Post("/v1/source-objects/:id/create-default-columns", sourceObjectActionsHandler.CreateDefaultColumnsV2)
@@ -310,13 +351,13 @@ func SetupRoutes(
 	admin.Post("/v1/source-objects/registry/:id/create-default-columns", sourceObjectActionsHandler.CreateDefaultColumns)
 	admin.Post("/v1/source-objects/:id/detect-timestamp-field", sourceObjectActionsHandler.DetectTimestampFieldV2)
 	admin.Post("/v1/source-objects/registry/:id/detect-timestamp-field", sourceObjectActionsHandler.DetectTimestampField)
-	admin.Post("/mapping-rules", mappingHandler.Create)
-	admin.Patch("/mapping-rules/batch", mappingHandler.BatchUpdate)
-	admin.Patch("/mapping-rules/:id", mappingHandler.UpdateStatus)
-	admin.Post("/mapping-rules/reload", mappingHandler.Reload)
-	admin.Post("/mapping-rules/:id/backfill", mappingHandler.Backfill)
-	admin.Patch("/worker-schedule/:id", scheduleHandler.Update)
-	admin.Post("/worker-schedule", scheduleHandler.Create)
+	dualPost(admin, "/mapping-rules", mappingHandler.Create)
+	dualPatch(admin, "/mapping-rules/batch", mappingHandler.BatchUpdate)
+	dualPatch(admin, "/mapping-rules/:id", mappingHandler.UpdateStatus)
+	dualPost(admin, "/mapping-rules/reload", mappingHandler.Reload)
+	dualPost(admin, "/mapping-rules/:id/backfill", mappingHandler.Backfill)
+	dualPatch(admin, "/worker-schedule/:id", scheduleHandler.Update)
+	dualPost(admin, "/worker-schedule", scheduleHandler.Create)
 
 	// Systematic Flow F-3 — Wizard draft endpoints (non-destructive tier).
 	// See block above for the tier rationale.
@@ -324,10 +365,10 @@ func SetupRoutes(
 	admin.Patch("/v1/wizard/sessions/:id", wizardHandler.Patch)
 
 	// Reconciliation + Data Integrity (read-only)
-	shared.Get("/reconciliation/report", reconHandler.LatestReport)
-	shared.Get("/reconciliation/report/:table", reconHandler.TableHistory)
-	shared.Get("/failed-sync-logs", reconHandler.ListFailedLogs)
-	shared.Get("/recon/backfill-source-ts/status", reconHandler.BackfillSourceTsStatus)
+	dualGet(shared, "/reconciliation/report", reconHandler.LatestReport)
+	dualGet(shared, "/reconciliation/report/:table", reconHandler.TableHistory)
+	dualGet(shared, "/failed-sync-logs", reconHandler.ListFailedLogs)
+	dualGet(shared, "/recon/backfill-source-ts/status", reconHandler.BackfillSourceTsStatus)
 
 	// ------------------------------------------------------------
 	// Phase 6 — Alert state machine.
@@ -338,9 +379,9 @@ func SetupRoutes(
 	// inherit auth+idempotency+audit for free when Phase 4 is live.
 	// ------------------------------------------------------------
 	if alertsHandler != nil {
-		shared.Get("/alerts/active", alertsHandler.Active)
-		shared.Get("/alerts/silenced", alertsHandler.Silenced)
-		shared.Get("/alerts/history", alertsHandler.History)
+		dualGet(shared, "/alerts/active", alertsHandler.Active)
+		dualGet(shared, "/alerts/silenced", alertsHandler.Silenced)
+		dualGet(shared, "/alerts/history", alertsHandler.History)
 	}
 
 }
