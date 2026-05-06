@@ -8,7 +8,6 @@ import (
 	"go.uber.org/zap"
 
 	"cdc-cms-service/internal/app/ports"
-	"cdc-cms-service/internal/repository"
 )
 
 // PatchWizardCommand updates allow-listed fields on a draft wizard
@@ -51,11 +50,11 @@ func (c PatchWizardCommand) Validate() error {
 }
 
 type PatchWizardHandler struct {
-	repo   *repository.WizardRepo
+	repo   ports.WizardRepo
 	logger *zap.Logger
 }
 
-func NewPatchWizardHandler(repo *repository.WizardRepo, logger *zap.Logger) *PatchWizardHandler {
+func NewPatchWizardHandler(repo ports.WizardRepo, logger *zap.Logger) *PatchWizardHandler {
 	return &PatchWizardHandler{repo: repo, logger: logger}
 }
 

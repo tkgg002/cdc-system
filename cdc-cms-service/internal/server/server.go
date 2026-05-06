@@ -84,7 +84,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	pendingRepo := persistence.NewPendingFieldRepo(db)
 	schemaLogRepo := persistence.NewSchemaLogRepo(db)
 	sourceRepo := repository.NewSourceRepo(db)
-	wizardRepo := repository.NewWizardRepo(db)
+	wizardRepo := persistence.NewWizardRepo(db)
 
 	// Phase 2 v2 / P2 — CQRS Q-side adapters. New ports-backed repos
 	// live alongside the legacy `internal/repository/` ones; each

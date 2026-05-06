@@ -9,7 +9,6 @@ import (
 	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
@@ -20,7 +19,7 @@ import (
 // Get/Progress are reads — these now delegate to query handlers in
 // `internal/app/queries/get_wizard_session.go`.
 type WizardHandler struct {
-	repo      *repository.WizardRepo
+	repo      ports.WizardRepo
 	logger    *zap.Logger
 	getQ      *queries.GetWizardSessionHandler
 	progressQ *queries.GetWizardProgressHandler
@@ -28,7 +27,7 @@ type WizardHandler struct {
 }
 
 func NewWizardHandler(
-	repo *repository.WizardRepo,
+	repo ports.WizardRepo,
 	logger *zap.Logger,
 	getQ *queries.GetWizardSessionHandler,
 	progressQ *queries.GetWizardProgressHandler,

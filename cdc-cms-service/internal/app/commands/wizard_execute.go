@@ -8,7 +8,6 @@ import (
 	"go.uber.org/zap"
 
 	"cdc-cms-service/internal/app/ports"
-	"cdc-cms-service/internal/repository"
 )
 
 // WizardExecuteCommand flips a draft session to running and stamps the
@@ -34,11 +33,11 @@ func (c WizardExecuteCommand) Validate() error {
 }
 
 type WizardExecuteHandler struct {
-	repo   *repository.WizardRepo
+	repo   ports.WizardRepo
 	logger *zap.Logger
 }
 
-func NewWizardExecuteHandler(repo *repository.WizardRepo, logger *zap.Logger) *WizardExecuteHandler {
+func NewWizardExecuteHandler(repo ports.WizardRepo, logger *zap.Logger) *WizardExecuteHandler {
 	return &WizardExecuteHandler{repo: repo, logger: logger}
 }
 

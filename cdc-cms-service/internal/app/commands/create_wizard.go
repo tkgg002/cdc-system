@@ -11,7 +11,6 @@ import (
 
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/model"
-	"cdc-cms-service/internal/repository"
 )
 
 // CreateWizardCommand starts a new wizard draft session. Body may be
@@ -29,11 +28,11 @@ func (CreateWizardCommand) Type() string { return "wizard.create" }
 func (c CreateWizardCommand) Validate() error { return nil }
 
 type CreateWizardHandler struct {
-	repo   *repository.WizardRepo
+	repo   ports.WizardRepo
 	logger *zap.Logger
 }
 
-func NewCreateWizardHandler(repo *repository.WizardRepo, logger *zap.Logger) *CreateWizardHandler {
+func NewCreateWizardHandler(repo ports.WizardRepo, logger *zap.Logger) *CreateWizardHandler {
 	return &CreateWizardHandler{repo: repo, logger: logger}
 }
 

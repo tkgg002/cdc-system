@@ -86,3 +86,16 @@ type PendingFieldRepo interface {
 	GetByStatus(ctx context.Context, status string, sourceDB *string, tableName *string, page, pageSize int) ([]model.PendingField, int64, error)
 	Update(ctx context.Context, pf *model.PendingField) error
 }
+
+// WizardRepo wraps `cdc_system.cdc_wizard_sessions`. Backs the Source
+// → Master automation flow (Create / Patch / Execute commands +
+// session/progress queries). Update accepts an allow-listed map so the
+// handler stays in control of which user-supplied fields persist.
+// AppendProgress is JSONB-array-push via raw SQL (atomic, idempotent
+// per-call) — extracted so commands don't carry persistence concerns.
+type WizardRepo interface {
+	Create(ctx context.Context, s *model.WizardSession) error
+	Get(ctx context.Context, id string) (*model.WizardSession, error)
+	Update(ctx context.Context, id string, updates map[string]interface{}) error
+	AppendProgress(ctx context.Context, id string, entry map[string]interface{}) error
+}
