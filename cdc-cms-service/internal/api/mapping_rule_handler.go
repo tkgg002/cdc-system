@@ -13,7 +13,6 @@ import (
 	"cdc-cms-service/internal/domain/mapping"
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"github.com/gofiber/fiber/v2"
@@ -21,18 +20,17 @@ import (
 )
 
 type MappingRuleHandler struct {
-	registryRepo *repository.RegistryRepo
-	natsClient   *natsconn.NatsClient
-	bus          ports.CommandBus
-	listQuery    *queries.ListMappingRulesHandler
-	db           *gorm.DB
+	natsClient *natsconn.NatsClient
+	bus        ports.CommandBus
+	listQuery  *queries.ListMappingRulesHandler
+	db         *gorm.DB
 }
 
 // NewMappingRuleHandler — Phase 2 v2 / P3: bus drives async dispatch
 // (cdc.cmd.backfill / cdc.cmd.alter-column) via the CommandBus port.
 // listQuery is the CQRS Q-side adapter for GET /api/mapping-rules.
-func NewMappingRuleHandler(registryRepo *repository.RegistryRepo, nats *natsconn.NatsClient, bus ports.CommandBus, listQuery *queries.ListMappingRulesHandler, db ...*gorm.DB) *MappingRuleHandler {
-	h := &MappingRuleHandler{registryRepo: registryRepo, natsClient: nats, bus: bus, listQuery: listQuery}
+func NewMappingRuleHandler(nats *natsconn.NatsClient, bus ports.CommandBus, listQuery *queries.ListMappingRulesHandler, db ...*gorm.DB) *MappingRuleHandler {
+	h := &MappingRuleHandler{natsClient: nats, bus: bus, listQuery: listQuery}
 	if len(db) > 0 {
 		h.db = db[0]
 	}

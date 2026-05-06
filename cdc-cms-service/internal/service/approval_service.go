@@ -7,7 +7,6 @@ import (
 
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/model"
-	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"go.uber.org/zap"
@@ -18,7 +17,6 @@ type ApprovalService struct {
 	db            *gorm.DB
 	pendingRepo   ports.PendingFieldRepo
 	schemaLogRepo ports.SchemaLogRepo
-	registryRepo  *repository.RegistryRepo
 	natsClient    *natsconn.NatsClient
 	logger        *zap.Logger
 }
@@ -27,14 +25,13 @@ func NewApprovalService(
 	db *gorm.DB,
 	pendingRepo ports.PendingFieldRepo,
 	schemaLogRepo ports.SchemaLogRepo,
-	registryRepo *repository.RegistryRepo,
 	nats *natsconn.NatsClient,
 	logger *zap.Logger,
 ) *ApprovalService {
 	return &ApprovalService{
 		db: db, pendingRepo: pendingRepo,
-		schemaLogRepo: schemaLogRepo, registryRepo: registryRepo,
-		natsClient: nats, logger: logger,
+		schemaLogRepo: schemaLogRepo,
+		natsClient:    nats, logger: logger,
 	}
 }
 
@@ -123,7 +120,6 @@ func (s *ApprovalService) Approve(ctx context.Context, id uint, req ApproveReque
 
 	// Context propagation: gửi user_id + metadata cho Worker audit log
 	s.natsClient.PublishReload(pf.TblName, username, "approve", pf.FieldName)
-	go s.triggerAirbyteRefresh(pf.TblName)
 
 	return pf, nil
 }
@@ -147,13 +143,6 @@ func (s *ApprovalService) Reject(ctx context.Context, id uint, req RejectRequest
 		return nil, err
 	}
 	return pf, nil
-}
-
-func (s *ApprovalService) triggerAirbyteRefresh(tableName string) {
-	ctx := context.Background()
-	// schema is refreshed via signal (cdc.cmd.debezium-signal) or on connector
-	// restart — see Command Center UI.
-	_, _ = s.registryRepo.GetByTargetTable(ctx, tableName)
 }
 
 func strPtr(s string) *string { return &s }

@@ -115,3 +115,35 @@ type SystemConnectorRepo interface {
 	GetByID(ctx context.Context, id int64) (*model.Source, error)
 	MarkDeleted(ctx context.Context, connectorName string) error
 }
+
+// RegistryFilter is the query filter for `TableRegistry` listings.
+type RegistryFilter struct {
+	SourceDB      *string
+	SyncEngine    *string
+	Priority      *string
+	IsActive      *bool
+	DestinationID *string
+	Page          int
+	PageSize      int
+}
+
+// RegistryStats is the aggregate breakdown for `TableRegistry` rows.
+type RegistryStats struct {
+	Total         int64          `json:"total"`
+	BySourceDB    map[string]int `json:"by_source_db"`
+	BySyncEngine  map[string]int `json:"by_sync_engine"`
+	ByPriority    map[string]int `json:"by_priority"`
+	TablesCreated int64          `json:"tables_created"`
+}
+
+// RegistryRepo wraps `cdc_system.table_registry` — read-only surface
+// for the registry handler (V1 compat delegate). Audit at đợt G of
+// Task #19 confirmed only 3 methods active at CMS layer; legacy methods
+// (Create / Update / BulkCreate / GetAllActive / GetBySourceTable /
+// UpdateActiveStatusByTable / CountActiveByConnectionID) all dropped —
+// zero callers.
+type RegistryRepo interface {
+	GetByID(ctx context.Context, id uint) (*model.TableRegistry, error)
+	GetAll(ctx context.Context, filter RegistryFilter) ([]model.TableRegistry, int64, error)
+	GetStats(ctx context.Context) (*RegistryStats, error)
+}
