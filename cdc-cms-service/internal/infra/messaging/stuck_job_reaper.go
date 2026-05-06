@@ -6,7 +6,7 @@
 // bounded to 30s by the goroutine ctx). The map below tunes per type;
 // unknown types fall back to defaultTO. Tune via NewStuckJobReaper —
 // no schema change needed.
-package service
+package messaging
 
 import (
 	"context"

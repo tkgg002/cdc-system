@@ -43,7 +43,7 @@ type Server struct {
 	alertMgr            *service.AlertManager
 	alertResolverCancel context.CancelFunc
 	// Phase 2 v2 / P3.T3.12 — stuck-job reaper (per-type timeout).
-	stuckJobReaper       *service.StuckJobReaper
+	stuckJobReaper       *messaging.StuckJobReaper
 	stuckJobReaperCancel context.CancelFunc
 }
 
@@ -202,7 +202,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	masterSwap := service.NewMasterSwap(db, jobRepo, logger)
 	// Phase 2 T13 — single owner of cdc_activity_log writes/reads. Shared
 	// across registry, source-object actions, and reconciliation handlers.
-	activityLogger := service.NewActivityLogger(db, logger)
+	activityLogger := persistence.NewActivityLogger(db, logger)
 
 	// Handlers
 	healthHandler := api.NewHealthHandler(db)
@@ -227,7 +227,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	// Builds a Prometheus client (path A + fallback) and a Collector that
 	// writes a cached snapshot to Redis every 15s. The handler just reads
 	// that cache, which keeps p99 under 50ms even during a cascading outage.
-	promClient, err := service.NewPromClient(service.PromClientConfig{
+	promClient, err := infrahttp.NewPromClient(infrahttp.PromClientConfig{
 		PrometheusURL: cfg.System.PrometheusURL,
 		WorkerURL:     cfg.System.WorkerURL,
 	}, logger)
@@ -317,7 +317,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	// Routes
 	router.SetupRoutes(app, cfg, healthHandler, schemaHandler, registryHandler, sourceObjectsHandler, sourceObjectActionsHandler, systemConnectorsHandler, sourcesHandler, wizardHandler, masterRegistryHandler, schemaProposalHandler, scheduleHandler2, mappingPreviewHandler, mappingHandler, introspectionHandler, activityLogHandler, scheduleHandler, reconHandler, systemHealthHandler, alertsHandler, provisioningHandler, jobHandler, destructiveMW)
 
-	stuckJobReaper := service.NewStuckJobReaper(db, logger, 30*time.Second, nil)
+	stuckJobReaper := messaging.NewStuckJobReaper(db, logger, 30*time.Second, nil)
 
 	return &Server{
 		cfg: cfg, logger: logger, db: db,

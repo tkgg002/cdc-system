@@ -7,7 +7,7 @@
 // FE filters depend on (`triggered_by` defaulting, error pointer, JSON
 // details). The two nil-receiver tests guard the LogAsync hot path
 // from panicking when a wiring oversight hands in a nil logger.
-package service
+package persistence
 
 import (
 	"context"

@@ -2,7 +2,7 @@
 // + constructor defaults. The actual UPDATE sweep needs a Postgres
 // container to verify the `interval '1 second' * (CASE ... END)`
 // expression; that's deferred to deploy-time E2E.
-package service
+package messaging
 
 import (
 	"testing"

@@ -1,6 +1,6 @@
 // prom_client_test.go — proves the semantic correctness of histogram-based
 // percentile vs. the silent bug of averaging batches in cdc_activity_log.
-package service
+package http
 
 import (
 	"context"

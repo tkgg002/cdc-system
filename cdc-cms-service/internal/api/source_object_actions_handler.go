@@ -11,8 +11,8 @@ import (
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/service"
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -26,14 +26,14 @@ import (
 type SourceObjectActionsHandler struct {
 	bridgeReader   queries.BridgeStatusReader
 	bus            ports.CommandBus
-	activityLogger *service.ActivityLogger
+	activityLogger *persistence.ActivityLogger
 	logger         *zap.Logger
 }
 
 func NewSourceObjectActionsHandler(
 	bridgeReader queries.BridgeStatusReader,
 	bus ports.CommandBus,
-	activityLogger *service.ActivityLogger,
+	activityLogger *persistence.ActivityLogger,
 	logger *zap.Logger,
 ) *SourceObjectActionsHandler {
 	return &SourceObjectActionsHandler{
@@ -173,13 +173,13 @@ func (h *SourceObjectActionsHandler) CreateDefaultColumnsV2(c *fiber.Ctx) error 
 		PrimaryKeyType:  scope.PrimaryKeyType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.activityLogger.LogAsync(service.ActivityEntry{
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
 			Operation: "create-default-columns", TargetTable: scope.TargetTable, Status: "error", ErrorMsg: derr.Error(),
 		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + derr.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "create-default-columns", TargetTable: scope.TargetTable, Status: "success",
 		Details: map[string]any{
 			"user":             middleware.GetUsername(c),
@@ -240,13 +240,13 @@ func (h *SourceObjectActionsHandler) StandardizeV2(c *fiber.Ctx) error {
 		ShadowSchema:   scope.ShadowSchema,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.activityLogger.LogAsync(service.ActivityEntry{
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
 			Operation: "standardize", TargetTable: scope.TargetTable, Status: "error", ErrorMsg: derr.Error(),
 		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch standardize command: " + derr.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "standardize", TargetTable: scope.TargetTable, Status: "success",
 		Details: map[string]any{
 			"user":             middleware.GetUsername(c),
@@ -305,13 +305,13 @@ func (h *SourceObjectActionsHandler) ScanFieldsV2(c *fiber.Ctx) error {
 		SourceType:     scope.SourceType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.activityLogger.LogAsync(service.ActivityEntry{
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
 			Operation: "scan-fields", TargetTable: scope.TargetTable, Status: "error", ErrorMsg: derr.Error(),
 		})
 		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "scan-fields", TargetTable: scope.TargetTable, Status: "accepted",
 		Details: map[string]any{
 			"user":             middleware.GetUsername(c),
@@ -436,13 +436,13 @@ func (h *SourceObjectActionsHandler) DetectTimestampFieldV2(c *fiber.Ctx) error 
 		SourceType:     scope.SourceType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.activityLogger.LogAsync(service.ActivityEntry{
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
 			Operation: "detect-timestamp-field", TargetTable: scope.TargetTable, Status: "error", ErrorMsg: derr.Error(),
 		})
 		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "detect-timestamp-field", TargetTable: scope.TargetTable, Status: "accepted",
 		Details: map[string]any{
 			"user":             middleware.GetUsername(c),

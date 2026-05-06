@@ -1,4 +1,4 @@
-// Package service — prom_client.go
+// Package http — prom_client.go
 //
 // Purpose: Wrap Prometheus HTTP API + a fallback that scrapes the Worker
 // `/metrics` endpoint and computes percentiles in-process from histogram
@@ -14,7 +14,7 @@
 //     the cumulative histogram buckets. Source label = "fallback_worker_metrics".
 //   - If both fail, return source "unknown" with a sentinel NaN value so the
 //     caller can decide per-section status (kept non-breaking for the API).
-package service
+package http
 
 import (
 	"context"

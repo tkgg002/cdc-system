@@ -21,7 +21,7 @@
 // The async path uses context.Background() so an HTTP request that
 // returns 200 doesn't cancel the audit write while it's mid-flight. The
 // caller is responsible for not handing in mutable state that races.
-package service
+package persistence
 
 import (
 	"context"

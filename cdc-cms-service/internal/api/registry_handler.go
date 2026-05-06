@@ -11,6 +11,7 @@ import (
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
 	"cdc-cms-service/internal/repository"
@@ -30,7 +31,7 @@ type RegistryHandler struct {
 	bus            ports.CommandBus
 	automator      *service.ShadowAutomator
 	v2sync         *service.SourceObjectV2SyncService
-	activityLogger *service.ActivityLogger
+	activityLogger *persistence.ActivityLogger
 	logger         *zap.Logger
 	syncHealthQ    *queries.GetSyncHealthHandler
 	bridgeReader   queries.BridgeStatusReader
@@ -44,7 +45,7 @@ func NewRegistryHandler(
 	bus ports.CommandBus,
 	automator *service.ShadowAutomator,
 	v2sync *service.SourceObjectV2SyncService,
-	activityLogger *service.ActivityLogger,
+	activityLogger *persistence.ActivityLogger,
 	logger *zap.Logger,
 	syncHealthQ *queries.GetSyncHealthHandler,
 	bridgeReader queries.BridgeStatusReader,
@@ -367,13 +368,13 @@ func (h *RegistryHandler) Standardize(c *fiber.Ctx) error {
 		TargetTable: entry.TargetTable,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.activityLogger.LogAsync(service.ActivityEntry{
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
 			Operation: "standardize", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
 		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch standardize command: " + derr.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "standardize", TargetTable: entry.TargetTable, Status: "success",
 		Details: map[string]any{"user": user},
 	})
@@ -413,13 +414,13 @@ func (h *RegistryHandler) ScanFields(c *fiber.Ctx) error {
 		TargetTable: entry.TargetTable,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.activityLogger.LogAsync(service.ActivityEntry{
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
 			Operation: "scan-fields", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
 		})
 		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "scan-fields", TargetTable: entry.TargetTable, Status: "accepted",
 		Details: map[string]any{"user": user, "sync_engine": entry.SyncEngine},
 	})
@@ -466,13 +467,13 @@ func (h *RegistryHandler) Transform(c *fiber.Ctx) error {
 	}
 
 	if err := h.natsClient.Conn.Publish("cdc.cmd.batch-transform", []byte(entry.TargetTable)); err != nil {
-		h.activityLogger.LogAsync(service.ActivityEntry{
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
 			Operation: "transform", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: err.Error(),
 		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch transform command: " + err.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "transform", TargetTable: entry.TargetTable, Status: "success",
 		Details: map[string]any{"user": middleware.GetUsername(c)},
 	})
@@ -534,13 +535,13 @@ func (h *RegistryHandler) CreateDefaultColumns(c *fiber.Ctx) error {
 		PrimaryKeyType:  entry.PrimaryKeyType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.activityLogger.LogAsync(service.ActivityEntry{
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
 			Operation: "create-default-columns", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
 		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + derr.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "create-default-columns", TargetTable: entry.TargetTable, Status: "success",
 		Details: map[string]any{
 			"pk_field": entry.PrimaryKeyField,
@@ -574,7 +575,7 @@ func (h *RegistryHandler) DispatchStatus(c *fiber.Ctx) error {
 	op := subject
 	op = strings.TrimPrefix(op, "cdc.cmd.")
 
-	filter := service.ActivityFilter{TargetTable: entry.TargetTable, Operation: op, Limit: 50}
+	filter := persistence.ActivityFilter{TargetTable: entry.TargetTable, Operation: op, Limit: 50}
 	if sinceStr != "" {
 		if ts, err := time.Parse(time.RFC3339, sinceStr); err == nil {
 			filter.Since = &ts
@@ -629,13 +630,13 @@ func (h *RegistryHandler) DetectTimestampField(c *fiber.Ctx) error {
 		SourceType:  entry.SourceType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.activityLogger.LogAsync(service.ActivityEntry{
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
 			Operation: "detect-timestamp-field", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
 		})
 		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "detect-timestamp-field", TargetTable: entry.TargetTable, Status: "accepted",
 		Details: map[string]any{"user": user, "source_table": entry.SourceTable},
 	})

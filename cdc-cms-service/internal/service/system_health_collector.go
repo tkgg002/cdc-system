@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	infrahttp "cdc-cms-service/internal/infra/http"
 	"cdc-cms-service/internal/service/health/probes"
 	"cdc-cms-service/pkgs/rediscache"
 
@@ -56,7 +57,7 @@ type Snapshot struct {
 	Infrastructure  map[string]any         `json:"infrastructure"`
 	CDCPipeline     map[string]any         `json:"cdc_pipeline"`
 	Reconciliation  []map[string]any       `json:"reconciliation"`
-	Latency         LatencyResult          `json:"latency"`
+	Latency         infrahttp.LatencyResult `json:"latency"`
 	FailedSync      map[string]any         `json:"failed_sync"`
 	Alerts          []map[string]any       `json:"alerts"`
 	RecentEvents    []map[string]any       `json:"recent_events"`
@@ -91,7 +92,7 @@ type Collector struct {
 	cfg        CollectorConfig
 	db         *gorm.DB
 	redis      *rediscache.RedisCache
-	prom       *PromClient
+	prom       *infrahttp.PromClient
 	httpClient *http.Client
 	logger     *zap.Logger
 
@@ -106,7 +107,7 @@ func NewCollector(
 	cfg CollectorConfig,
 	db *gorm.DB,
 	redis *rediscache.RedisCache,
-	prom *PromClient,
+	prom *infrahttp.PromClient,
 	logger *zap.Logger,
 ) *Collector {
 	if cfg.Interval <= 0 {

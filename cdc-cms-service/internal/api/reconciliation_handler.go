@@ -10,8 +10,8 @@ import (
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"github.com/gofiber/fiber/v2"
@@ -84,7 +84,7 @@ type ReconciliationHandler struct {
 	listLatestQ    *queries.ListLatestReportsHandler
 	getHistoryQ    *queries.GetTableHistoryHandler
 	listFailedQ    *queries.ListFailedLogsHandler
-	activityLogger *service.ActivityLogger
+	activityLogger *persistence.ActivityLogger
 }
 
 func NewReconciliationHandler(
@@ -94,7 +94,7 @@ func NewReconciliationHandler(
 	listLatestQ *queries.ListLatestReportsHandler,
 	getHistoryQ *queries.GetTableHistoryHandler,
 	listFailedQ *queries.ListFailedLogsHandler,
-	activityLogger *service.ActivityLogger,
+	activityLogger *persistence.ActivityLogger,
 ) *ReconciliationHandler {
 	return &ReconciliationHandler{
 		reader:         reader,
@@ -293,7 +293,7 @@ func (h *ReconciliationHandler) TriggerCheck(c *fiber.Ctx) error {
 	if raw, err := json.Marshal(cmd); err == nil {
 		_ = json.Unmarshal(raw, &payload)
 	}
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "recon-check", TargetTable: table, Status: "success", Details: payload,
 	})
 
@@ -380,7 +380,7 @@ func (h *ReconciliationHandler) TriggerHeal(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
 	}
 
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "recon-heal-trigger", TargetTable: table, Status: "success",
 	})
 
@@ -556,7 +556,7 @@ func (h *ReconciliationHandler) TriggerBackfillSourceTs(c *fiber.Ctx) error {
 	if raw, err := json.Marshal(cmd); err == nil {
 		_ = json.Unmarshal(raw, &details)
 	}
-	h.activityLogger.LogAsync(service.ActivityEntry{
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
 		Operation: "recon-backfill-source-ts", TargetTable: body.Table, Status: "dispatched", Details: details,
 	})
 
