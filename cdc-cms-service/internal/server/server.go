@@ -80,7 +80,6 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 
 	// Repositories
 	registryRepo := repository.NewRegistryRepo(db)
-	mappingRepo := repository.NewMappingRuleRepo(db)
 	pendingRepo := persistence.NewPendingFieldRepo(db)
 	schemaLogRepo := persistence.NewSchemaLogRepo(db)
 	sourceRepo := persistence.NewSystemConnectorRepo(db)
@@ -196,7 +195,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSubject("master.create", "cdc.cmd.master-create")
 
 	// Services
-	approvalSvc := service.NewApprovalService(db, pendingRepo, mappingRepo, schemaLogRepo, registryRepo, natsClient, logger)
+	approvalSvc := service.NewApprovalService(db, pendingRepo, schemaLogRepo, registryRepo, natsClient, logger)
 	shadowAutomator := service.NewShadowAutomator(db, logger)
 	sourceObjectV2Sync := service.NewSourceObjectV2SyncService(db, logger)
 	masterSwap := service.NewMasterSwap(db, jobRepo, logger)
@@ -207,7 +206,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	// Handlers
 	healthHandler := api.NewHealthHandler(db)
 	schemaHandler := api.NewSchemaChangeHandler(pendingRepo, schemaLogRepo, approvalSvc)
-	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, cmdBus, shadowAutomator, sourceObjectV2Sync, activityLogger, logger, getSyncHealthH, bridgeStatusReader)
+	registryHandler := api.NewRegistryHandler(registryRepo, db, natsClient, cmdBus, shadowAutomator, sourceObjectV2Sync, activityLogger, logger, getSyncHealthH, bridgeStatusReader)
 	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger, listSourceObjectsH, getSourceMappingContextH)
 	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(bridgeStatusReader, cmdBus, activityLogger, logger)
 	systemConnectorsHandler := api.NewSystemConnectorsHandler(kafkaConnectClient, sourceRepo, cmdBus, logger, listConnectorsH, getConnectorH, listConnectorPluginsH)
@@ -217,7 +216,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	schemaProposalHandler := api.NewSchemaProposalHandler(db, cmdBus, logger)
 	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, cmdBus, logger, listTransmuteSchedulesH)
 	mappingPreviewHandler := api.NewMappingPreviewHandler(db, logger)
-	mappingHandler := api.NewMappingRuleHandler(mappingRepo, registryRepo, natsClient, cmdBus, listMappingRulesH, db)
+	mappingHandler := api.NewMappingRuleHandler(registryRepo, natsClient, cmdBus, listMappingRulesH, db)
 	introspectionHandler := api.NewIntrospectionHandler(natsClient)
 	activityLogHandler := api.NewActivityLogHandler(listActivityLogsH, getActivityStatsH)
 	scheduleHandler := api.NewScheduleHandler(db, workerScheduleReader, listWorkerSchedulesH, cmdBus)

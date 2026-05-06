@@ -25,7 +25,6 @@ import (
 
 type RegistryHandler struct {
 	repo           *repository.RegistryRepo
-	mappingRepo    *repository.MappingRuleRepo
 	db             *gorm.DB
 	natsClient     *natsconn.NatsClient
 	bus            ports.CommandBus
@@ -39,7 +38,6 @@ type RegistryHandler struct {
 
 func NewRegistryHandler(
 	repo *repository.RegistryRepo,
-	mappingRepo *repository.MappingRuleRepo,
 	db *gorm.DB,
 	nats *natsconn.NatsClient,
 	bus ports.CommandBus,
@@ -52,7 +50,6 @@ func NewRegistryHandler(
 ) *RegistryHandler {
 	return &RegistryHandler{
 		repo:           repo,
-		mappingRepo:    mappingRepo,
 		db:             db,
 		natsClient:     nats,
 		bus:            bus,

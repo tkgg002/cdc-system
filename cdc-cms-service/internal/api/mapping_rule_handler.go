@@ -21,7 +21,6 @@ import (
 )
 
 type MappingRuleHandler struct {
-	repo         *repository.MappingRuleRepo
 	registryRepo *repository.RegistryRepo
 	natsClient   *natsconn.NatsClient
 	bus          ports.CommandBus
@@ -32,8 +31,8 @@ type MappingRuleHandler struct {
 // NewMappingRuleHandler — Phase 2 v2 / P3: bus drives async dispatch
 // (cdc.cmd.backfill / cdc.cmd.alter-column) via the CommandBus port.
 // listQuery is the CQRS Q-side adapter for GET /api/mapping-rules.
-func NewMappingRuleHandler(repo *repository.MappingRuleRepo, registryRepo *repository.RegistryRepo, nats *natsconn.NatsClient, bus ports.CommandBus, listQuery *queries.ListMappingRulesHandler, db ...*gorm.DB) *MappingRuleHandler {
-	h := &MappingRuleHandler{repo: repo, registryRepo: registryRepo, natsClient: nats, bus: bus, listQuery: listQuery}
+func NewMappingRuleHandler(registryRepo *repository.RegistryRepo, nats *natsconn.NatsClient, bus ports.CommandBus, listQuery *queries.ListMappingRulesHandler, db ...*gorm.DB) *MappingRuleHandler {
+	h := &MappingRuleHandler{registryRepo: registryRepo, natsClient: nats, bus: bus, listQuery: listQuery}
 	if len(db) > 0 {
 		h.db = db[0]
 	}
