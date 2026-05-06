@@ -2,16 +2,15 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
-	"time"
 
 	"cdc-cms-service/internal/app/commands"
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/model"
 	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 
@@ -79,7 +78,7 @@ func ComputeDriftStatus(sourceCount *int64, destCount int64, errorCode string) (
 }
 
 type ReconciliationHandler struct {
-	db             *gorm.DB
+	reader         queries.ReconReader
 	nats           *natsconn.NatsClient
 	bus            ports.CommandBus
 	listLatestQ    *queries.ListLatestReportsHandler
@@ -89,7 +88,7 @@ type ReconciliationHandler struct {
 }
 
 func NewReconciliationHandler(
-	db *gorm.DB,
+	reader queries.ReconReader,
 	nats *natsconn.NatsClient,
 	bus ports.CommandBus,
 	listLatestQ *queries.ListLatestReportsHandler,
@@ -98,7 +97,7 @@ func NewReconciliationHandler(
 	activityLogger *service.ActivityLogger,
 ) *ReconciliationHandler {
 	return &ReconciliationHandler{
-		db:             db,
+		reader:         reader,
 		nats:           nats,
 		bus:            bus,
 		listLatestQ:    listLatestQ,
@@ -139,54 +138,14 @@ func (h *ReconciliationHandler) resolveTargetTable(c *fiber.Ctx, scope reconScop
 	if t := trimReconValue(scope.Table); t != "" {
 		return t, nil
 	}
-
-	query := `
-		SELECT sb.shadow_table
-		FROM cdc_system.shadow_binding sb
-		JOIN cdc_system.source_object_registry so
-		  ON so.id = sb.source_object_id
-		WHERE sb.is_active = TRUE
-	`
-	args := make([]interface{}, 0, 6)
-	if v := trimReconValue(scope.SourceDatabase); v != "" {
-		query += ` AND so.source_database = ?`
-		args = append(args, v)
-	}
-	if v := trimReconValue(scope.SourceSchema); v != "" {
-		query += ` AND so.source_schema = ?`
-		args = append(args, v)
-	}
-	if v := trimReconValue(scope.SourceNamespace); v != "" {
-		query += ` AND so.source_namespace = ?`
-		args = append(args, v)
-	}
-	if v := trimReconValue(scope.SourceTable); v != "" {
-		query += ` AND so.source_object_name = ?`
-		args = append(args, v)
-	}
-	if v := trimReconValue(scope.ShadowSchema); v != "" {
-		query += ` AND sb.shadow_schema = ?`
-		args = append(args, v)
-	}
-	if v := trimReconValue(scope.ShadowTable); v != "" {
-		query += ` AND sb.shadow_table = ?`
-		args = append(args, v)
-	}
-	query += ` ORDER BY sb.updated_at DESC, sb.id DESC LIMIT 2`
-
-	var rows []struct {
-		ShadowTable string `gorm:"column:shadow_table"`
-	}
-	if err := h.db.Raw(query, args...).Scan(&rows).Error; err != nil {
-		return "", err
-	}
-	if len(rows) == 0 {
-		return "", gorm.ErrRecordNotFound
-	}
-	if len(rows) > 1 {
-		return "", fiber.NewError(fiber.StatusConflict, "ambiguous_reconciliation_scope")
-	}
-	return rows[0].ShadowTable, nil
+	return h.reader.ResolveTargetTableByScope(c.UserContext(), queries.ReconScopeFilter{
+		SourceDatabase:  scope.SourceDatabase,
+		SourceSchema:    scope.SourceSchema,
+		SourceNamespace: scope.SourceNamespace,
+		SourceTable:     scope.SourceTable,
+		ShadowSchema:    scope.ShadowSchema,
+		ShadowTable:     scope.ShadowTable,
+	})
 }
 
 // LatestReport godoc
@@ -309,10 +268,10 @@ func (h *ReconciliationHandler) TriggerCheck(c *fiber.Ctx) error {
 		_ = c.BodyParser(&scope)
 		resolved, err := h.resolveTargetTable(c, scope)
 		if err != nil {
-			if fiberErr, ok := err.(*fiber.Error); ok {
-				return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
+			if errors.Is(err, queries.ErrAmbiguousScope) {
+				return c.Status(409).JSON(fiber.Map{"error": "ambiguous_reconciliation_scope"})
 			}
-			if err == gorm.ErrRecordNotFound {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return c.Status(404).JSON(fiber.Map{"error": "reconciliation_scope_not_found"})
 			}
 			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
@@ -403,10 +362,10 @@ func (h *ReconciliationHandler) TriggerHeal(c *fiber.Ctx) error {
 		_ = c.BodyParser(&scope)
 		resolved, err := h.resolveTargetTable(c, scope)
 		if err != nil {
-			if fiberErr, ok := err.(*fiber.Error); ok {
-				return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
+			if errors.Is(err, queries.ErrAmbiguousScope) {
+				return c.Status(409).JSON(fiber.Map{"error": "ambiguous_reconciliation_scope"})
 			}
-			if err == gorm.ErrRecordNotFound {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return c.Status(404).JSON(fiber.Map{"error": "reconciliation_scope_not_found"})
 			}
 			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
@@ -478,44 +437,12 @@ func (h *ReconciliationHandler) ListFailedLogs(c *fiber.Ctx) error {
 func (h *ReconciliationHandler) RetryFailedLog(c *fiber.Ctx) error {
 	id, _ := c.ParamsInt("id")
 
-	var log model.FailedSyncLog
-	if err := h.db.First(&log, id).Error; err != nil {
+	log, err := h.reader.GetFailedLogByID(c.UserContext(), int64(id))
+	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "record not found"})
 	}
 
-	var scope struct {
-		SourceDatabase      *string `gorm:"column:source_database"`
-		ResolvedSourceTable *string `gorm:"column:resolved_source_table"`
-		ShadowSchema        *string `gorm:"column:shadow_schema"`
-		ShadowTable         *string `gorm:"column:shadow_table"`
-		ScopeAmbiguous      bool    `gorm:"column:scope_ambiguous"`
-	}
-	scopeQuery := `
-		SELECT
-			COALESCE(NULLIF(f.source_db, ''), so.source_database) AS source_database,
-			COALESCE(NULLIF(f.source_table, ''), so.source_object_name) AS resolved_source_table,
-			sb.shadow_schema,
-			sb.shadow_table,
-			COALESCE(scope_counts.binding_count, 0) > 1 AS scope_ambiguous
-		FROM failed_sync_logs f
-		LEFT JOIN LATERAL (
-			SELECT source_object_id, shadow_schema, shadow_table
-			FROM cdc_system.shadow_binding
-			WHERE shadow_table = f.target_table
-			  AND is_active = TRUE
-			ORDER BY updated_at DESC, id DESC
-			LIMIT 1
-		) sb ON TRUE
-		LEFT JOIN LATERAL (
-			SELECT COUNT(*)::int AS binding_count
-			FROM cdc_system.shadow_binding
-			WHERE shadow_table = f.target_table
-			  AND is_active = TRUE
-		) scope_counts ON TRUE
-		LEFT JOIN cdc_system.source_object_registry so ON so.id = sb.source_object_id
-		WHERE f.id = ?
-	`
-	_ = h.db.Raw(scopeQuery, id).Scan(&scope).Error
+	scope, _ := h.reader.GetRetryScopeByLogID(c.UserContext(), int64(id))
 
 	// Dispatch retry via CommandBus.
 	user := middleware.GetUsername(c)
@@ -653,36 +580,15 @@ func (h *ReconciliationHandler) TriggerBackfillSourceTs(c *fiber.Ctx) error {
 //	                              (worker encodes run_id in instance_id as
 //	                              `backfill:<run_id>`)
 func (h *ReconciliationHandler) BackfillSourceTsStatus(c *fiber.Ctx) error {
-	type runRow struct {
-		ID           string     `gorm:"column:id" json:"id"`
-		TableName    string     `gorm:"column:table_name" json:"table_name"`
-		Tier         int        `gorm:"column:tier" json:"tier"`
-		Status       string     `gorm:"column:status" json:"status"`
-		StartedAt    time.Time  `gorm:"column:started_at" json:"started_at"`
-		FinishedAt   *time.Time `gorm:"column:finished_at" json:"finished_at"`
-		DocsScanned  int64      `gorm:"column:docs_scanned" json:"docs_scanned"`
-		HealActions  int64      `gorm:"column:heal_actions" json:"heal_actions"`
-		ErrorMessage *string    `gorm:"column:error_message" json:"error_message"`
-		InstanceID   *string    `gorm:"column:instance_id" json:"instance_id"`
+	rows, err := h.reader.ListBackfillRuns(c.UserContext(), c.Query("table"), c.Query("run_id"), 30)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	var rows []runRow
-
-	q := h.db.Table("recon_runs").
-		Where("tier = ?", 4).
-		Order("started_at DESC").
-		Limit(30)
-	if t := c.Query("table"); t != "" {
-		q = q.Where("table_name = ?", t)
-	}
-	if rid := c.Query("run_id"); rid != "" {
-		q = q.Where("instance_id = ?", "backfill:"+rid)
-	}
-	q.Scan(&rows)
 
 	// Enrich with per-table total + remaining so FE can compute progress
 	// without an extra trip. Bound by input table names to keep it cheap.
 	type enriched struct {
-		runRow
+		queries.BackfillRunRow
 		TotalRows     int64   `json:"total_rows"`
 		NullRemaining int64   `json:"null_remaining"`
 		PercentDone   float64 `json:"percent_done"`
@@ -696,10 +602,8 @@ func (h *ReconciliationHandler) BackfillSourceTsStatus(c *fiber.Ctx) error {
 			continue
 		}
 		seenTable[r.TableName] = struct{}{}
-		var total, nul int64
 		// Safe: r.TableName comes from recon_runs row we just wrote.
-		h.db.Raw("SELECT COUNT(*) FROM " + pgIdent(r.TableName)).Scan(&total)
-		h.db.Raw("SELECT COUNT(*) FROM " + pgIdent(r.TableName) + " WHERE _source_ts IS NULL").Scan(&nul)
+		total, nul, _ := h.reader.CountTableRows(c.UserContext(), r.TableName)
 		totals[r.TableName] = total
 		remain[r.TableName] = nul
 	}
@@ -711,29 +615,14 @@ func (h *ReconciliationHandler) BackfillSourceTsStatus(c *fiber.Ctx) error {
 			pct = float64(total-nul) / float64(total) * 100.0
 		}
 		out = append(out, enriched{
-			runRow:        r,
-			TotalRows:     total,
-			NullRemaining: nul,
-			PercentDone:   pct,
+			BackfillRunRow: r,
+			TotalRows:      total,
+			NullRemaining:  nul,
+			PercentDone:    pct,
 		})
 	}
 
 	return c.JSON(fiber.Map{"data": out, "total": len(out)})
-}
-
-// pgIdent quotes a Postgres identifier safely. Only alphanumerics +
-// underscore allowed; anything else returns an empty-string-quoted
-// identifier which will fail the SQL parser deliberately.
-func pgIdent(name string) string {
-	if name == "" {
-		return `""`
-	}
-	for _, r := range name {
-		if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			return `""`
-		}
-	}
-	return `"` + name + `"`
 }
 
 // Tools: Trigger snapshot for a table

@@ -15,9 +15,11 @@ package persistence
 
 import (
 	"context"
+	"strings"
 
 	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/model"
+	"cdc-cms-service/pkgs/utils"
 
 	"gorm.io/gorm"
 )
@@ -178,6 +180,145 @@ const failedLogsBase = `
 	LEFT JOIN cdc_system.source_object_registry so ON so.id = sb.source_object_id
 	WHERE 1=1
 `
+
+// resolveTargetTableQueryBase mirrors the legacy resolveTargetTable
+// helper in the recon HTTP handler. The SELECT shape (sb.shadow_table)
+// + LIMIT 2 protocol (caller flags >1 row as ambiguous) is preserved
+// so the wire contract stays byte-identical.
+const resolveTargetTableQueryBase = `
+	SELECT sb.shadow_table
+	FROM cdc_system.shadow_binding sb
+	JOIN cdc_system.source_object_registry so
+	  ON so.id = sb.source_object_id
+	WHERE sb.is_active = TRUE
+`
+
+func (r *reconReadRepoGorm) ResolveTargetTableByScope(ctx context.Context, f queries.ReconScopeFilter) (string, error) {
+	query := resolveTargetTableQueryBase
+	args := make([]interface{}, 0, 6)
+	if v := strings.TrimSpace(f.SourceDatabase); v != "" {
+		query += ` AND so.source_database = ?`
+		args = append(args, v)
+	}
+	if v := strings.TrimSpace(f.SourceSchema); v != "" {
+		query += ` AND so.source_schema = ?`
+		args = append(args, v)
+	}
+	if v := strings.TrimSpace(f.SourceNamespace); v != "" {
+		query += ` AND so.source_namespace = ?`
+		args = append(args, v)
+	}
+	if v := strings.TrimSpace(f.SourceTable); v != "" {
+		query += ` AND so.source_object_name = ?`
+		args = append(args, v)
+	}
+	if v := strings.TrimSpace(f.ShadowSchema); v != "" {
+		query += ` AND sb.shadow_schema = ?`
+		args = append(args, v)
+	}
+	if v := strings.TrimSpace(f.ShadowTable); v != "" {
+		query += ` AND sb.shadow_table = ?`
+		args = append(args, v)
+	}
+	query += ` ORDER BY sb.updated_at DESC, sb.id DESC LIMIT 2`
+
+	var rows []struct {
+		ShadowTable string `gorm:"column:shadow_table"`
+	}
+	if err := r.db.WithContext(ctx).Raw(query, args...).Scan(&rows).Error; err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", gorm.ErrRecordNotFound
+	}
+	if len(rows) > 1 {
+		return "", queries.ErrAmbiguousScope
+	}
+	return rows[0].ShadowTable, nil
+}
+
+func (r *reconReadRepoGorm) GetFailedLogByID(ctx context.Context, id int64) (*model.FailedSyncLog, error) {
+	var log model.FailedSyncLog
+	if err := r.db.WithContext(ctx).First(&log, id).Error; err != nil {
+		return nil, err
+	}
+	return &log, nil
+}
+
+// retryScopeQuery is the LATERAL-join enrichment lifted verbatim from
+// the legacy RetryFailedLog handler. The handler historically swallowed
+// the error (`_ = ...Scan(...)`) — keep that behaviour by returning a
+// zero-value scope on err so the retry dispatch is never blocked by a
+// metadata read failure.
+const retryScopeQuery = `
+	SELECT
+		COALESCE(NULLIF(f.source_db, ''), so.source_database) AS source_database,
+		COALESCE(NULLIF(f.source_table, ''), so.source_object_name) AS resolved_source_table,
+		sb.shadow_schema,
+		sb.shadow_table,
+		COALESCE(scope_counts.binding_count, 0) > 1 AS scope_ambiguous
+	FROM failed_sync_logs f
+	LEFT JOIN LATERAL (
+		SELECT source_object_id, shadow_schema, shadow_table
+		FROM cdc_system.shadow_binding
+		WHERE shadow_table = f.target_table
+		  AND is_active = TRUE
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 1
+	) sb ON TRUE
+	LEFT JOIN LATERAL (
+		SELECT COUNT(*)::int AS binding_count
+		FROM cdc_system.shadow_binding
+		WHERE shadow_table = f.target_table
+		  AND is_active = TRUE
+	) scope_counts ON TRUE
+	LEFT JOIN cdc_system.source_object_registry so ON so.id = sb.source_object_id
+	WHERE f.id = ?
+`
+
+func (r *reconReadRepoGorm) GetRetryScopeByLogID(ctx context.Context, id int64) (queries.FailedLogRetryScope, error) {
+	var scope queries.FailedLogRetryScope
+	// Match legacy: error swallowed, zero-value scope returned. The
+	// retry dispatch must not be blocked by a metadata read miss.
+	_ = r.db.WithContext(ctx).Raw(retryScopeQuery, id).Scan(&scope).Error
+	return scope, nil
+}
+
+func (r *reconReadRepoGorm) ListBackfillRuns(ctx context.Context, table, runID string, limit int) ([]queries.BackfillRunRow, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	q := r.db.WithContext(ctx).
+		Table("recon_runs").
+		Where("tier = ?", 4).
+		Order("started_at DESC").
+		Limit(limit)
+	if t := strings.TrimSpace(table); t != "" {
+		q = q.Where("table_name = ?", t)
+	}
+	if rid := strings.TrimSpace(runID); rid != "" {
+		q = q.Where("instance_id = ?", "backfill:"+rid)
+	}
+	var rows []queries.BackfillRunRow
+	if err := q.Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *reconReadRepoGorm) CountTableRows(ctx context.Context, table string) (int64, int64, error) {
+	ident := utils.PgIdent(table)
+	var total, nul int64
+	// Identifier safety: utils.PgIdent fail-closes to `""` so a
+	// malformed name produces a parse error rather than executing.
+	if err := r.db.WithContext(ctx).Raw("SELECT COUNT(*) FROM " + ident).Scan(&total).Error; err != nil {
+		return 0, 0, err
+	}
+	if err := r.db.WithContext(ctx).Raw("SELECT COUNT(*) FROM " + ident + " WHERE _source_ts IS NULL").Scan(&nul).Error; err != nil {
+		return total, 0, err
+	}
+	return total, nul, nil
+}
 
 func (r *reconReadRepoGorm) ListFailedLogs(ctx context.Context, f queries.FailedLogFilter, page, pageSize int) ([]queries.FailedLogRow, int64, error) {
 	query := failedLogsBase

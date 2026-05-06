@@ -218,7 +218,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	introspectionHandler := api.NewIntrospectionHandler(natsClient)
 	activityLogHandler := api.NewActivityLogHandler(listActivityLogsH, getActivityStatsH)
 	scheduleHandler := api.NewScheduleHandler(db, workerScheduleReader, listWorkerSchedulesH, cmdBus)
-	reconHandler := api.NewReconciliationHandler(db, natsClient, cmdBus, listLatestReportsH, getTableHistoryH, listFailedLogsH, activityLogger)
+	reconHandler := api.NewReconciliationHandler(reconReader, natsClient, cmdBus, listLatestReportsH, getTableHistoryH, listFailedLogsH, activityLogger)
 	jobHandler := api.NewJobHandler(getJobH)
 	// Phase 0 — System Health Background Collector.
 	// Builds a Prometheus client (path A + fallback) and a Collector that
@@ -279,6 +279,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSync("schedule.toggle", commands.NewToggleTransmuteScheduleHandler(db))
 	cmdBus.RegisterSync("registry.register", commands.NewRegisterRegistryHandler(db, shadowAutomator, natsClient, logger))
 	cmdBus.RegisterSync("registry.bulk-register", commands.NewBulkRegisterRegistryHandler(db, natsClient, logger))
+	cmdBus.RegisterSync("source.v2-sync", commands.NewV2SyncHandler(sourceObjectV2Sync))
 	cmdBus.RegisterSync("master.toggle-active", commands.NewToggleMasterActiveHandler(db))
 	cmdBus.RegisterSync("worker-schedule.create", commands.NewCreateWorkerScheduleHandler(db))
 	cmdBus.RegisterSync("schema-proposal.reject", commands.NewRejectSchemaProposalHandler(db))

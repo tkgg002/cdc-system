@@ -143,8 +143,9 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 		dispatched = append(dispatched, "cdc.cmd.create-default-columns")
 	}
 
-	if h.v2sync != nil {
-		if err := h.v2sync.SyncFromLegacy(c.Context(), &created); err != nil {
+	if h.bus != nil {
+		syncCmd := commands.V2SyncCommand{Entry: &created}
+		if _, err := h.bus.Execute(dispatchCtx, syncCmd); err != nil {
 			h.logger.Error("post-register v2 sync failed", zap.Uint("registry_id", created.ID), zap.Error(err))
 		}
 	}
@@ -254,13 +255,14 @@ func (h *RegistryHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
-	if h.v2sync != nil {
-		// Re-fetch so the v2sync sees the post-update row state. Cheap
+	if h.bus != nil {
+		// Re-fetch so the v2 sync sees the post-update row state. Cheap
 		// — single PK lookup; the alternative would be threading the
 		// updated entry out of the bus result body which couples this
 		// API to the command's wire shape.
 		if updated, getErr := h.repo.GetByID(c.Context(), existing.ID); getErr == nil {
-			if syncErr := h.v2sync.SyncFromLegacy(c.Context(), updated); syncErr != nil {
+			syncCmd := commands.V2SyncCommand{Entry: updated}
+			if _, syncErr := h.bus.Execute(ctx, syncCmd); syncErr != nil {
 				h.logger.Error("post-update v2 sync failed", zap.Uint("registry_id", existing.ID), zap.Error(syncErr))
 			}
 		}
@@ -317,8 +319,10 @@ func (h *RegistryHandler) BulkRegister(c *fiber.Ctx) error {
 			continue
 		}
 		dispatched++
-		if h.v2sync != nil {
-			if err := h.v2sync.SyncFromLegacy(c.Context(), &e); err != nil {
+		if h.bus != nil {
+			eCopy := e
+			syncCmd := commands.V2SyncCommand{Entry: &eCopy}
+			if _, err := h.bus.Execute(dispatchCtx, syncCmd); err != nil {
 				h.logger.Error("bulk register v2 sync failed", zap.Uint("registry_id", e.ID), zap.Error(err))
 			}
 		}
