@@ -34,9 +34,34 @@ type shadowBindingUpsertRow struct {
 	BindingCode string `gorm:"column:binding_code"`
 }
 
+// SyncFromLegacy is the public, tx-wrapped entrypoint. It runs the
+// two-INSERT pipeline (source_object_registry → shadow_binding) inside
+// a single GORM transaction so a downstream failure rolls back the
+// upstream upsert. The two rows are tied by FK source_object_id and
+// callers (registry handler) treat them as one unit; without a tx an
+// orphaned source_object_registry row could survive a shadow_binding
+// failure and break next-run reconciliation.
 func (s *SourceObjectV2SyncService) SyncFromLegacy(ctx context.Context, entry *model.TableRegistry) error {
 	if entry == nil {
 		return nil
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		return s.SyncFromLegacyTx(ctx, tx, entry)
+	})
+}
+
+// SyncFromLegacyTx performs the same upsert pipeline against an
+// externally-managed transaction. Exposed so a future caller (e.g. the
+// RegisterRegistry command handler) can fold the legacy
+// cdc_table_registry insert + the V2 sync into one outer tx, making
+// the entire register flow atomic. nil entry is a no-op; nil tx
+// fails-fast to surface wiring bugs.
+func (s *SourceObjectV2SyncService) SyncFromLegacyTx(ctx context.Context, tx *gorm.DB, entry *model.TableRegistry) error {
+	if entry == nil {
+		return nil
+	}
+	if tx == nil {
+		return fmt.Errorf("v2 sync: nil transaction")
 	}
 
 	sourceEngine := normalizeSourceEngine(entry.SourceType)
@@ -53,11 +78,11 @@ func (s *SourceObjectV2SyncService) SyncFromLegacy(ctx context.Context, entry *m
 	physicalTableFQN := shadowSchema + "." + targetTable
 	normalizedSourceKey := strings.ToLower(fmt.Sprintf("%s:%s:%s", sourceEngine, sourceDB, sourceTable))
 
-	sourceConnectionID, err := s.resolveSourceConnectionID(ctx, sourceEngine, sourceDB)
+	sourceConnectionID, err := s.resolveSourceConnectionID(ctx, tx, sourceEngine, sourceDB)
 	if err != nil {
 		return err
 	}
-	shadowConnectionID, err := s.resolveShadowConnectionID(ctx)
+	shadowConnectionID, err := s.resolveShadowConnectionID(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -79,7 +104,7 @@ func (s *SourceObjectV2SyncService) SyncFromLegacy(ctx context.Context, entry *m
 	))
 
 	var sourceObject sourceObjectUpsertRow
-	if err := s.db.WithContext(ctx).Raw(`
+	if err := tx.WithContext(ctx).Raw(`
 		INSERT INTO cdc_system.source_object_registry (
 		  object_code,
 		  source_connection_id,
@@ -148,7 +173,7 @@ func (s *SourceObjectV2SyncService) SyncFromLegacy(ctx context.Context, entry *m
 	}
 
 	var shadowBinding shadowBindingUpsertRow
-	if err := s.db.WithContext(ctx).Raw(`
+	if err := tx.WithContext(ctx).Raw(`
 		INSERT INTO cdc_system.shadow_binding (
 		  binding_code,
 		  source_object_id,
@@ -190,9 +215,9 @@ func (s *SourceObjectV2SyncService) SyncFromLegacy(ctx context.Context, entry *m
 	return nil
 }
 
-func (s *SourceObjectV2SyncService) resolveSourceConnectionID(ctx context.Context, engine, sourceDB string) (int64, error) {
+func (s *SourceObjectV2SyncService) resolveSourceConnectionID(ctx context.Context, db *gorm.DB, engine, sourceDB string) (int64, error) {
 	var row connectionLookupRow
-	err := s.db.WithContext(ctx).Raw(`
+	err := db.WithContext(ctx).Raw(`
 		SELECT id
 		FROM cdc_system.connection_registry
 		WHERE role_type IN ('source', 'mixed')
@@ -212,9 +237,9 @@ func (s *SourceObjectV2SyncService) resolveSourceConnectionID(ctx context.Contex
 	return row.ID, nil
 }
 
-func (s *SourceObjectV2SyncService) resolveShadowConnectionID(ctx context.Context) (int64, error) {
+func (s *SourceObjectV2SyncService) resolveShadowConnectionID(ctx context.Context, db *gorm.DB) (int64, error) {
 	var row connectionLookupRow
-	err := s.db.WithContext(ctx).Raw(`
+	err := db.WithContext(ctx).Raw(`
 		SELECT id
 		FROM cdc_system.connection_registry
 		WHERE role_type IN ('shadow', 'mixed')
