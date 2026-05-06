@@ -119,36 +119,40 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// (discover schema + update connection) được dispatch async qua NATS.
-	if err := h.repo.Create(c.Context(), &entry); err != nil {
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+
+	user := middleware.GetUsername(c)
+	registerCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	registerCmd := commands.RegisterRegistryCommand{Entry: entry, CreatedBy: user}
+	res, err := h.bus.Execute(registerCtx, registerCmd)
+	if err != nil {
+		if errors.Is(err, commands.ErrShadowDDLFailed) {
+			return c.Status(500).JSON(fiber.Map{"error": "shadow DDL failed: " + err.Error()})
+		}
 		return c.Status(500).JSON(fiber.Map{"error": "failed to register table: " + err.Error()})
 	}
 
-	// Systematic Flow (F-2.1): synchronous shadow DDL. Rollback registry
-	// on failure so the DB never holds a row whose shadow doesn't exist.
-	// Legacy NATS path still fires below but will no-op when the Worker
-	// finds is_table_created=true.
-	if h.automator != nil {
-		shadowSchema := "shadow_" + normalizeShadowIdent(entry.SourceDB)
-		if err := h.automator.EnsureShadowTable(c.Context(), &entry, shadowSchema); err != nil {
-			if delErr := h.db.Delete(&model.TableRegistry{}, entry.ID).Error; delErr != nil {
-				h.logger.Error("registry rollback failed after shadow err",
-					zap.Uint("id", entry.ID), zap.Error(delErr))
-			}
-			return c.Status(500).JSON(fiber.Map{"error": "shadow DDL failed: " + err.Error()})
-		}
+	var body struct {
+		Message string              `json:"message"`
+		Entry   model.TableRegistry `json:"entry"`
 	}
+	_ = json.Unmarshal(res.ResultBody, &body)
+	created := body.Entry
 
 	dispatched := []string{}
-
-	user := middleware.GetUsername(c)
-	dispatchCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	dispatchIdem := c.Get("Idempotency-Key")
+	if dispatchIdem != "" {
+		dispatchIdem += ":cdc"
+	}
+	dispatchCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), dispatchIdem)
 	createCmd := commands.CreateDefaultColumnsCommand{
-		RegistryID:      entry.ID,
-		TargetTable:     entry.TargetTable,
-		SourceTable:     entry.SourceTable,
-		PrimaryKeyField: entry.PrimaryKeyField,
-		PrimaryKeyType:  entry.PrimaryKeyType,
+		RegistryID:      created.ID,
+		TargetTable:     created.TargetTable,
+		SourceTable:     created.SourceTable,
+		PrimaryKeyField: created.PrimaryKeyField,
+		PrimaryKeyType:  created.PrimaryKeyType,
 	}
 	if _, derr := h.bus.Dispatch(dispatchCtx, createCmd); derr != nil {
 		h.logger.Warn("publish create-default-columns failed", zap.Error(derr))
@@ -156,24 +160,15 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 		dispatched = append(dispatched, "cdc.cmd.create-default-columns")
 	}
 
-	// Legacy sync-register dispatch removed post-Sprint 4 — Debezium-native
-	// flow registers via cdc_system.cdc_table_registry + Master Registry UI.
-
-	h.natsClient.PublishReload(entry.TargetTable, middleware.GetUsername(c), "register", "")
-	h.logAction("register", entry.TargetTable, "accepted", map[string]interface{}{
-		"user":       middleware.GetUsername(c),
-		"dispatched": dispatched,
-	}, "")
-
 	if h.v2sync != nil {
-		if err := h.v2sync.SyncFromLegacy(c.Context(), &entry); err != nil {
-			h.logger.Error("post-register v2 sync failed", zap.Uint("registry_id", entry.ID), zap.Error(err))
+		if err := h.v2sync.SyncFromLegacy(c.Context(), &created); err != nil {
+			h.logger.Error("post-register v2 sync failed", zap.Uint("registry_id", created.ID), zap.Error(err))
 		}
 	}
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":    "table registered — external sync dispatched",
-		"entry":      entry,
+		"entry":      created,
 		"dispatched": dispatched,
 	})
 }
@@ -300,24 +295,33 @@ func (h *RegistryHandler) BulkRegister(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	created, err := h.repo.BulkCreate(c.Context(), entries)
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+
+	user := middleware.GetUsername(c)
+	registerCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	registerCmd := commands.BulkRegisterRegistryCommand{Entries: entries, CreatedBy: user}
+	res, err := h.bus.Execute(registerCtx, registerCmd)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "bulk register failed: " + err.Error()})
 	}
 
-	// Dispatch create-default-columns per entry thay vì chạy SQL blocking
-	// `create_all_pending_cdc_tables()`.
-	dispatched := 0
-	// Re-query created entries để có ID chính xác
-	var createdEntries []model.TableRegistry
-	tables := make([]string, 0, len(entries))
-	for _, e := range entries {
-		tables = append(tables, e.TargetTable)
+	var body struct {
+		Message string                `json:"message"`
+		Created int                   `json:"created"`
+		Entries []model.TableRegistry `json:"entries"`
 	}
-	h.db.Where("target_table IN ?", tables).Find(&createdEntries)
-	user := middleware.GetUsername(c)
-	dispatchCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
-	for _, e := range createdEntries {
+	_ = json.Unmarshal(res.ResultBody, &body)
+
+	dispatched := 0
+	baseIdem := c.Get("Idempotency-Key")
+	for _, e := range body.Entries {
+		entryIdem := ""
+		if baseIdem != "" {
+			entryIdem = baseIdem + ":cdc:" + strconv.FormatUint(uint64(e.ID), 10)
+		}
+		dispatchCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), entryIdem)
 		cmd := commands.CreateDefaultColumnsCommand{
 			RegistryID:      e.ID,
 			TargetTable:     e.TargetTable,
@@ -337,16 +341,9 @@ func (h *RegistryHandler) BulkRegister(c *fiber.Ctx) error {
 		}
 	}
 
-	h.natsClient.PublishReload("*", middleware.GetUsername(c), "bulk_register", "")
-	h.logAction("bulk-register", "*", "accepted", map[string]interface{}{
-		"user":       middleware.GetUsername(c),
-		"created":    created,
-		"dispatched": dispatched,
-	}, "")
-
 	return c.Status(202).JSON(fiber.Map{
 		"message":    "tables registered — create-default-columns dispatched per entry",
-		"created":    created,
+		"created":    body.Created,
 		"dispatched": dispatched,
 	})
 }

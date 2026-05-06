@@ -272,6 +272,10 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSync("schedule.update", commands.NewUpdateScheduleHandler(db, logger))
 	cmdBus.RegisterSync("recon.failed-log-mark-retrying", commands.NewMarkFailedLogRetryingHandler(db))
 	cmdBus.RegisterSync("registry.update", commands.NewUpdateRegistryHandler(db, natsClient, logger))
+	cmdBus.RegisterSync("schedule.create", commands.NewCreateTransmuteScheduleHandler(db))
+	cmdBus.RegisterSync("schedule.toggle", commands.NewToggleTransmuteScheduleHandler(db))
+	cmdBus.RegisterSync("registry.register", commands.NewRegisterRegistryHandler(db, shadowAutomator, natsClient, logger))
+	cmdBus.RegisterSync("registry.bulk-register", commands.NewBulkRegisterRegistryHandler(db, natsClient, logger))
 	alertsHandler := api.NewAlertsHandler(alertMgr, cmdBus, logger)
 
 	// Source Provisioning Mode (workspace feature-cdc-integration / phase

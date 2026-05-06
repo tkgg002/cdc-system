@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 	"time"
@@ -106,18 +107,20 @@ func (h *TransmuteScheduleHandler) Create(c *fiber.Ctx) error {
 		nextRunAt = &next
 	}
 
-	err := h.db.WithContext(c.Context()).Exec(
-		`INSERT INTO cdc_system.transmute_schedule
-		   (master_table, mode, cron_expr, next_run_at, is_enabled, created_by, created_at, updated_at)
-		 VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, NOW(), NOW())
-		 ON CONFLICT (master_table, mode) DO UPDATE
-		   SET cron_expr = EXCLUDED.cron_expr,
-		       next_run_at = EXCLUDED.next_run_at,
-		       is_enabled = EXCLUDED.is_enabled,
-		       updated_at = NOW()`,
-		req.MasterTable, req.Mode, req.CronExpr, nextRunAt, req.IsEnabled, actor,
-	).Error
-	if err != nil {
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+	user := middleware.GetUsername(c)
+	cmd := commands.CreateTransmuteScheduleCommand{
+		MasterTable: req.MasterTable,
+		Mode:        req.Mode,
+		CronExpr:    req.CronExpr,
+		NextRunAt:   nextRunAt,
+		IsEnabled:   req.IsEnabled,
+		CreatedBy:   actor,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	if _, err := h.bus.Execute(ctx, cmd); err != nil {
 		h.logger.Error("schedule upsert failed", zap.Error(err))
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
@@ -137,17 +140,23 @@ func (h *TransmuteScheduleHandler) Toggle(c *fiber.Ctx) error {
 	if len(strings.TrimSpace(req.Reason)) < 10 {
 		return c.Status(400).JSON(fiber.Map{"error": "reason_required_min_10_chars"})
 	}
-	res := h.db.WithContext(c.Context()).Exec(
-		`UPDATE cdc_system.transmute_schedule
-		    SET is_enabled = ?, updated_at = NOW()
-		  WHERE id = ?`,
-		req.IsEnabled, id,
-	)
-	if res.Error != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
-	if res.RowsAffected == 0 {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	user := middleware.GetUsername(c)
+	cmd := commands.ToggleTransmuteScheduleCommand{
+		ID:        id,
+		IsEnabled: req.IsEnabled,
+		UpdatedBy: user,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	if _, err := h.bus.Execute(ctx, cmd); err != nil {
+		switch {
+		case errors.Is(err, commands.ErrTransmuteScheduleNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		}
 	}
 	return c.JSON(fiber.Map{"status": "toggled", "id": id, "is_enabled": req.IsEnabled})
 }
