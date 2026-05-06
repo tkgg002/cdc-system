@@ -12,6 +12,7 @@ import (
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
+	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"github.com/gofiber/fiber/v2"
@@ -78,12 +79,13 @@ func ComputeDriftStatus(sourceCount *int64, destCount int64, errorCode string) (
 }
 
 type ReconciliationHandler struct {
-	db           *gorm.DB
-	nats         *natsconn.NatsClient
-	bus          ports.CommandBus
-	listLatestQ  *queries.ListLatestReportsHandler
-	getHistoryQ  *queries.GetTableHistoryHandler
-	listFailedQ  *queries.ListFailedLogsHandler
+	db             *gorm.DB
+	nats           *natsconn.NatsClient
+	bus            ports.CommandBus
+	listLatestQ    *queries.ListLatestReportsHandler
+	getHistoryQ    *queries.GetTableHistoryHandler
+	listFailedQ    *queries.ListFailedLogsHandler
+	activityLogger *service.ActivityLogger
 }
 
 func NewReconciliationHandler(
@@ -93,14 +95,16 @@ func NewReconciliationHandler(
 	listLatestQ *queries.ListLatestReportsHandler,
 	getHistoryQ *queries.GetTableHistoryHandler,
 	listFailedQ *queries.ListFailedLogsHandler,
+	activityLogger *service.ActivityLogger,
 ) *ReconciliationHandler {
 	return &ReconciliationHandler{
-		db:          db,
-		nats:        nats,
-		bus:         bus,
-		listLatestQ: listLatestQ,
-		getHistoryQ: getHistoryQ,
-		listFailedQ: listFailedQ,
+		db:             db,
+		nats:           nats,
+		bus:            bus,
+		listLatestQ:    listLatestQ,
+		getHistoryQ:    getHistoryQ,
+		listFailedQ:    listFailedQ,
+		activityLogger: activityLogger,
 	}
 }
 
@@ -326,16 +330,12 @@ func (h *ReconciliationHandler) TriggerCheck(c *fiber.Ctx) error {
 	}
 
 	// Log activity (audit trail mirrors the cdc_jobs row).
-	payload, _ := json.Marshal(cmd)
-	now := time.Now()
-	h.db.Create(&model.ActivityLog{
-		Operation:   "recon-check",
-		TargetTable: table,
-		Status:      "success",
-		Details:     payload,
-		TriggeredBy: "manual",
-		StartedAt:   now,
-		CompletedAt: &now,
+	payload := map[string]any{}
+	if raw, err := json.Marshal(cmd); err == nil {
+		_ = json.Unmarshal(raw, &payload)
+	}
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "recon-check", TargetTable: table, Status: "success", Details: payload,
 	})
 
 	return c.Status(202).JSON(fiber.Map{
@@ -421,14 +421,8 @@ func (h *ReconciliationHandler) TriggerHeal(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": derr.Error()})
 	}
 
-	now := time.Now()
-	h.db.Create(&model.ActivityLog{
-		Operation:   "recon-heal-trigger",
-		TargetTable: table,
-		Status:      "success",
-		TriggeredBy: "manual",
-		StartedAt:   now,
-		CompletedAt: &now,
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "recon-heal-trigger", TargetTable: table, Status: "success",
 	})
 
 	return c.Status(202).JSON(fiber.Map{"message": "heal dispatched", "table": table, "job_id": res.JobID})
@@ -631,16 +625,12 @@ func (h *ReconciliationHandler) TriggerBackfillSourceTs(c *fiber.Ctx) error {
 	}
 
 	// Audit details mirror the on-wire payload (raw command marshal).
-	details, _ := json.Marshal(cmd)
-	now := time.Now()
-	h.db.Create(&model.ActivityLog{
-		Operation:   "recon-backfill-source-ts",
-		TargetTable: body.Table,
-		Status:      "dispatched",
-		Details:     details,
-		TriggeredBy: "manual",
-		StartedAt:   now,
-		CompletedAt: &now,
+	details := map[string]any{}
+	if raw, err := json.Marshal(cmd); err == nil {
+		_ = json.Unmarshal(raw, &details)
+	}
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "recon-backfill-source-ts", TargetTable: body.Table, Status: "dispatched", Details: details,
 	})
 
 	return c.Status(202).JSON(fiber.Map{

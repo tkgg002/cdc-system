@@ -24,15 +24,16 @@ import (
 )
 
 type RegistryHandler struct {
-	repo          *repository.RegistryRepo
-	mappingRepo   *repository.MappingRuleRepo
-	db            *gorm.DB
-	natsClient    *natsconn.NatsClient
-	bus           ports.CommandBus
-	automator     *service.ShadowAutomator
-	v2sync        *service.SourceObjectV2SyncService
-	logger        *zap.Logger
-	syncHealthQ   *queries.GetSyncHealthHandler
+	repo            *repository.RegistryRepo
+	mappingRepo     *repository.MappingRuleRepo
+	db              *gorm.DB
+	natsClient      *natsconn.NatsClient
+	bus             ports.CommandBus
+	automator       *service.ShadowAutomator
+	v2sync          *service.SourceObjectV2SyncService
+	activityLogger  *service.ActivityLogger
+	logger          *zap.Logger
+	syncHealthQ     *queries.GetSyncHealthHandler
 }
 
 func NewRegistryHandler(
@@ -43,40 +44,22 @@ func NewRegistryHandler(
 	bus ports.CommandBus,
 	automator *service.ShadowAutomator,
 	v2sync *service.SourceObjectV2SyncService,
+	activityLogger *service.ActivityLogger,
 	logger *zap.Logger,
 	syncHealthQ *queries.GetSyncHealthHandler,
 ) *RegistryHandler {
 	return &RegistryHandler{
-		repo:        repo,
-		mappingRepo: mappingRepo,
-		db:          db,
-		natsClient:  nats,
-		bus:         bus,
-		automator:   automator,
-		v2sync:      v2sync,
-		logger:      logger,
-		syncHealthQ: syncHealthQ,
+		repo:           repo,
+		mappingRepo:    mappingRepo,
+		db:             db,
+		natsClient:     nats,
+		bus:            bus,
+		automator:      automator,
+		v2sync:         v2sync,
+		activityLogger: activityLogger,
+		logger:         logger,
+		syncHealthQ:    syncHealthQ,
 	}
-}
-
-// logAction writes an activity log entry for any CMS action
-func (h *RegistryHandler) logAction(operation, targetTable, status string, details map[string]interface{}, errMsg string) {
-	detailsJSON, _ := json.Marshal(details)
-	now := time.Now()
-	var errPtr *string
-	if errMsg != "" {
-		errPtr = &errMsg
-	}
-	h.db.Create(&model.ActivityLog{
-		Operation:    operation,
-		TargetTable:  targetTable,
-		Status:       status,
-		Details:      detailsJSON,
-		ErrorMessage: errPtr,
-		TriggeredBy:  "manual",
-		StartedAt:    now,
-		CompletedAt:  &now,
-	})
 }
 
 // List is kept as a compatibility delegate for V2 read models and internal
@@ -378,11 +361,16 @@ func (h *RegistryHandler) Standardize(c *fiber.Ctx) error {
 		TargetTable: entry.TargetTable,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.logAction("standardize", entry.TargetTable, "error", nil, derr.Error())
+		h.activityLogger.LogAsync(service.ActivityEntry{
+			Operation: "standardize", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch standardize command: " + derr.Error()})
 	}
 
-	h.logAction("standardize", entry.TargetTable, "success", map[string]interface{}{"user": user}, "")
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "standardize", TargetTable: entry.TargetTable, Status: "success",
+		Details: map[string]any{"user": user},
+	})
 	return c.Status(202).JSON(fiber.Map{
 		"message":      "standardize command accepted",
 		"target_table": entry.TargetTable,
@@ -419,14 +407,16 @@ func (h *RegistryHandler) ScanFields(c *fiber.Ctx) error {
 		TargetTable: entry.TargetTable,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.logAction("scan-fields", entry.TargetTable, "error", nil, derr.Error())
+		h.activityLogger.LogAsync(service.ActivityEntry{
+			Operation: "scan-fields", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
 		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
-	h.logAction("scan-fields", entry.TargetTable, "accepted", map[string]interface{}{
-		"user":        user,
-		"sync_engine": entry.SyncEngine,
-	}, "")
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "scan-fields", TargetTable: entry.TargetTable, Status: "accepted",
+		Details: map[string]any{"user": user, "sync_engine": entry.SyncEngine},
+	})
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":      "scan-fields command accepted",
@@ -470,11 +460,16 @@ func (h *RegistryHandler) Transform(c *fiber.Ctx) error {
 	}
 
 	if err := h.natsClient.Conn.Publish("cdc.cmd.batch-transform", []byte(entry.TargetTable)); err != nil {
-		h.logAction("transform", entry.TargetTable, "error", nil, err.Error())
+		h.activityLogger.LogAsync(service.ActivityEntry{
+			Operation: "transform", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: err.Error(),
+		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch transform command: " + err.Error()})
 	}
 
-	h.logAction("transform", entry.TargetTable, "success", map[string]interface{}{"user": middleware.GetUsername(c)}, "")
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "transform", TargetTable: entry.TargetTable, Status: "success",
+		Details: map[string]any{"user": middleware.GetUsername(c)},
+	})
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":      "transform command accepted",
@@ -542,15 +537,20 @@ func (h *RegistryHandler) CreateDefaultColumns(c *fiber.Ctx) error {
 		PrimaryKeyType:  entry.PrimaryKeyType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.logAction("create-default-columns", entry.TargetTable, "error", nil, derr.Error())
+		h.activityLogger.LogAsync(service.ActivityEntry{
+			Operation: "create-default-columns", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + derr.Error()})
 	}
 
-	h.logAction("create-default-columns", entry.TargetTable, "success", map[string]interface{}{
-		"pk_field": entry.PrimaryKeyField,
-		"pk_type":  entry.PrimaryKeyType,
-		"user":     user,
-	}, "")
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "create-default-columns", TargetTable: entry.TargetTable, Status: "success",
+		Details: map[string]any{
+			"pk_field": entry.PrimaryKeyField,
+			"pk_type":  entry.PrimaryKeyType,
+			"user":     user,
+		},
+	})
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":      "create-default-columns command accepted",
@@ -577,19 +577,15 @@ func (h *RegistryHandler) DispatchStatus(c *fiber.Ctx) error {
 	op := subject
 	op = strings.TrimPrefix(op, "cdc.cmd.")
 
-	q := h.db.Model(&model.ActivityLog{}).
-		Where("target_table = ?", entry.TargetTable)
-	if op != "" {
-		q = q.Where("operation = ?", op)
-	}
+	filter := service.ActivityFilter{TargetTable: entry.TargetTable, Operation: op, Limit: 50}
 	if sinceStr != "" {
 		if ts, err := time.Parse(time.RFC3339, sinceStr); err == nil {
-			q = q.Where("started_at >= ?", ts)
+			filter.Since = &ts
 		}
 	}
 
-	var entries []model.ActivityLog
-	if err := q.Order("started_at DESC").Limit(50).Find(&entries).Error; err != nil {
+	entries, err := h.activityLogger.ListActivityLogs(c.UserContext(), filter)
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "query failed: " + err.Error()})
 	}
 
@@ -636,14 +632,16 @@ func (h *RegistryHandler) DetectTimestampField(c *fiber.Ctx) error {
 		SourceType:  entry.SourceType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.logAction("detect-timestamp-field", entry.TargetTable, "error", nil, derr.Error())
+		h.activityLogger.LogAsync(service.ActivityEntry{
+			Operation: "detect-timestamp-field", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
 		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
-	h.logAction("detect-timestamp-field", entry.TargetTable, "accepted", map[string]interface{}{
-		"user":         user,
-		"source_table": entry.SourceTable,
-	}, "")
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "detect-timestamp-field", TargetTable: entry.TargetTable, Status: "accepted",
+		Details: map[string]any{"user": user, "source_table": entry.SourceTable},
+	})
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":      "timestamp field detection dispatched",

@@ -197,13 +197,16 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	shadowAutomator := service.NewShadowAutomator(db, logger)
 	sourceObjectV2Sync := service.NewSourceObjectV2SyncService(db, logger)
 	masterSwap := service.NewMasterSwap(db, jobRepo, logger)
+	// Phase 2 T13 — single owner of cdc_activity_log writes/reads. Shared
+	// across registry, source-object actions, and reconciliation handlers.
+	activityLogger := service.NewActivityLogger(db, logger)
 
 	// Handlers
 	healthHandler := api.NewHealthHandler(db)
 	schemaHandler := api.NewSchemaChangeHandler(pendingRepo, schemaLogRepo, approvalSvc)
-	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, cmdBus, shadowAutomator, sourceObjectV2Sync, logger, getSyncHealthH)
+	registryHandler := api.NewRegistryHandler(registryRepo, mappingRepo, db, natsClient, cmdBus, shadowAutomator, sourceObjectV2Sync, activityLogger, logger, getSyncHealthH)
 	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger, listSourceObjectsH, getSourceMappingContextH)
-	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(registryHandler, db, cmdBus, logger)
+	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(registryHandler, db, cmdBus, activityLogger, logger)
 	systemConnectorsHandler := api.NewSystemConnectorsHandler(kafkaConnectClient, sourceRepo, cmdBus, logger, listConnectorsH, getConnectorH, listConnectorPluginsH)
 	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH)
 	wizardHandler := api.NewWizardHandler(wizardRepo, logger, getWizardSessionH, getWizardProgressH, cmdBus)
@@ -215,7 +218,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	introspectionHandler := api.NewIntrospectionHandler(natsClient)
 	activityLogHandler := api.NewActivityLogHandler(listActivityLogsH, getActivityStatsH)
 	scheduleHandler := api.NewScheduleHandler(db, workerScheduleReader, listWorkerSchedulesH, cmdBus)
-	reconHandler := api.NewReconciliationHandler(db, natsClient, cmdBus, listLatestReportsH, getTableHistoryH, listFailedLogsH)
+	reconHandler := api.NewReconciliationHandler(db, natsClient, cmdBus, listLatestReportsH, getTableHistoryH, listFailedLogsH, activityLogger)
 	jobHandler := api.NewJobHandler(getJobH)
 	// Phase 0 — System Health Background Collector.
 	// Builds a Prometheus client (path A + fallback) and a Collector that

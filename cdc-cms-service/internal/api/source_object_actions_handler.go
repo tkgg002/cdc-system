@@ -11,6 +11,7 @@ import (
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
+	"cdc-cms-service/internal/service"
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -19,14 +20,27 @@ import (
 // SourceObjectActionsHandler provides V2-aware aliases for operator actions
 // that still require the legacy registry bridge internally.
 type SourceObjectActionsHandler struct {
-	registry *RegistryHandler
-	db       *gorm.DB
-	bus      ports.CommandBus
-	logger   *zap.Logger
+	registry       *RegistryHandler
+	db             *gorm.DB
+	bus            ports.CommandBus
+	activityLogger *service.ActivityLogger
+	logger         *zap.Logger
 }
 
-func NewSourceObjectActionsHandler(registry *RegistryHandler, db *gorm.DB, bus ports.CommandBus, logger *zap.Logger) *SourceObjectActionsHandler {
-	return &SourceObjectActionsHandler{registry: registry, db: db, bus: bus, logger: logger}
+func NewSourceObjectActionsHandler(
+	registry *RegistryHandler,
+	db *gorm.DB,
+	bus ports.CommandBus,
+	activityLogger *service.ActivityLogger,
+	logger *zap.Logger,
+) *SourceObjectActionsHandler {
+	return &SourceObjectActionsHandler{
+		registry:       registry,
+		db:             db,
+		bus:            bus,
+		activityLogger: activityLogger,
+		logger:         logger,
+	}
 }
 
 type sourceObjectDispatchScope struct {
@@ -250,17 +264,22 @@ func (h *SourceObjectActionsHandler) CreateDefaultColumnsV2(c *fiber.Ctx) error 
 		PrimaryKeyType:  scope.PrimaryKeyType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.registry.logAction("create-default-columns", scope.TargetTable, "error", nil, derr.Error())
+		h.activityLogger.LogAsync(service.ActivityEntry{
+			Operation: "create-default-columns", TargetTable: scope.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + derr.Error()})
 	}
 
-	h.registry.logAction("create-default-columns", scope.TargetTable, "success", map[string]interface{}{
-		"user":             middleware.GetUsername(c),
-		"source_object_id": id,
-		"pk_field":         scope.PrimaryKeyField,
-		"pk_type":          scope.PrimaryKeyType,
-		"path":             "v2_direct",
-	}, "")
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "create-default-columns", TargetTable: scope.TargetTable, Status: "success",
+		Details: map[string]any{
+			"user":             middleware.GetUsername(c),
+			"source_object_id": id,
+			"pk_field":         scope.PrimaryKeyField,
+			"pk_type":          scope.PrimaryKeyType,
+			"path":             "v2_direct",
+		},
+	})
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":          "create-default-columns command accepted",
@@ -326,15 +345,20 @@ func (h *SourceObjectActionsHandler) StandardizeV2(c *fiber.Ctx) error {
 		ShadowSchema:   scope.ShadowSchema,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.registry.logAction("standardize", scope.TargetTable, "error", nil, derr.Error())
+		h.activityLogger.LogAsync(service.ActivityEntry{
+			Operation: "standardize", TargetTable: scope.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
 		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch standardize command: " + derr.Error()})
 	}
 
-	h.registry.logAction("standardize", scope.TargetTable, "success", map[string]interface{}{
-		"user":             middleware.GetUsername(c),
-		"source_object_id": id,
-		"path":             "v2_direct",
-	}, "")
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "standardize", TargetTable: scope.TargetTable, Status: "success",
+		Details: map[string]any{
+			"user":             middleware.GetUsername(c),
+			"source_object_id": id,
+			"path":             "v2_direct",
+		},
+	})
 	return c.Status(202).JSON(fiber.Map{
 		"message":          "standardize command accepted",
 		"source_object_id": id,
@@ -400,16 +424,21 @@ func (h *SourceObjectActionsHandler) ScanFieldsV2(c *fiber.Ctx) error {
 		SourceType:     scope.SourceType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.registry.logAction("scan-fields", scope.TargetTable, "error", nil, derr.Error())
+		h.activityLogger.LogAsync(service.ActivityEntry{
+			Operation: "scan-fields", TargetTable: scope.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
 		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
-	h.registry.logAction("scan-fields", scope.TargetTable, "accepted", map[string]interface{}{
-		"user":             middleware.GetUsername(c),
-		"source_object_id": id,
-		"sync_engine":      "debezium",
-		"path":             "v2_direct",
-	}, "")
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "scan-fields", TargetTable: scope.TargetTable, Status: "accepted",
+		Details: map[string]any{
+			"user":             middleware.GetUsername(c),
+			"source_object_id": id,
+			"sync_engine":      "debezium",
+			"path":             "v2_direct",
+		},
+	})
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":          "scan-fields command accepted",
@@ -572,16 +601,21 @@ func (h *SourceObjectActionsHandler) DetectTimestampFieldV2(c *fiber.Ctx) error 
 		SourceType:     scope.SourceType,
 	}
 	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
-		h.registry.logAction("detect-timestamp-field", scope.TargetTable, "error", nil, derr.Error())
+		h.activityLogger.LogAsync(service.ActivityEntry{
+			Operation: "detect-timestamp-field", TargetTable: scope.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
 		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
 	}
 
-	h.registry.logAction("detect-timestamp-field", scope.TargetTable, "accepted", map[string]interface{}{
-		"user":             middleware.GetUsername(c),
-		"source_object_id": id,
-		"source_table":     scope.SourceTable,
-		"path":             "v2_direct",
-	}, "")
+	h.activityLogger.LogAsync(service.ActivityEntry{
+		Operation: "detect-timestamp-field", TargetTable: scope.TargetTable, Status: "accepted",
+		Details: map[string]any{
+			"user":             middleware.GetUsername(c),
+			"source_object_id": id,
+			"source_table":     scope.SourceTable,
+			"path":             "v2_direct",
+		},
+	})
 
 	return c.Status(202).JSON(fiber.Map{
 		"message":          "timestamp field detection dispatched",
