@@ -14,7 +14,6 @@ import (
 	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
-	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 
@@ -24,11 +23,11 @@ import (
 )
 
 type RegistryHandler struct {
-	repo           *repository.RegistryRepo
+	repo           ports.RegistryRepo
 	db             *gorm.DB
 	natsClient     *natsconn.NatsClient
 	bus            ports.CommandBus
-	automator      *service.ShadowAutomator
+	automator      *persistence.ShadowAutomator
 	v2sync         *service.SourceObjectV2SyncService
 	activityLogger *persistence.ActivityLogger
 	logger         *zap.Logger
@@ -37,11 +36,11 @@ type RegistryHandler struct {
 }
 
 func NewRegistryHandler(
-	repo *repository.RegistryRepo,
+	repo ports.RegistryRepo,
 	db *gorm.DB,
 	nats *natsconn.NatsClient,
 	bus ports.CommandBus,
-	automator *service.ShadowAutomator,
+	automator *persistence.ShadowAutomator,
 	v2sync *service.SourceObjectV2SyncService,
 	activityLogger *persistence.ActivityLogger,
 	logger *zap.Logger,
@@ -65,7 +64,7 @@ func NewRegistryHandler(
 // List is kept as a compatibility delegate for V2 read models and internal
 // operator-flow bridges. It is intentionally no longer mounted directly.
 func (h *RegistryHandler) List(c *fiber.Ctx) error {
-	filter := repository.RegistryFilter{
+	filter := ports.RegistryFilter{
 		Page:     intQuery(c, "page", 1),
 		PageSize: intQuery(c, "page_size", 20),
 	}

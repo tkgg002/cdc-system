@@ -3,7 +3,7 @@
 // `payload->>'master_name'` partial-state probe are exercised at
 // deploy-time E2E (real cdc_dw container) — no portable test harness
 // for those in this repo today.
-package service
+package persistence
 
 import (
 	"context"

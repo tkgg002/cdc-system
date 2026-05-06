@@ -13,7 +13,6 @@ import (
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/repository"
 	"cdc-cms-service/internal/router"
 	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/database"
@@ -79,7 +78,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	}
 
 	// Repositories
-	registryRepo := repository.NewRegistryRepo(db)
+	registryRepo := persistence.NewRegistryRepo(db)
 	pendingRepo := persistence.NewPendingFieldRepo(db)
 	schemaLogRepo := persistence.NewSchemaLogRepo(db)
 	sourceRepo := persistence.NewSystemConnectorRepo(db)
@@ -195,10 +194,10 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSubject("master.create", "cdc.cmd.master-create")
 
 	// Services
-	approvalSvc := service.NewApprovalService(db, pendingRepo, schemaLogRepo, registryRepo, natsClient, logger)
-	shadowAutomator := service.NewShadowAutomator(db, logger)
+	approvalSvc := service.NewApprovalService(db, pendingRepo, schemaLogRepo, natsClient, logger)
+	shadowAutomator := persistence.NewShadowAutomator(db, logger)
 	sourceObjectV2Sync := service.NewSourceObjectV2SyncService(db, logger)
-	masterSwap := service.NewMasterSwap(db, jobRepo, logger)
+	masterSwap := persistence.NewMasterSwap(db, jobRepo, logger)
 	// Phase 2 T13 — single owner of cdc_activity_log writes/reads. Shared
 	// across registry, source-object actions, and reconciliation handlers.
 	activityLogger := persistence.NewActivityLogger(db, logger)
@@ -216,7 +215,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	schemaProposalHandler := api.NewSchemaProposalHandler(db, cmdBus, logger)
 	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, cmdBus, logger, listTransmuteSchedulesH)
 	mappingPreviewHandler := api.NewMappingPreviewHandler(db, logger)
-	mappingHandler := api.NewMappingRuleHandler(registryRepo, natsClient, cmdBus, listMappingRulesH, db)
+	mappingHandler := api.NewMappingRuleHandler(natsClient, cmdBus, listMappingRulesH, db)
 	introspectionHandler := api.NewIntrospectionHandler(natsClient)
 	activityLogHandler := api.NewActivityLogHandler(listActivityLogsH, getActivityStatsH)
 	scheduleHandler := api.NewScheduleHandler(db, workerScheduleReader, listWorkerSchedulesH, cmdBus)

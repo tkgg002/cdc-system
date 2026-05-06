@@ -11,8 +11,8 @@ import (
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
 	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"github.com/gofiber/fiber/v2"
@@ -32,13 +32,13 @@ import (
 type MasterRegistryHandler struct {
 	db     *gorm.DB
 	nats   *natsconn.NatsClient
-	swap   *service.MasterSwap
+	swap   *persistence.MasterSwap
 	logger *zap.Logger
 	listQ  *queries.ListMastersHandler
 	bus    ports.CommandBus
 }
 
-func NewMasterRegistryHandler(db *gorm.DB, nats *natsconn.NatsClient, swap *service.MasterSwap, logger *zap.Logger, listQ *queries.ListMastersHandler, bus ports.CommandBus) *MasterRegistryHandler {
+func NewMasterRegistryHandler(db *gorm.DB, nats *natsconn.NatsClient, swap *persistence.MasterSwap, logger *zap.Logger, listQ *queries.ListMastersHandler, bus ports.CommandBus) *MasterRegistryHandler {
 	return &MasterRegistryHandler{db: db, nats: nats, swap: swap, logger: logger, listQ: listQ, bus: bus}
 }
 

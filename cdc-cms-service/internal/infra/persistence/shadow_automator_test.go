@@ -4,7 +4,7 @@
 // (no sqlmock in go.sum). The identifier validator is the only
 // non-DB surface here and it's the security gate against SQL
 // injection in shadow_<schema>.<table> — pin its behaviour explicitly.
-package service
+package persistence
 
 import (
 	"strings"
