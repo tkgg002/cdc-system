@@ -14,13 +14,14 @@ import (
 const defaultJWTPlaceholder = "change-me-in-production"
 
 type AppConfig struct {
-	Server ServerConfig `mapstructure:"server"`
-	DB     DBConfig     `mapstructure:"db"`
-	Nats   NatsConfig   `mapstructure:"nats"`
-	Redis  RedisConfig  `mapstructure:"redis"`
-	JWT    JWTConfig    `mapstructure:"jwt"`
-	System SystemConfig `mapstructure:"system"`
-	Otel   OtelConfig   `mapstructure:"otel"`
+	Server   ServerConfig `mapstructure:"server"`
+	DB       DBConfig     `mapstructure:"db"`
+	ShadowDB DBConfig     `mapstructure:"shadowDb"`
+	Nats     NatsConfig   `mapstructure:"nats"`
+	Redis    RedisConfig  `mapstructure:"redis"`
+	JWT      JWTConfig    `mapstructure:"jwt"`
+	System   SystemConfig `mapstructure:"system"`
+	Otel     OtelConfig   `mapstructure:"otel"`
 }
 
 type OtelConfig struct {
@@ -118,6 +119,15 @@ func NewConfig() (*AppConfig, error) {
 		"db.maxOpenConn":           {"CMS_DB_MAX_OPEN_CONN"},
 		"db.maxIdleConn":           {"CMS_DB_MAX_IDLE_CONN"},
 		"db.connMaxLifetime":       {"CMS_DB_CONN_MAX_LIFETIME"},
+		"shadowDb.host":            {"CMS_SHADOW_DB_HOST"},
+		"shadowDb.port":            {"CMS_SHADOW_DB_PORT"},
+		"shadowDb.username":        {"CMS_SHADOW_DB_USERNAME"},
+		"shadowDb.password":        {"CMS_SHADOW_DB_PASSWORD"},
+		"shadowDb.database":        {"CMS_SHADOW_DB_DATABASE"},
+		"shadowDb.sslMode":         {"CMS_SHADOW_DB_SSL_MODE"},
+		"shadowDb.maxOpenConn":     {"CMS_SHADOW_DB_MAX_OPEN_CONN"},
+		"shadowDb.maxIdleConn":     {"CMS_SHADOW_DB_MAX_IDLE_CONN"},
+		"shadowDb.connMaxLifetime": {"CMS_SHADOW_DB_CONN_MAX_LIFETIME"},
 		"nats.url":                 {"CMS_NATS_URL", "NATS_URL"},
 		"nats.user":                {"CMS_NATS_USER"},
 		"nats.pass":                {"CMS_NATS_PASS"},

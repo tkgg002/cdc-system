@@ -47,11 +47,32 @@ type Server struct {
 }
 
 func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
-	db, err := database.NewPostgresConnection(cfg)
+	db, err := database.NewPostgresConnection(cfg.DB)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
-	logger.Info("PostgreSQL connected")
+	logger.Info("PostgreSQL (control plane) connected")
+
+	// G-8 A3 hybrid: shadow data plane lives on a separate cluster
+	// (gpay-postgres-shadow:5432/cdc_shadow) — worker writes shadow
+	// rows there via Kafka Connect, so cms must create the DDL on
+	// the same cluster or the tables go orphan. Fall back to the
+	// control-plane session when shadowDb isn't configured (older
+	// deployments that haven't been re-rolled with the new YAML).
+	shadowDB := db
+	if cfg.ShadowDB.Host != "" {
+		sdb, err := database.NewPostgresConnection(cfg.ShadowDB)
+		if err != nil {
+			return nil, fmt.Errorf("postgres shadow: %w", err)
+		}
+		shadowDB = sdb
+		logger.Info("PostgreSQL (shadow data plane) connected",
+			zap.String("host", cfg.ShadowDB.Host),
+			zap.Int("port", cfg.ShadowDB.Port),
+			zap.String("database", cfg.ShadowDB.Database))
+	} else {
+		logger.Warn("shadowDb not configured — ShadowAutomator falls back to control plane (Path A); shadow tables will be orphaned vs worker writes (Path B)")
+	}
 
 	// Schema managed via SQL migrations (centralized-data-service/migrations/001-014
 	// + cdc-cms-service/migrations/003-013) — NOT auto-migrated.
@@ -195,7 +216,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 
 	// Services
 	approvalSvc := persistence.NewApprovalService(db, pendingRepo, schemaLogRepo, natsClient, logger)
-	shadowAutomator := persistence.NewShadowAutomator(db, logger)
+	shadowAutomator := persistence.NewShadowAutomator(shadowDB, logger)
 	sourceObjectV2Sync := persistence.NewSourceObjectV2SyncService(db, logger)
 	masterSwap := persistence.NewMasterSwap(db, jobRepo, logger)
 	// Phase 2 T13 — single owner of cdc_activity_log writes/reads. Shared

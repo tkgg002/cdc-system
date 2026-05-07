@@ -11,10 +11,10 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func NewPostgresConnection(cfg *config.AppConfig) (*gorm.DB, error) {
+func NewPostgresConnection(dbCfg config.DBConfig) (*gorm.DB, error) {
 	dsn := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.DB.Host, cfg.DB.Port, cfg.DB.UserName, cfg.DB.Password, cfg.DB.Database, cfg.DB.SSLMode,
+		dbCfg.Host, dbCfg.Port, dbCfg.UserName, dbCfg.Password, dbCfg.Database, dbCfg.SSLMode,
 	)
 
 	logLevel := logger.Warn
@@ -32,18 +32,18 @@ func NewPostgresConnection(cfg *config.AppConfig) (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
 	}
 
-	maxOpen := cfg.DB.MaxOpenConn
+	maxOpen := dbCfg.MaxOpenConn
 	if maxOpen <= 0 {
 		maxOpen = 25
 	}
-	maxIdle := cfg.DB.MaxIdleConn
+	maxIdle := dbCfg.MaxIdleConn
 	if maxIdle <= 0 {
 		maxIdle = 10
 	}
 	sqlDB.SetMaxOpenConns(maxOpen)
 	sqlDB.SetMaxIdleConns(maxIdle)
-	if cfg.DB.ConnMaxLifetime > 0 {
-		sqlDB.SetConnMaxLifetime(cfg.DB.ConnMaxLifetime)
+	if dbCfg.ConnMaxLifetime > 0 {
+		sqlDB.SetConnMaxLifetime(dbCfg.ConnMaxLifetime)
 	} else {
 		sqlDB.SetConnMaxLifetime(1 * time.Hour)
 	}
