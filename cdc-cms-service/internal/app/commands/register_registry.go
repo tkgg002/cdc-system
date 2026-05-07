@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -72,6 +73,7 @@ func (h *RegisterRegistryHandler) Handle(ctx context.Context, c ports.Command) (
 	}
 
 	entry := cmd.Entry
+	entry.PrimaryKeyType = normalizePKType(entry.PrimaryKeyType)
 	if err := h.db.WithContext(ctx).Create(&entry).Error; err != nil {
 		return nil, err
 	}
@@ -112,6 +114,19 @@ func (h *RegisterRegistryHandler) Handle(ctx context.Context, c ports.Command) (
 		"entry":   entry,
 	})
 	return body, nil
+}
+
+// normalizePKType maps Mongo/BSON-flavored primary-key type names that
+// PostgreSQL doesn't recognize onto canonical PG types. Worker
+// command_handler propagates pk_type into ALTER/CREATE DDL verbatim, so a
+// raw "string" value triggers SQLSTATE 42704. Narrow scope: only the
+// observed Flow-1 case ("string" → "text"); other unknown values pass
+// through so worker validation still surfaces them.
+func normalizePKType(t string) string {
+	if strings.EqualFold(strings.TrimSpace(t), "string") {
+		return "text"
+	}
+	return t
 }
 
 // normalizeShadowIdent — duplicated here to keep commands package free of

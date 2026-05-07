@@ -91,3 +91,22 @@ func TestReconCheckCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizePKType(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"string", "text"},
+		{"STRING", "text"},
+		{"  string  ", "text"},
+		{"text", "text"},
+		{"BIGINT", "BIGINT"},
+		{"", ""},
+		{"objectid", "objectid"},
+	}
+	for _, tc := range cases {
+		if got := normalizePKType(tc.in); got != tc.want {
+			t.Errorf("normalizePKType(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
