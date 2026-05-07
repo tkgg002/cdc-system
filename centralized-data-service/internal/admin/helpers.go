@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 
+	"centralized-data-service/internal/naming"
+
 	"go.uber.org/zap"
 )
 
@@ -17,18 +19,19 @@ import (
 // ──────────────────────────────────────────────
 
 // shadowSchemaFor derives the PostgreSQL schema name for shadow tables.
-// Convention: shadow_<database> (mongo appends _mongo suffix).
+// Convention: <prefix><database> (mongo/mariadb append engine suffix).
+// Prefix is naming.ShadowSchemaPrefix() (default "shadow_", env-overridable).
 func shadowSchemaFor(req RegisterSourceRequest) string {
-	db := stringFromLocator(req.SourceLocator, "database")
+	db := strings.ReplaceAll(stringFromLocator(req.SourceLocator, "database"), "-", "_")
 	switch req.SourceEngineType {
 	case "postgresql":
-		return "shadow_" + strings.ReplaceAll(db, "-", "_")
+		return naming.ShadowSchemaName(db)
 	case "mongodb":
-		return "shadow_" + strings.ReplaceAll(db, "-", "_") + "_mongo"
+		return naming.ShadowSchemaName(db + "_mongo")
 	case "mariadb", "mysql":
-		return "shadow_" + strings.ReplaceAll(db, "-", "_") + "_mariadb"
+		return naming.ShadowSchemaName(db + "_mariadb")
 	}
-	return "shadow_default"
+	return naming.ShadowSchemaName("default")
 }
 
 // sourceObjectTypeFor derives object type (table|collection|view).

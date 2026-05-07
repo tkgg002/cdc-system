@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"centralized-data-service/internal/naming"
 	"centralized-data-service/internal/service"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -58,6 +59,7 @@ type ProvisioningStepHandler struct {
 	// cementing the shadow schema. nil disables the gate (PG/MariaDB
 	// still get the universal Discover gate downstream).
 	mongoClient *mongo.Client
+	shadowDB    *gorm.DB // Phase A3 Hybrid — connection to cdc_shadow
 	logger      *zap.Logger
 }
 
@@ -66,6 +68,7 @@ func NewProvisioningStepHandler(
 	natsConn *nats.Conn,
 	schemaAdapter *service.SchemaAdapter,
 	mongoClient *mongo.Client,
+	shadowDB *gorm.DB,
 	logger *zap.Logger,
 ) *ProvisioningStepHandler {
 	if logger == nil {
@@ -75,6 +78,7 @@ func NewProvisioningStepHandler(
 		db: db, natsConn: natsConn,
 		schemaAdapter: schemaAdapter,
 		mongoClient:   mongoClient,
+		shadowDB:      shadowDB,
 		logger:        logger,
 	}
 }
@@ -153,7 +157,14 @@ func (h *ProvisioningStepHandler) HandleShadowBind(msg *nats.Msg) {
 	// failed if inference yielded nothing.
 	businessCols := h.inferSourceColumns(ctx, req.SourceID, resolved.PKColumn)
 
-	if pErr := h.schemaAdapter.PrepareForCDCInsertWithBusinessCols(
+	// Phase A3 Hybrid — Prepare shadow table in shadowDB using a
+	// dedicated SchemaAdapter if shadowDB is split.
+	adapter := h.schemaAdapter
+	if h.shadowDB != nil {
+		adapter = service.NewSchemaAdapter(h.shadowDB, h.logger)
+	}
+
+	if pErr := adapter.PrepareForCDCInsertWithBusinessCols(
 		resolved.SchemaName, resolved.TableName, resolved.PKColumn, businessCols,
 	); pErr != nil {
 		stepErr = fmt.Errorf("prepare shadow table %s.%s: %w",
@@ -264,16 +275,16 @@ func (h *ProvisioningStepHandler) resolveShadowTarget(
 		return shadowTarget{}, fmt.Errorf("source_id=%d not found in registry", req.SourceID)
 	}
 	out := shadowTarget{
-		SchemaName: req.SchemaName,
-		TableName:  req.TableName,
-		PKColumn:   req.PKColumn,
+		SchemaName: "shadow_" + row.ConnectionCode,
+		TableName:  naming.NormalizeIdentifier(row.SourceObjectName),
+		PKColumn:   firstNonEmpty(row.PrimaryKeyField, "id"),
 	}
 	if out.SchemaName == "" {
 		conn := strings.TrimSpace(row.ConnectionCode)
 		if conn == "" {
 			conn = "default"
 		}
-		out.SchemaName = "shadow_" + conn
+		out.SchemaName = naming.ShadowSchemaName(conn)
 	}
 	if out.TableName == "" {
 		out.TableName = row.SourceObjectName
@@ -724,4 +735,10 @@ func bsonToPGType(v interface{}) string {
 	default:
 		return "TEXT"
 	}
+}
+func firstNonEmpty(v *string, fallback string) string {
+	if v == nil || *v == "" {
+		return fallback
+	}
+	return *v
 }

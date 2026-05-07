@@ -1,153 +1,56 @@
+# ============================================================
+# centralized-data-service — CORE CDC infra
+# Phase B5 (2026-05-05) — split: chỉ giữ những service mà cdc-worker
+# pipeline core BẮT BUỘC cần để chạy. Các source/destination DB do
+# admin/CMS cấu hình đã được tách sang `cdc-system/cdc-docker-dev/`.
+#
+# Network: external `cdc-bridge` — 2 compose dùng chung.
+# Bootstrap (1 lần): `docker network create cdc-bridge`
+# ============================================================
 services:
-  # 1. Source: MySQL (Bật Binlog cho Debezium sau này)
-  mysql:
-    image: mysql:8.0
-    container_name: gpay-mysql
-    command:
-      - --server-id=1
-      - --log-bin=mysql-bin
-      - --binlog-format=ROW
-      - --binlog-row-image=FULL
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: goopay_db
-    ports:
-      - "13306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    networks:
-      - cdc-network
-
-  # 2. Source: MongoDB (Bật ReplicaSet để có Oplog)
-  mongodb:
-    image: mongo:6.0
-    container_name: gpay-mongo
-    command: ["--replSet", "rs0", "--bind_ip_all"]
-    ports:
-      - "17017:27017"
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - cdc-network
-    healthcheck:
-      test: echo "try { rs.status() } catch (err) { rs.initiate() }" | mongosh --quiet
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # 3. Message Broker: NATS JetStream
+  # 1. Message Broker — NATS JetStream (worker + cms event bus).
   nats:
     image: nats:2.9-alpine
     container_name: gpay-nats
     command: ["-c", "/etc/nats/nats-server.conf"]
     ports:
-      - "14222:4222"   # Client port
-      - "18222:8222"   # Monitoring port (HTTP)
+      - "14222:4222"
+      - "18222:8222"
     volumes:
       - ./deployments/nats/nats-server.conf:/etc/nats/nats-server.conf:ro
     networks:
-      - cdc-network
+      - cdc-bridge
 
-  # 4a. Auth-only PostgreSQL — chỉ chứa schema cdc_auth_service
-  postgres:
-    image: postgres:15-alpine
-    container_name: gpay-postgres
-    environment:
-      POSTGRES_USER: gpay_admin
-      POSTGRES_PASSWORD: gpay_pass
-      POSTGRES_DB: gpay_auth
-    ports:
-      - "5432:5432"
-    volumes:
-      - pg_auth_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gpay_admin -d gpay_auth"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - cdc-network
-
-  # 4b. CDC control plane — cdc_system + shadow_<src> schemas
+  # 2. CDC control plane — cdc_system + shadow_<src> schemas.
   postgres-cdc:
     image: postgres:15-alpine
     container_name: gpay-postgres-cdc
     environment:
-      POSTGRES_USER: gpay_admin
-      POSTGRES_PASSWORD: gpay_pass
-      POSTGRES_DB: cdc_dw
+      POSTGRES_USER: ${CDC_PG_USER:-gpay_admin}
+      POSTGRES_PASSWORD: ${CDC_PG_PASSWORD:-gpay_pass}
+      POSTGRES_DB: ${CDC_PG_DATABASE:-cdc_dw}
     ports:
       - "5433:5432"
     volumes:
       - pg_cdc_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gpay_admin -d cdc_dw"]
+      test: ["CMD-SHELL", "pg_isready -U ${CDC_PG_USER:-gpay_admin} -d ${CDC_PG_DATABASE:-cdc_dw}"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - cdc-network
+      - cdc-bridge
 
-  # 4c. Destination/DW — master tables + dw_<binding> schemas
-  postgres-dest:
-    image: postgres:15-alpine
-    container_name: gpay-postgres-dest
-    environment:
-      POSTGRES_USER: gpay_admin
-      POSTGRES_PASSWORD: gpay_pass
-      POSTGRES_DB: goopay_dest
-    ports:
-      - "5434:5432"
-    volumes:
-      - pg_dest_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gpay_admin -d goopay_dest"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - cdc-network
-
-  # 4d. SOURCE test DB — Debezium logical decoding source (mock external system)
-  postgres-source:
-    image: postgres:15-alpine
-    container_name: gpay-postgres-source
-    command:
-      - "postgres"
-      - "-c"
-      - "wal_level=logical"
-      - "-c"
-      - "max_wal_senders=10"
-      - "-c"
-      - "max_replication_slots=10"
-    environment:
-      POSTGRES_USER: src_user
-      POSTGRES_PASSWORD: src_pass
-      POSTGRES_DB: goopay_source
-    ports:
-      - "5435:5432"
-    volumes:
-      - pg_source_data:/var/lib/postgresql/data
-      - ./deployments/sql/source:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U src_user -d goopay_source"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - cdc-network
-
-  # 5. Cache: Redis (Schema Inspector cache + mapping rules)
+  # 3. Redis — schema-inspector cache + dedupe state.
   redis:
     image: redis:7-alpine
     container_name: gpay-redis
     ports:
       - "16379:6379"
     networks:
-      - cdc-network
+      - cdc-bridge
 
-
-  # 7. CDC Worker Service (Go)
+  # 4. cdc-worker (Go core).
   cdc-worker:
     build:
       context: .
@@ -156,26 +59,31 @@ services:
     depends_on:
       - nats
       - postgres-cdc
-      - postgres-dest
       - redis
     environment:
-      - NATS_URL=nats://cdc_worker:worker_secret_2026@nats:4222
-      - CDC_CONTROL_PLANE_URL=postgres://gpay_admin:gpay_pass@postgres-cdc:5432/cdc_dw?sslmode=disable
-      - CDC_SYSTEM_DB_URL=postgres://gpay_admin:gpay_pass@postgres-cdc:5432/cdc_dw?sslmode=disable
-      - CDC_MASTER_DB_URL=postgres://gpay_admin:gpay_pass@postgres-dest:5432/goopay_dest?sslmode=disable
-      - CDC_SHADOW_DB_URL=postgres://gpay_admin:gpay_pass@postgres-cdc:5432/cdc_dw?sslmode=disable
-      - REDIS_URL=redis://redis:6379
-      - KAFKA_BROKERS=kafka:9092
-      - KAFKA_SCHEMA_REGISTRY_URL=http://schema-registry:8081
-      - MONGODB_URL=mongodb://gpay-mongo:27017/?replicaSet=rs0
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - BATCH_SIZE=500
-      - BATCH_TIMEOUT=2s
-      - WORKER_POOL_SIZE=10
+      - NATS_URL=${NATS_URL:-nats://cdc_worker:worker_secret_2026@nats:4222}
+      - CDC_CONTROL_PLANE_URL=${CDC_CONTROL_PLANE_URL:-postgres://gpay_admin:gpay_pass@postgres-cdc:5432/cdc_dw?sslmode=disable}
+      - CDC_SYSTEM_DB_URL=${CDC_SYSTEM_DB_URL:-postgres://gpay_admin:gpay_pass@postgres-cdc:5432/cdc_dw?sslmode=disable}
+      - CDC_SHADOW_DB_URL=${CDC_SHADOW_DB_URL:-postgres://gpay_admin:gpay_pass@postgres-cdc:5432/cdc_dw?sslmode=disable}
+      # Master/dest DSN: hostname `gpay-postgres-dest` resolves qua external
+      # network `cdc-bridge` khi cdc-docker-dev/docker-compose.yml chạy song song.
+      - CDC_MASTER_DB_URL=${CDC_MASTER_DB_URL:-postgres://gpay_admin:gpay_pass@gpay-postgres-dest:5432/goopay_dest?sslmode=disable}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka:9092}
+      - KAFKA_SCHEMA_REGISTRY_URL=${KAFKA_SCHEMA_REGISTRY_URL:-http://schema-registry:8081}
+      # Source DSNs — dev container hostnames resolve qua cdc-bridge.
+      - SOURCE_DSN_POSTGRES_PRIMARY=${SOURCE_DSN_POSTGRES_PRIMARY:-postgres://src_user:src_pass@gpay-postgres-source:5432/goopay_source?sslmode=disable}
+      - SOURCE_DSN_MONGODB_PRIMARY=${SOURCE_DSN_MONGODB_PRIMARY:-mongodb://gpay-mongo:27017/?replicaSet=rs0}
+      - MONGODB_URL=${MONGODB_URL:-mongodb://gpay-mongo:27017/?replicaSet=rs0}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      - BATCH_SIZE=${BATCH_SIZE:-500}
+      - BATCH_TIMEOUT=${BATCH_TIMEOUT:-2s}
+      - WORKER_POOL_SIZE=${WORKER_POOL_SIZE:-10}
+      - PROVISIONING_ORCHESTRATOR_ENABLED=1
     networks:
-      - cdc-network
+      - cdc-bridge
 
-  # 8. Kafka (KRaft mode — no ZooKeeper)
+  # 5. Kafka (KRaft mode — no ZooKeeper).
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: gpay-kafka
@@ -183,7 +91,6 @@ services:
       - "19092:29092"
       - "19093:9093"
     environment:
-      # KRaft mode
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
@@ -202,9 +109,9 @@ services:
     volumes:
       - kafka_data:/var/lib/kafka/data
     networks:
-      - cdc-network
+      - cdc-bridge
 
-  # 9. Schema Registry (Avro)
+  # 6. Schema Registry (Avro).
   schema-registry:
     image: confluentinc/cp-schema-registry:7.6.0
     container_name: gpay-schema-registry
@@ -218,16 +125,16 @@ services:
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
       SCHEMA_REGISTRY_HEAP_OPTS: "-Xmx256m -Xms128m"
     networks:
-      - cdc-network
+      - cdc-bridge
 
-  # 10. Kafka Connect + Debezium
+  # 7. Kafka Connect + Debezium plugins. KHÔNG depends_on mongodb (đã
+  # tách qua dev compose — cross-compose dependency = anti-pattern).
   kafka-connect:
     image: confluentinc/cp-kafka-connect:7.6.0
     container_name: gpay-kafka-connect
     depends_on:
       - kafka
       - schema-registry
-      - mongodb
     ports:
       - "18083:8083"
     environment:
@@ -251,18 +158,14 @@ services:
       - bash
       - -c
       - |
-        # Install Debezium MongoDB connector
         confluent-hub install --no-prompt debezium/debezium-connector-mongodb:2.5.4
-        # Install Debezium PostgreSQL connector (Phase 01 split E2E — Track D)
         confluent-hub install --no-prompt debezium/debezium-connector-postgresql:2.5.4
-        # Install Debezium MySQL/MariaDB connector (Fix B8)
         confluent-hub install --no-prompt debezium/debezium-connector-mysql:2.5.4
-        # Start Connect
         /etc/confluent/docker/run
     networks:
-      - cdc-network
+      - cdc-bridge
 
-  # 11b. Kafka Exporter (Phase 5 — consumer lag metrics for Prometheus)
+  # 8. Kafka Exporter — Prometheus consumer-lag metrics.
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.7.0
     container_name: gpay-kafka-exporter
@@ -276,10 +179,10 @@ services:
     ports:
       - "9308:9308"
     networks:
-      - cdc-network
+      - cdc-bridge
     restart: unless-stopped
 
-  # 11. Redpanda Console (Kafka UI)
+  # 9. Redpanda Console — Kafka UI.
   redpanda-console:
     image: redpandadata/console:v2.7.2
     container_name: gpay-redpanda-console
@@ -296,48 +199,12 @@ services:
       CONNECT_CLUSTERS_NAME: cdc-connect
       CONNECT_CLUSTERS_URL: http://kafka-connect:8083
     networks:
-      - cdc-network
+      - cdc-bridge
+    # Phase B5 (2026-05-05): Kafka cold-start race — redpanda-console
+    # bỏ cuộc sau 31s retry. Restart policy giúp tự gắn lại khi Kafka up.
+    restart: unless-stopped
 
-  # 12. Debezium Server (DEPRECATED — replaced by Kafka Connect)
-  # Keeping for reference, container should be stopped
-  # debezium:
-  #   image: quay.io/debezium/server:2.5
-  #   container_name: gpay-debezium
-
-  # 12b. MariaDB source (Phase multi_engine_unified L4) — third
-  # CDC engine alongside PG (gpay-postgres-source) and Mongo
-  # (gpay-mongo). Binlog ROW format + GTID strict for Debezium
-  # MySql connector. Topic prefix `cdc.mariadb` (matches yaml
-  # kafka.topicPrefix list).
-  mariadb:
-    image: mariadb:10.11
-    container_name: gpay-mariadb
-    environment:
-      MARIADB_ROOT_PASSWORD: root
-      MARIADB_DATABASE: goopay_legacy_maria
-      MARIADB_USER: cdc
-      MARIADB_PASSWORD: cdc_pass
-    command:
-      - --server-id=10
-      - --log-bin=mysql-bin
-      - --binlog-format=ROW
-      - --binlog-row-image=FULL
-      - --gtid-strict-mode=1
-      - --gtid-domain-id=10
-    ports:
-      - "13307:3306"
-    volumes:
-      - mariadb_data:/var/lib/mysql
-      - ./deployments/mariadb/init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-    networks:
-      - cdc-network
-
-  # 13. OpenTelemetry Collector — sink for cdc-worker traces/logs/metrics
+  # 10. OpenTelemetry Collector.
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.96.0
     container_name: gpay-otel-collector
@@ -345,25 +212,15 @@ services:
     volumes:
       - ./deployments/otel-collector-config.yml:/etc/otel-collector-config.yml:ro
     ports:
-      - "14318:4318"   # OTLP HTTP
-      - "14317:4317"   # OTLP gRPC
+      - "14318:4318"
+      - "14317:4317"
     networks:
-      - cdc-network
-
-  # 14. CMS Service — tách riêng project: ../cdc-cms-service
-  #    Xem ../cdc-cms-service/docker-compose.yml hoặc chạy:
-  #    cd ../cdc-cms-service && docker compose up -d
+      - cdc-bridge
 
 volumes:
-  mysql_data:
-  mongo_data:
-  pg_auth_data:
   pg_cdc_data:
-  pg_dest_data:
-  pg_source_data:
   kafka_data:
-  mariadb_data:
 
 networks:
-  cdc-network:
-    driver: bridge
+  cdc-bridge:
+    external: true

@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"reflect"
 	"strings"
@@ -11,6 +13,8 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
+
+const defaultJWTPlaceholder = "change-me-in-production"
 
 type AppConfig struct {
 	Server   ServerConfig   `mapstructure:"server"`
@@ -194,20 +198,30 @@ type JWTConfig struct {
 func NewConfig() (*AppConfig, error) {
 	cfg := &AppConfig{}
 
-	path := os.Getenv("CFG_PATH")
+	path := os.Getenv("cfgPath")
 	if path == "" {
-		path = "./config/config-local"
+		path = os.Getenv("CFG_PATH")
 	}
+	if path == "" {
+		path = "./config/config-local.yml"
+	}
+	log.Printf("config path: %s", path)
 
 	v := viper.New()
-	v.SetConfigName(path)
-	v.SetConfigType("yml")
-	v.AddConfigPath(".")
+	if strings.Contains(path, "/") || strings.HasSuffix(path, ".yml") || strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".json") {
+		v.SetConfigFile(path)
+	} else {
+		v.SetConfigName(path)
+		v.SetConfigType("yml")
+		v.AddConfigPath("./config")
+		v.AddConfigPath("config")
+		v.AddConfigPath(".")
+	}
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	if err := v.ReadInConfig(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
 	decodeHook := viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
@@ -216,11 +230,19 @@ func NewConfig() (*AppConfig, error) {
 		stringToStringSliceHookFunc(),
 	))
 	if err := v.Unmarshal(cfg, decodeHook); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 
 	mergeTopicPrefixAlias(v, cfg)
 	applyEnvOverrides(cfg)
+
+	// Validate user inputs BEFORE fallbacks fill in derivable fields,
+	// so cfg.DB.PgxDSN() literal-non-empty garbage doesn't slip past.
+	if err := validateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("validate config: %w", err)
+	}
+
+	applyDBFallbacks(cfg)
 
 	return cfg, nil
 }
@@ -341,6 +363,12 @@ func applyEnvOverrides(cfg *AppConfig) {
 	if v := os.Getenv("JWT_SECRET"); v != "" {
 		cfg.JWT.Secret = v
 	}
+	// OTEL_ENDPOINT lets host-running processes (e.g. /tmp/cdc-admin-api-f3v2)
+	// override the docker-DNS endpoint (`http://otel-collector:4318`) hard-coded
+	// in YAML. Host process must use the host-mapped port (`localhost:14318`).
+	if v := os.Getenv("OTEL_ENDPOINT"); v != "" {
+		cfg.Otel.Endpoint = v
+	}
 	if v := os.Getenv("KAFKA_CONNECT_URL"); v != "" {
 		cfg.Debezium.KafkaConnectURL = v
 	}
@@ -362,7 +390,64 @@ func applyEnvOverrides(cfg *AppConfig) {
 		}
 		cfg.Sources["mongodb_primary"] = strings.TrimSpace(v)
 	}
-	applyDBFallbacks(cfg)
+	// Phase B5 (2026-05-05) — explicit SOURCE_DSN_<KEY> env override for
+	// each connection_code in cfg.Sources. Convention: lowercased key in
+	// YAML map ↔ uppercased key in env (e.g. `postgres_primary` ↔
+	// `SOURCE_DSN_POSTGRES_PRIMARY`). Empty env = keep YAML.
+	if v := os.Getenv("SOURCE_DSN_POSTGRES_PRIMARY"); v != "" {
+		if cfg.Sources == nil {
+			cfg.Sources = make(map[string]string)
+		}
+		cfg.Sources["postgres_primary"] = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("SOURCE_DSN_MONGODB_PRIMARY"); v != "" {
+		if cfg.Sources == nil {
+			cfg.Sources = make(map[string]string)
+		}
+		cfg.Sources["mongodb_primary"] = strings.TrimSpace(v)
+		// Also hydrate legacy alias to keep applyDBFallbacks bridge intact.
+		if strings.TrimSpace(cfg.MongoDB.URL) == "" {
+			cfg.MongoDB.URL = strings.TrimSpace(v)
+		}
+	}
+	// applyDBFallbacks is called by NewConfig AFTER validateConfig so the
+	// validator sees pre-fallback user intent. Do not call it here.
+}
+
+// validateConfig refuses configurations that would boot but fail at runtime
+// (or — worse — silently connect to garbage). Runs AFTER applyEnvOverrides
+// but BEFORE applyDBFallbacks so the validator sees user-provided fields,
+// not derived ones.
+func validateConfig(cfg *AppConfig) error {
+	if strings.TrimSpace(cfg.Server.Port) == "" {
+		return errors.New("server.port required (set in YAML or via env)")
+	}
+	// DB primary: at least ONE source must be set.
+	hasLegacy := strings.TrimSpace(cfg.DB.URL) != "" ||
+		(strings.TrimSpace(cfg.DB.Host) != "" && strings.TrimSpace(cfg.DB.Database) != "")
+	hasSplit := strings.TrimSpace(cfg.SystemDB.URL) != ""
+	if !hasLegacy && !hasSplit {
+		return errors.New("DB connection required (set db.host+db.database, db.url, systemDb.url, or env CDC_SYSTEM_DB_URL/DB_SINK_URL)")
+	}
+	// MasterDB target — single source of truth for destination DW per Phase 01 split E2E.
+	masterKey := strings.TrimSpace(cfg.MasterDB.DefaultKey)
+	if masterKey == "" {
+		masterKey = "default"
+	}
+	masterURL := ""
+	if cfg.MasterDB.URLs != nil {
+		masterURL = strings.TrimSpace(cfg.MasterDB.URLs[masterKey])
+	}
+	if masterURL == "" {
+		return fmt.Errorf("masterDB.urls[%s] required (set in YAML or env CDC_MASTER_DB_URL/CDC_DESTINATION_URL)", masterKey)
+	}
+	if strings.TrimSpace(cfg.JWT.Secret) == "" {
+		return errors.New("jwt.secret required (set in YAML or env JWT_SECRET)")
+	}
+	if strings.EqualFold(cfg.Server.Mode, "production") && cfg.JWT.Secret == defaultJWTPlaceholder {
+		return errors.New("jwt.secret must not use default placeholder in production mode")
+	}
+	return nil
 }
 
 func applyDBFallbacks(cfg *AppConfig) {

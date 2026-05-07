@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"centralized-data-service/internal/model"
+	"centralized-data-service/internal/naming"
 	"centralized-data-service/internal/repository"
 	"centralized-data-service/internal/service"
 
@@ -27,6 +28,7 @@ type CommandHandler struct {
 	mappingRepo  *repository.MappingRuleRepo
 	registryRepo *repository.RegistryRepo
 	pendingRepo  *repository.PendingFieldRepo
+	shadowDB     *gorm.DB // Phase A3 Hybrid — connection to cdc_shadow
 	metadata     service.MetadataRegistry
 	logger       *zap.Logger
 	// kafkaConnectURL — base URL for Kafka Connect REST (boundary
@@ -69,12 +71,20 @@ type CommandResult struct {
 	Error        string `json:"error,omitempty"`
 }
 
-func NewCommandHandler(db *gorm.DB, mappingRepo *repository.MappingRuleRepo, registryRepo *repository.RegistryRepo, pendingRepo *repository.PendingFieldRepo, logger *zap.Logger) *CommandHandler {
+func NewCommandHandler(
+	db *gorm.DB,
+	mappingRepo *repository.MappingRuleRepo,
+	registryRepo *repository.RegistryRepo,
+	pendingRepo *repository.PendingFieldRepo,
+	shadowDB *gorm.DB,
+	logger *zap.Logger,
+) *CommandHandler {
 	return &CommandHandler{
 		db:           db,
 		mappingRepo:  mappingRepo,
 		registryRepo: registryRepo,
 		pendingRepo:  pendingRepo,
+		shadowDB:     shadowDB,
 		logger:       logger,
 	}
 }
@@ -381,20 +391,31 @@ func (h *CommandHandler) HandleDiscover(msg *nats.Msg) {
 	)
 	schemaName := h.resolveTargetSchema(payload.TargetTable)
 
-	// 1. Get columns from DW information_schema
-	type ColInfo struct {
-		ColumnName string
-		DataType   string
+	// Step 1: Discover columns from information_schema
+	var cols []struct {
+		ColumnName string `gorm:"column:column_name"`
+		DataType   string `gorm:"column:data_type"`
 	}
-	var cols []ColInfo
-	if err := h.db.WithContext(context.Background()).Raw(`
+
+	// Phase A3 Hybrid — targetTable is in shadowDB (cdc_shadow).
+	// Normalize table name to handle hyphens (e.g. refund-requests -> refund_requests).
+	normalizedTable := naming.NormalizeIdentifier(payload.TargetTable)
+	discoveryDB := h.db
+	if h.shadowDB != nil {
+		discoveryDB = h.shadowDB
+	}
+
+	if err := discoveryDB.WithContext(context.Background()).Raw(`
 		SELECT column_name, data_type
 		FROM information_schema.columns
 		WHERE table_name = ? AND table_schema = ?
 		ORDER BY ordinal_position
-	`, payload.TargetTable, schemaName).Scan(&cols).Error; err != nil {
+	`, normalizedTable, schemaName).Scan(&cols).Error; err != nil {
 		stepErr = fmt.Errorf("get columns: %w", err)
-		h.logger.Error("discover: failed to get columns", zap.Error(err))
+		h.logger.Error("discover: query information_schema failed",
+			zap.String("table", normalizedTable),
+			zap.String("schema", schemaName),
+			zap.Error(err))
 		h.publishResult(msg, CommandResult{
 			Command:     "discover",
 			RegistryID:  payload.RegistryID,
@@ -667,6 +688,78 @@ func (h *CommandHandler) HandleBackfill(msg *nats.Msg) {
 		RowsAffected: rows,
 		Status:       "success",
 	})
+}
+
+// HandleMasterSwap performs atomic RENAME for a master table.
+func (h *CommandHandler) HandleMasterSwap(msg *nats.Msg) {
+	var req struct {
+		MasterName    string `json:"master_name"`
+		NewTableName  string `json:"new_table_name"`
+		Reason        string `json:"reason"`
+	}
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		h.logger.Error("cdc.cmd.master-swap: invalid payload", zap.Error(err))
+		return
+	}
+
+	jobID := msg.Header.Get("Cdc-Job-Id")
+
+	h.logger.Info("master swap starting", zap.String("master", req.MasterName), zap.String("new_table", req.NewTableName), zap.String("job_id", jobID))
+
+	err := h.db.WithContext(context.Background()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL lock_timeout = '3s'").Error; err != nil {
+			return fmt.Errorf("set lock_timeout: %w", err)
+		}
+
+		ts := time.Now().Unix()
+		oldName := fmt.Sprintf("%s_old_%d", req.MasterName, ts)
+
+		renameCur := fmt.Sprintf(`ALTER TABLE public."%s" RENAME TO "%s"`, req.MasterName, oldName)
+		if err := tx.Exec(renameCur).Error; err != nil {
+			return fmt.Errorf("rename current: %w", err)
+		}
+		renameNew := fmt.Sprintf(`ALTER TABLE public."%s" RENAME TO "%s"`, req.NewTableName, req.MasterName)
+		if err := tx.Exec(renameNew).Error; err != nil {
+			return fmt.Errorf("rename new: %w", err)
+		}
+
+		details, _ := json.Marshal(map[string]string{
+			"old_table": oldName,
+			"new_table": req.NewTableName,
+			"reason":    req.Reason,
+		})
+		return tx.Exec(
+			`INSERT INTO cdc_activity_log
+			    (operation, target_table, status, details, triggered_by, started_at, completed_at)
+			 VALUES ('master_swap', ?, 'success', ?::jsonb, 'manual', NOW(), NOW())`,
+			req.MasterName, string(details),
+		).Error
+	})
+
+	if err != nil {
+		h.logger.Error("master swap failed", zap.String("master", req.MasterName), zap.Error(err))
+		if h.natsConn != nil && jobID != "" {
+			errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
+			resultMsg := &nats.Msg{
+				Subject: "cdc.evt.master-swap.completed",
+				Header:  nats.Header{"Cdc-Job-Id": []string{jobID}, "Cdc-Job-Status": []string{"failed"}},
+				Data:    errPayload,
+			}
+			_ = h.natsConn.PublishMsg(resultMsg)
+		}
+		return
+	}
+
+	h.logger.Info("master swap complete", zap.String("master", req.MasterName))
+	if h.natsConn != nil && jobID != "" {
+		resPayload, _ := json.Marshal(map[string]string{"master_name": req.MasterName, "new_table_name": req.NewTableName})
+		resultMsg := &nats.Msg{
+			Subject: "cdc.evt.master-swap.completed",
+			Header:  nats.Header{"Cdc-Job-Id": []string{jobID}, "Cdc-Job-Status": []string{"success"}},
+			Data:    resPayload,
+		}
+		_ = h.natsConn.PublishMsg(resultMsg)
+	}
 }
 
 // HandleIntrospect subscribes to "cdc.cmd.introspect" and scans a sample of _raw_data

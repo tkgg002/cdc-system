@@ -29,6 +29,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+
+	"centralized-data-service/internal/naming"
 )
 
 // Public knobs (D3 / D7) — env-overridable at process boot.
@@ -406,7 +408,7 @@ func (o *ProvisioningOrchestrator) seedMasterBindingForAdvance(
 	if masterSchema == "" {
 		masterSchema = "dw_" + src.SourceConnectionCode
 	}
-	masterTable := src.SourceObjectName
+	masterTable := naming.NormalizeIdentifier(src.SourceObjectName)
 	masterDB := ""
 	if mc.DefaultDB != nil {
 		masterDB = *mc.DefaultDB

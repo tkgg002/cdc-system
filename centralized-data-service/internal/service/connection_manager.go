@@ -23,14 +23,17 @@ import (
 //
 // Routing rules:
 //   - GetSystemDB                     → registry.GetDB("cdc")
-//   - GetShadowDB(""/default key)     → registry.GetDB("cdc")
+//   - GetShadowDB(""/default key)     → registry.GetDB("shadow")
 //   - GetShadowDB(other key)          → multi-tenant URL map (legacy)
+//                                       fallback registry.GetDB("shadow")
 //   - GetMasterDB(""/default key)     → registry.GetDB("dest")
 //   - GetMasterDB(other key)          → multi-tenant URL map (legacy)
 //
-// Non-default tenant keys keep their own pools so a sharded shadow
-// or master deployment continues to work — but in single-PG-pair
-// dev/staging there is exactly one cdc pool and one dest pool.
+// Phase B5.5c (2026-05-05): "shadow" is now a first-class registry role
+// (RoleShadow). When CDC_SHADOW_DB_URL is unset, the registry falls back
+// to the control plane DSN — preserves legacy collocated behavior. When
+// set (e.g. gpay-postgres-shadow split), shadow writes go to the new
+// physical instance with zero call-site changes.
 type ConnectionManager struct {
 	cfg    *config.AppConfig
 	logger *zap.Logger
@@ -76,18 +79,17 @@ func (m *ConnectionManager) GetSystemDB(ctx context.Context) (*gorm.DB, error) {
 func (m *ConnectionManager) GetShadowDB(ctx context.Context, key string) (*gorm.DB, error) {
 	_ = ctx
 	if m.isDefaultKey(key, m.cfg.ShadowDBDefaultKey()) {
-		return m.reg.GetDB(database.RoleControlPlane)
+		return m.reg.GetDB(database.RoleShadow)
 	}
 	// Multi-tenant explicit override → per-key pool from URL map.
 	if dsn := strings.TrimSpace(m.cfg.ShadowDBURLs()[strings.TrimSpace(key)]); dsn != "" {
 		return m.getNamedDB("shadow", key, m.cfg.ShadowDBDefaultKey(), m.cfg.ShadowDBURLs(), m.shadowDBs)
 	}
-	// Phase 01 split E2E (T-C5) — connection_code-based key with no
-	// explicit URL override falls back to the physical control-plane
-	// pool. Correct because every shadow_<src>.* table lives in the
-	// single cdc_dw instance after the split; multi-tenant rollouts
-	// re-introduce explicit URL entries to override this fallback.
-	return m.reg.GetDB(database.RoleControlPlane)
+	// Phase B5.5c — connection_code key without explicit URL override
+	// resolves to RoleShadow (data-lake instance). When CDC_SHADOW_DB_URL
+	// is unset, RoleShadow itself falls back to control plane DSN — so
+	// legacy collocated layouts still work without code changes.
+	return m.reg.GetDB(database.RoleShadow)
 }
 
 func (m *ConnectionManager) GetMasterDB(ctx context.Context, key string) (*gorm.DB, error) {

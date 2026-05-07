@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"centralized-data-service/internal/naming"
 	"centralized-data-service/internal/service"
 )
 
@@ -168,7 +169,7 @@ func (s *Server) step1InsertRegistry(ctx context.Context, req RegisterSourceRequ
 
 		// 1d. INSERT shadow_binding (idempotent via UNIQUE (source_object_id, shadow_connection_id, shadow_schema, shadow_table))
 		shadowSchema := shadowSchemaFor(req)
-		shadowTable := req.SourceObjectName
+		shadowTable := naming.NormalizeIdentifier(req.SourceObjectName)
 		bindingCode := fmt.Sprintf("auto_%s_shadow", req.ObjectCode)
 		physicalFQN := fmt.Sprintf("%s.%s", shadowSchema, shadowTable)
 

@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"centralized-data-service/internal/naming"
 	"centralized-data-service/pkgs/idgen"
 )
 
@@ -296,7 +297,7 @@ func normalizeShadowSchema(sourceDB string) string {
 	if sourceDB == "" {
 		sourceDB = "default"
 	}
-	return "shadow_" + sourceDB
+	return naming.ShadowSchemaName(sourceDB)
 }
 
 func sha256Hex(b []byte) string {

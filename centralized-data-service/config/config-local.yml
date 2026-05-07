@@ -29,11 +29,13 @@ db:
 systemDb:
   url: postgres://gpay_admin:gpay_pass@localhost:5433/cdc_dw?sslmode=disable
 
-# Logical role: shadow_<src>.* — co-located with control plane in cdc_dw.
+# Logical role: shadow_<src>.* — Path B: gpay-postgres-shadow (5436/cdc_shadow).
+# G-12 fix 2026-05-07: shadow tables live on 5436, not co-located with cdc_dw (5433).
 shadowDb:
   defaultKey: default
   urls:
-    default: postgres://gpay_admin:gpay_pass@localhost:5433/cdc_dw?sslmode=disable
+    default: postgres://gpay_admin:gpay_pass@localhost:5436/cdc_shadow?sslmode=disable
+
 
 # Logical role: master + dw_<binding>.* — destination DW instance.
 masterDb:

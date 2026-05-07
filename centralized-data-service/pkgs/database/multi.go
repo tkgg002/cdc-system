@@ -16,14 +16,20 @@ import (
 )
 
 // Phase 01 split E2E (T-C3) — physical-instance database registry.
+// Phase B5.5c (2026-05-05) — shadow promoted to first-class role,
+// resolved from cfg.ShadowDB.URLs[default-key]. Falls back to control
+// plane DSN when shadow is unconfigured (single-PG-pair dev).
 //
-// Two roles are exposed:
+// Three roles are exposed:
 //
-//	"cdc"  → control plane DSN (gpay-postgres-cdc / cdc_dw).
-//	         Owns cdc_system.* registry tables and shadow_<src>.* writes.
-//	"dest" → destination DSN (gpay-postgres-dest / goopay_dest).
-//	         Owns master + dw_<binding>.* — Worker's Swap step (Step 11)
-//	         lands here.
+//	"cdc"    → control plane DSN (gpay-postgres-cdc / cdc_dw).
+//	           Owns cdc_system.* registry tables.
+//	"shadow" → data-lake DSN (gpay-postgres-shadow / cdc_shadow when
+//	           split; falls back to "cdc" when not configured).
+//	           Owns shadow_<src>.* writes per shadow_binding.
+//	"dest"   → destination DSN (gpay-postgres-dest / goopay_dest).
+//	           Owns master + dw_<binding>.* — Worker's Swap step (Step 11)
+//	           lands here.
 //
 // The registry is goroutine-safe and creates exactly ONE pool per
 // (role, driver) — pgx and GORM each have an independent pool, so
@@ -34,6 +40,11 @@ import (
 // RoleControlPlane is the registry role used to look up the cdc_dw
 // pool (control plane + shadow).
 const RoleControlPlane = "cdc"
+
+// RoleShadow is the registry role used to look up the shadow / data-lake
+// pool. Reads cfg.ShadowDB.URLs[default-key]; falls back to the control
+// plane DSN when no shadow DSN is configured (legacy collocated layout).
+const RoleShadow = "shadow"
 
 // RoleDestination is the registry role used to look up the goopay_dest
 // pool (master + dw_<binding>).
@@ -211,8 +222,24 @@ func (r *Registry) dsnForRole(role string) (string, error) {
 			return "", fmt.Errorf("multi: destination DSN is empty (set masterDb.urls.%s or CDC_MASTER_DB_URL / CDC_DESTINATION_URL)", key)
 		}
 		return dsn, nil
+	case RoleShadow:
+		// Phase B5.5c — shadow as first-class role. Resolves from
+		// cfg.ShadowDB.URLs[default-key]; if missing or matches control
+		// plane DSN, fall through to RoleControlPlane (legacy collocated
+		// layout where shadow_*.* lives inside cdc_dw).
+		key := strings.TrimSpace(r.cfg.ShadowDB.DefaultKey)
+		if key == "" {
+			key = "default"
+		}
+		if r.cfg.ShadowDB.URLs != nil {
+			if dsn := strings.TrimSpace(r.cfg.ShadowDB.URLs[key]); dsn != "" {
+				return dsn, nil
+			}
+		}
+		// Backwards compat fallback — shadow not split yet.
+		return r.dsnForRole(RoleControlPlane)
 	default:
-		return "", fmt.Errorf("multi: unknown role %q (want %q or %q)", role, RoleControlPlane, RoleDestination)
+		return "", fmt.Errorf("multi: unknown role %q (want %q, %q, or %q)", role, RoleControlPlane, RoleShadow, RoleDestination)
 	}
 }
 

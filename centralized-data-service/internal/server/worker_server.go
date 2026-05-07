@@ -67,8 +67,15 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	if err != nil {
 		return nil, fmt.Errorf("control-plane db: %w", err)
 	}
+	shadowDB, err := registry.GetDB(database.RoleShadow)
+	if err != nil {
+		logger.Warn("shadow-plane db init failed, falling back to control-plane", zap.Error(err))
+		shadowDB = db
+	}
+
 	logger.Info("PostgreSQL connected (multi-pg registry)",
 		zap.String("control_plane", redactDSN(cfg.ControlPlaneURL())),
+		zap.String("shadow_plane", redactDSN(cfg.ShadowDB.URLs["default"])),
 		zap.String("destination", redactDSN(cfg.DestinationURL())),
 	)
 
@@ -238,7 +245,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	}
 
 	// 10b. Command handler — handles DW operations relayed via NATS from the API.
-	cmdHandler := handler.NewCommandHandler(db, mappingRepo, registryRepo, pendingRepo, logger)
+	cmdHandler := handler.NewCommandHandler(db, mappingRepo, registryRepo, pendingRepo, shadowDB, logger)
 	cmdHandler.SetMetadataRegistry(registrySvc)
 	// Inject Kafka Connect URL so boundary-refactor handlers (restart,
 	// sync-state) can call the Connect REST API without leaking through
@@ -259,6 +266,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	natsClient.Conn.Subscribe("cdc.cmd.sync-state", cmdHandler.HandleSyncState)
 	natsClient.Conn.Subscribe("cdc.cmd.restart-debezium", cmdHandler.HandleRestartDebezium)
 	natsClient.Conn.Subscribe("cdc.cmd.alter-column", cmdHandler.HandleAlterColumn)
+	natsClient.Conn.Subscribe("cdc.cmd.master-swap", cmdHandler.HandleMasterSwap)
 
 	// Transmuter wiring (plan v2 §R6). TypeResolver + TransmuterModule +
 	// NATS handler. Subject cdc.cmd.transmute materialises 1 master;
@@ -321,7 +329,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 		// master_bind alias (Q2) reuses masterDDLHandler.HandleMasterCreate
 		// — the handler reads `provisioning=true` from the payload to
 		// switch on the defer-emit branch.
-		stepHandler := handler.NewProvisioningStepHandler(db, natsClient.Conn, schemaAdapter, mongoClientShared, logger)
+		stepHandler := handler.NewProvisioningStepHandler(db, natsClient.Conn, schemaAdapter, mongoClientShared, shadowDB, logger)
 		if _, err := natsClient.Conn.Subscribe("cdc.cmd.shadow.bind", stepHandler.HandleShadowBind); err != nil {
 			return nil, fmt.Errorf("subscribe cdc.cmd.shadow.bind: %w", err)
 		}
