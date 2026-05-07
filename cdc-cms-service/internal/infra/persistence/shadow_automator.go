@@ -58,13 +58,18 @@ func (s *ShadowAutomator) EnsureShadowTable(
 
 // createShadowDDL builds <schema>.<target> with the 8-col CDC layout.
 // target_table + schema validated upstream via validateIdent.
+//
+// Statements are exec'd individually because the global GORM session
+// runs with PrepareStmt=true (pkgs/database/postgres.go), and PostgreSQL
+// rejects multi-statement prepared queries with SQLSTATE 42601 ("cannot
+// insert multiple commands into a prepared statement").
 func (s *ShadowAutomator) createShadowDDL(
 	ctx context.Context, reg *model.TableRegistry, schema string,
 ) error {
 	target := reg.TargetTable
-	ddl := fmt.Sprintf(`
-        CREATE SCHEMA IF NOT EXISTS %[2]q;
-        CREATE TABLE IF NOT EXISTS %[2]q.%[1]q (
+	stmts := []string{
+		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %[1]q`, schema),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %[1]q.%[2]q (
             id BIGINT PRIMARY KEY,
             source_id VARCHAR(200) NOT NULL,
             _raw_data JSONB NOT NULL,
@@ -76,19 +81,20 @@ func (s *ShadowAutomator) createShadowDDL(
             _created_at TIMESTAMP DEFAULT NOW(),
             _updated_at TIMESTAMP DEFAULT NOW(),
             CONSTRAINT %[3]q UNIQUE (source_id)
-        );
-        CREATE INDEX IF NOT EXISTS %[4]q ON %[2]q.%[1]q (_synced_at);
-        CREATE INDEX IF NOT EXISTS %[5]q ON %[2]q.%[1]q (_source);
-        CREATE INDEX IF NOT EXISTS %[6]q ON %[2]q.%[1]q USING GIN(_raw_data);
-    `,
-		target,
-		schema,
-		target+"_source_id_unique",
-		"idx_"+target+"_synced_at",
-		"idx_"+target+"_source",
-		"idx_"+target+"_raw",
-	)
-	return s.db.WithContext(ctx).Exec(ddl).Error
+        )`, schema, target, target+"_source_id_unique"),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %[1]q ON %[2]q.%[3]q (_synced_at)`,
+			"idx_"+target+"_synced_at", schema, target),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %[1]q ON %[2]q.%[3]q (_source)`,
+			"idx_"+target+"_source", schema, target),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %[1]q ON %[2]q.%[3]q USING GIN(_raw_data)`,
+			"idx_"+target+"_raw", schema, target),
+	}
+	for _, stmt := range stmts {
+		if err := s.db.WithContext(ctx).Exec(stmt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // attachSonyflakeTrigger invokes the schema-aware SQL helper. Helper
