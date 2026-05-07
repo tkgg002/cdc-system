@@ -29,7 +29,7 @@
 //   - Labels may contain sensitive data. The fingerprint is a one-way hash so
 //     it is safe to embed in URLs; the labels JSONB itself is only returned to
 //     authenticated callers (see api/alerts_handler.go).
-package service
+package persistence
 
 import (
 	"context"

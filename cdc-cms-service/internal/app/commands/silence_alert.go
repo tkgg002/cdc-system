@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"cdc-cms-service/internal/app/ports"
-	"cdc-cms-service/internal/service"
+	"cdc-cms-service/internal/infra/persistence"
 )
 
 // SilenceAlertCommand mutes an alert until a deadline. Sync — single
@@ -40,10 +40,10 @@ func (c SilenceAlertCommand) Validate() error {
 }
 
 type SilenceAlertHandler struct {
-	am *service.AlertManager
+	am *persistence.AlertManager
 }
 
-func NewSilenceAlertHandler(am *service.AlertManager) *SilenceAlertHandler {
+func NewSilenceAlertHandler(am *persistence.AlertManager) *SilenceAlertHandler {
 	return &SilenceAlertHandler{am: am}
 }
 

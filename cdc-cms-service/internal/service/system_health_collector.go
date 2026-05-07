@@ -25,6 +25,7 @@ import (
 	"time"
 
 	infrahttp "cdc-cms-service/internal/infra/http"
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/service/health/probes"
 	"cdc-cms-service/pkgs/rediscache"
 
@@ -99,7 +100,7 @@ type Collector struct {
 	// alerts is optional — when nil the collector simply skips alert ingest,
 	// preserving the original Phase 0 behaviour. When set, each tick calls
 	// evaluateAlerts() which fires/resolves rows on the cdc_alerts table.
-	alerts *AlertManager
+	alerts *persistence.AlertManager
 }
 
 // NewCollector wires dependencies with defensible defaults.

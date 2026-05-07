@@ -14,7 +14,6 @@ import (
 	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
-	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 
 	"github.com/gofiber/fiber/v2"
@@ -28,7 +27,7 @@ type RegistryHandler struct {
 	natsClient     *natsconn.NatsClient
 	bus            ports.CommandBus
 	automator      *persistence.ShadowAutomator
-	v2sync         *service.SourceObjectV2SyncService
+	v2sync         *persistence.SourceObjectV2SyncService
 	activityLogger *persistence.ActivityLogger
 	logger         *zap.Logger
 	syncHealthQ    *queries.GetSyncHealthHandler
@@ -41,7 +40,7 @@ func NewRegistryHandler(
 	nats *natsconn.NatsClient,
 	bus ports.CommandBus,
 	automator *persistence.ShadowAutomator,
-	v2sync *service.SourceObjectV2SyncService,
+	v2sync *persistence.SourceObjectV2SyncService,
 	activityLogger *persistence.ActivityLogger,
 	logger *zap.Logger,
 	syncHealthQ *queries.GetSyncHealthHandler,

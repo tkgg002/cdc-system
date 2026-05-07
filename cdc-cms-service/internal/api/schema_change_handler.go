@@ -4,8 +4,8 @@ import (
 	"strconv"
 
 	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/service"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -13,13 +13,13 @@ import (
 type SchemaChangeHandler struct {
 	pendingRepo   ports.PendingFieldRepo
 	schemaLogRepo ports.SchemaLogRepo
-	approvalSvc   *service.ApprovalService
+	approvalSvc   *persistence.ApprovalService
 }
 
 func NewSchemaChangeHandler(
 	pendingRepo ports.PendingFieldRepo,
 	schemaLogRepo ports.SchemaLogRepo,
-	approvalSvc *service.ApprovalService,
+	approvalSvc *persistence.ApprovalService,
 ) *SchemaChangeHandler {
 	return &SchemaChangeHandler{pendingRepo: pendingRepo, schemaLogRepo: schemaLogRepo, approvalSvc: approvalSvc}
 }
@@ -69,7 +69,7 @@ func (h *SchemaChangeHandler) GetPending(c *fiber.Ctx) error {
 // @Accept       json
 // @Produce      json
 // @Param        id   path int                       true  "Pending field ID"
-// @Param        body body service.ApproveRequest     true  "Approval details"
+// @Param        body body persistence.ApproveRequest     true  "Approval details"
 // @Success      200 {object} map[string]interface{}
 // @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
@@ -81,7 +81,7 @@ func (h *SchemaChangeHandler) Approve(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
 	}
 
-	var req service.ApproveRequest
+	var req persistence.ApproveRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -105,7 +105,7 @@ func (h *SchemaChangeHandler) Approve(c *fiber.Ctx) error {
 // @Accept       json
 // @Produce      json
 // @Param        id   path int                      true  "Pending field ID"
-// @Param        body body service.RejectRequest     true  "Rejection reason"
+// @Param        body body persistence.RejectRequest     true  "Rejection reason"
 // @Success      200 {object} map[string]interface{}
 // @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
@@ -117,7 +117,7 @@ func (h *SchemaChangeHandler) Reject(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
 	}
 
-	var req service.RejectRequest
+	var req persistence.RejectRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}

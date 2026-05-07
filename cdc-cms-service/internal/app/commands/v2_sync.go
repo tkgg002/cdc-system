@@ -6,8 +6,8 @@ import (
 	"errors"
 
 	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/model"
-	"cdc-cms-service/internal/service"
 )
 
 // V2SyncCommand mirrors a freshly registered/updated V1 TableRegistry row
@@ -33,10 +33,10 @@ func (c V2SyncCommand) Validate() error {
 }
 
 type V2SyncHandler struct {
-	svc *service.SourceObjectV2SyncService
+	svc *persistence.SourceObjectV2SyncService
 }
 
-func NewV2SyncHandler(svc *service.SourceObjectV2SyncService) *V2SyncHandler {
+func NewV2SyncHandler(svc *persistence.SourceObjectV2SyncService) *V2SyncHandler {
 	return &V2SyncHandler{svc: svc}
 }
 

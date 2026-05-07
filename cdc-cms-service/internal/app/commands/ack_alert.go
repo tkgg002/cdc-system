@@ -1,7 +1,7 @@
 // Package commands — write-side use cases (CQRS C-side).
 //
 // ack_alert.go is the canonical SYNC command. It executes in-process
-// against `service.AlertManager` and returns immediately. The bus still
+// against `persistence.AlertManager` and returns immediately. The bus still
 // writes a `cdc_jobs` row for audit + idempotency, then closes it on
 // success. No NATS round-trip.
 //
@@ -17,7 +17,7 @@ import (
 	"strings"
 
 	"cdc-cms-service/internal/app/ports"
-	"cdc-cms-service/internal/service"
+	"cdc-cms-service/internal/infra/persistence"
 )
 
 // AckAlertCommand is POST /api/alerts/:fingerprint/ack expressed as
@@ -48,10 +48,10 @@ func (c AckAlertCommand) Validate() error {
 // AckAlertHandler is the in-process counterpart. Wired into the bus
 // at server bootstrap via `RegisterSync("alert.ack", h)`.
 type AckAlertHandler struct {
-	am *service.AlertManager
+	am *persistence.AlertManager
 }
 
-func NewAckAlertHandler(am *service.AlertManager) *AckAlertHandler {
+func NewAckAlertHandler(am *persistence.AlertManager) *AckAlertHandler {
 	return &AckAlertHandler{am: am}
 }
 

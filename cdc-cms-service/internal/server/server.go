@@ -39,7 +39,7 @@ type Server struct {
 	auditLogger     *middleware.AuditLogger
 	auditCancel     context.CancelFunc
 	// Phase 6 — alert state machine + background resolver.
-	alertMgr            *service.AlertManager
+	alertMgr            *persistence.AlertManager
 	alertResolverCancel context.CancelFunc
 	// Phase 2 v2 / P3.T3.12 — stuck-job reaper (per-type timeout).
 	stuckJobReaper       *messaging.StuckJobReaper
@@ -194,9 +194,9 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSubject("master.create", "cdc.cmd.master-create")
 
 	// Services
-	approvalSvc := service.NewApprovalService(db, pendingRepo, schemaLogRepo, natsClient, logger)
+	approvalSvc := persistence.NewApprovalService(db, pendingRepo, schemaLogRepo, natsClient, logger)
 	shadowAutomator := persistence.NewShadowAutomator(db, logger)
-	sourceObjectV2Sync := service.NewSourceObjectV2SyncService(db, logger)
+	sourceObjectV2Sync := persistence.NewSourceObjectV2SyncService(db, logger)
 	masterSwap := persistence.NewMasterSwap(db, jobRepo, logger)
 	// Phase 2 T13 — single owner of cdc_activity_log writes/reads. Shared
 	// across registry, source-object actions, and reconciliation handlers.
@@ -258,7 +258,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	// It is wired into the health collector so each tick persists the
 	// currently-firing conditions; the HTTP handler exposes the read/write
 	// surface.
-	alertMgr := service.NewAlertManager(db, redisCache, logger)
+	alertMgr := persistence.NewAlertManager(db, redisCache, logger)
 	healthCollector.SetAlertManager(alertMgr)
 	// P3.T3.4 — sync metadata commands. Each handler runs in-process via
 	// bus.Execute. Bus persists a cdc_jobs row for audit + idempotency.

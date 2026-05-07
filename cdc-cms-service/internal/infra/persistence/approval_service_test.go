@@ -5,7 +5,7 @@
 // We pin the JSON wire contract here because the FE schema-approval
 // modal posts ApproveRequest verbatim; field name drift (e.g.
 // renaming target_column_name) silently breaks the form.
-package service
+package persistence
 
 import (
 	"encoding/json"

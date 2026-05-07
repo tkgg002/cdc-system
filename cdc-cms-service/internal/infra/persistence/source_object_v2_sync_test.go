@@ -4,7 +4,7 @@
 // deploy-time E2E against a real cdc_dw container; no portable mock
 // harness lives in this repo today (project convention — see
 // master_swap_test.go header for prior art).
-package service
+package persistence
 
 import (
 	"context"

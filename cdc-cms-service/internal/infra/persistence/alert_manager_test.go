@@ -14,7 +14,7 @@
 // sqlite is a reasonable substitute here because the manager uses only
 // portable GORM constructs (Create, Updates, Where, Order, Limit, locking
 // clause is tolerated as a no-op on sqlite).
-package service
+package persistence
 
 import (
 	"context"

@@ -17,8 +17,8 @@ import (
 	"cdc-cms-service/internal/app/commands"
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/service"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
@@ -31,14 +31,14 @@ import (
 // CommandBus so every state-mutating action is recorded in
 // `cdc_system.cdc_jobs` for audit + idempotency.
 type AlertsHandler struct {
-	am     *service.AlertManager
+	am     *persistence.AlertManager
 	bus    ports.CommandBus
 	logger *zap.Logger
 }
 
 // NewAlertsHandler wires the handler. The manager may be nil in degraded
 // startup (e.g. DB offline); all routes will return 503 in that case.
-func NewAlertsHandler(am *service.AlertManager, bus ports.CommandBus, logger *zap.Logger) *AlertsHandler {
+func NewAlertsHandler(am *persistence.AlertManager, bus ports.CommandBus, logger *zap.Logger) *AlertsHandler {
 	return &AlertsHandler{am: am, bus: bus, logger: logger}
 }
 

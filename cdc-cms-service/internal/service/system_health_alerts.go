@@ -27,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"cdc-cms-service/internal/infra/persistence"
+
 	"go.uber.org/zap"
 )
 
@@ -34,7 +36,7 @@ import (
 // separate from the constructor avoids circular wiring in server.New() —
 // Collector + AlertManager share the same DB + Redis so they can be built
 // in either order.
-func (c *Collector) SetAlertManager(am *AlertManager) {
+func (c *Collector) SetAlertManager(am *persistence.AlertManager) {
 	c.alerts = am
 }
 
@@ -72,7 +74,7 @@ func (c *Collector) evaluateAlerts(parent context.Context, snap *Snapshot) {
 	}
 	detectedFP := make(map[string]struct{}, len(active))
 	for _, cond := range active {
-		detectedFP[Fingerprint(cond.req.Name, cond.req.Labels)] = struct{}{}
+		detectedFP[persistence.Fingerprint(cond.req.Name, cond.req.Labels)] = struct{}{}
 	}
 	for _, row := range activeRows {
 		if _, still := detectedFP[row.Fingerprint]; still {
@@ -95,7 +97,7 @@ func (c *Collector) evaluateAlerts(parent context.Context, snap *Snapshot) {
 // metadata we might want later (runbook URL, etc.). For now it's just a thin
 // wrapper so the slice type stays readable.
 type detectedCondition struct {
-	req FireRequest
+	req persistence.FireRequest
 }
 
 // ownedAlertNames is the closed set of names this collector emits. Keep in
@@ -142,7 +144,7 @@ func (c *Collector) detectConditions(snap *Snapshot) []detectedCondition {
 			if name == "" {
 				name = c.cfg.DebeziumName
 			}
-			out = append(out, detectedCondition{req: FireRequest{
+			out = append(out, detectedCondition{req: persistence.FireRequest{
 				Name:     "DebeziumConnectorFailed",
 				Severity: "critical",
 				Labels: map[string]string{
@@ -167,14 +169,14 @@ func (c *Collector) detectConditions(snap *Snapshot) []detectedCondition {
 			lagVal := toFloat64(v)
 			switch {
 			case lagVal > 100_000:
-				out = append(out, detectedCondition{req: FireRequest{
+				out = append(out, detectedCondition{req: persistence.FireRequest{
 					Name:     "HighConsumerLag",
 					Severity: "critical",
 					Labels:   map[string]string{"component": "kafka_consumer"},
 					Description: "Kafka consumer lag exceeded 100k messages; downstream is falling dangerously behind.",
 				}})
 			case lagVal > 10_000:
-				out = append(out, detectedCondition{req: FireRequest{
+				out = append(out, detectedCondition{req: persistence.FireRequest{
 					Name:     "HighConsumerLag",
 					Severity: "warning",
 					Labels:   map[string]string{"component": "kafka_consumer"},
@@ -191,7 +193,7 @@ func (c *Collector) detectConditions(snap *Snapshot) []detectedCondition {
 			continue
 		}
 		table, _ := r["table"].(string)
-		out = append(out, detectedCondition{req: FireRequest{
+		out = append(out, detectedCondition{req: persistence.FireRequest{
 			Name:     "ReconDrift",
 			Severity: "warning",
 			Labels: map[string]string{
@@ -213,7 +215,7 @@ func (c *Collector) detectConditions(snap *Snapshot) []detectedCondition {
 			continue
 		}
 		if s, _ := m["status"].(string); s == StatusDown {
-			out = append(out, detectedCondition{req: FireRequest{
+			out = append(out, detectedCondition{req: persistence.FireRequest{
 				Name:     "InfrastructureDown",
 				Severity: "critical",
 				Labels: map[string]string{
