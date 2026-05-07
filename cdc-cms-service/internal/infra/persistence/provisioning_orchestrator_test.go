@@ -1,7 +1,7 @@
 // provisioning_orchestrator_test.go — pure-fn guards for the
 // orchestrator's helpers. The DB-bound CAS/publish path stays in
 // deploy-time E2E (project convention).
-package service
+package persistence
 
 import (
 	"context"

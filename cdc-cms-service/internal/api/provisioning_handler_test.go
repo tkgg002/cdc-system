@@ -8,14 +8,14 @@ import (
 	"strings"
 	"testing"
 
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/service"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 )
 
-// stubError lets us shove arbitrary errors through service.Provisioning*
+// stubError lets us shove arbitrary errors through persistence.Provisioning*
 // using errors.Is semantics — we wrap the canonical sentinels.
 func newApp(t *testing.T) *fiber.App {
 	t.Helper()
@@ -35,7 +35,7 @@ func TestErrMapping_404(t *testing.T) {
 	app.Use(middleware.RequireOpsAdmin())
 	h := &ProvisioningHandler{logger: zap.NewNop()}
 	app.Get("/x/:id", func(c *fiber.Ctx) error {
-		return h.mapErr(c, 99, service.ErrProvisioningSourceNotFound)
+		return h.mapErr(c, 99, persistence.ErrProvisioningSourceNotFound)
 	})
 	req := httptest.NewRequest("GET", "/x/99", nil)
 	resp, err := app.Test(req, -1)
@@ -53,7 +53,7 @@ func TestErrMapping_422(t *testing.T) {
 	app.Use(middleware.RequireOpsAdmin())
 	h := &ProvisioningHandler{logger: zap.NewNop()}
 	app.Post("/x/:id/advance", func(c *fiber.Ctx) error {
-		return h.mapErr(c, 5, service.ErrProvisioningInvalidTransition)
+		return h.mapErr(c, 5, persistence.ErrProvisioningInvalidTransition)
 	})
 	req := httptest.NewRequest("POST", "/x/5/advance", nil)
 	resp, _ := app.Test(req, -1)
@@ -74,7 +74,7 @@ func TestErrMapping_409(t *testing.T) {
 	app.Use(middleware.RequireOpsAdmin())
 	h := &ProvisioningHandler{logger: zap.NewNop()}
 	app.Post("/x/:id/pause", func(c *fiber.Ctx) error {
-		return h.mapErr(c, 7, service.ErrProvisioningConflict)
+		return h.mapErr(c, 7, persistence.ErrProvisioningConflict)
 	})
 	req := httptest.NewRequest("POST", "/x/7/pause", nil)
 	resp, _ := app.Test(req, -1)

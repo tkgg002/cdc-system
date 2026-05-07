@@ -294,7 +294,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	// provisioning_mode). CMS owns the synchronous trigger surface;
 	// worker owns RecoveryLoop + step_completed handling. Both share
 	// the DB and rely on D6 CAS for race safety.
-	provOrch := service.NewProvisioningOrchestrator(db, natsClient.Conn, logger)
+	provOrch := persistence.NewProvisioningOrchestrator(db, natsClient.Conn, logger)
 	provisioningHandler := api.NewProvisioningHandler(provOrch, logger)
 
 	// Phase 4 — Security stack.

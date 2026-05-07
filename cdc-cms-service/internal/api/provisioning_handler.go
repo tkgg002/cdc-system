@@ -15,9 +15,9 @@
 //   POST   ./mode               → flip auto/manual (body {"mode":"auto|manual"})
 //
 // Error mapping (D5 / architect Phase C ruling):
-//   service.ErrProvisioningSourceNotFound      → 404
-//   service.ErrProvisioningInvalidTransition   → 422 (FE shows nice msg)
-//   service.ErrProvisioningConflict            → 409 (FE retries / refreshes)
+//   persistence.ErrProvisioningSourceNotFound      → 404
+//   persistence.ErrProvisioningInvalidTransition   → 422 (FE shows nice msg)
+//   persistence.ErrProvisioningConflict            → 409 (FE retries / refreshes)
 //   anything else                              → 500
 //
 // Auth: must be mounted behind JWTAuth → RequireOpsAdmin (router wires it).
@@ -27,19 +27,19 @@ import (
 	"errors"
 	"strconv"
 
+	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/service"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 )
 
 type ProvisioningHandler struct {
-	orch   *service.ProvisioningOrchestrator
+	orch   *persistence.ProvisioningOrchestrator
 	logger *zap.Logger
 }
 
-func NewProvisioningHandler(orch *service.ProvisioningOrchestrator, logger *zap.Logger) *ProvisioningHandler {
+func NewProvisioningHandler(orch *persistence.ProvisioningOrchestrator, logger *zap.Logger) *ProvisioningHandler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -62,18 +62,18 @@ func (h *ProvisioningHandler) parseSourceID(c *fiber.Ctx) (int64, error) {
 // mapErr — translates service errors into HTTP responses.
 func (h *ProvisioningHandler) mapErr(c *fiber.Ctx, sourceID int64, err error) error {
 	switch {
-	case errors.Is(err, service.ErrProvisioningSourceNotFound):
+	case errors.Is(err, persistence.ErrProvisioningSourceNotFound):
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error":     "source not found",
 			"source_id": sourceID,
 		})
-	case errors.Is(err, service.ErrProvisioningInvalidTransition):
+	case errors.Is(err, persistence.ErrProvisioningInvalidTransition):
 		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
 			"error":     "invalid transition",
 			"detail":    err.Error(),
 			"source_id": sourceID,
 		})
-	case errors.Is(err, service.ErrProvisioningConflict):
+	case errors.Is(err, persistence.ErrProvisioningConflict):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"error":     "state changed concurrently — retry after refreshing",
 			"source_id": sourceID,
@@ -94,7 +94,7 @@ func (h *ProvisioningHandler) mapErr(c *fiber.Ctx, sourceID int64, err error) er
 // @Summary      Snapshot of provisioning state for one source
 // @Tags         Provisioning
 // @Param        id   path     int  true  "source_object_registry.id"
-// @Success      200  {object} service.SourceProvisioningSnapshot
+// @Success      200  {object} persistence.SourceProvisioningSnapshot
 // @Failure      400,404,500 {object} map[string]any
 // @Router       /api/v1/cms/sources/{id}/provisioning [get]
 func (h *ProvisioningHandler) GetState(c *fiber.Ctx) error {

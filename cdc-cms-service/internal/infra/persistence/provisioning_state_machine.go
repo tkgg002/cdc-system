@@ -14,7 +14,7 @@
 //   D4 — `provisioned` is terminal legacy-only, NOT in Transitions.
 //   D6 — All UPDATE callers must pair the `From` value with a
 //        WHERE provisioning_state = 'expected' CAS guard.
-package service
+package persistence
 
 type ProvisioningState string
 

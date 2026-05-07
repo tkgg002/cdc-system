@@ -9,7 +9,7 @@
 // Critical invariant: the two `_provisioning_state_machine.go` copies
 // (cms + centralized-data-service) MUST agree on these predicates —
 // these tests pin the cms side.
-package service
+package persistence
 
 import "testing"
 

@@ -15,7 +15,7 @@
 // Architect rulings (04_decisions_provisioning_mode.md) — D1, D2, D6,
 // D7, D8 apply directly here. D3 + step_completed handling stay
 // worker-side.
-package service
+package persistence
 
 import (
 	"context"
