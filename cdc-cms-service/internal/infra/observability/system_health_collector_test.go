@@ -3,7 +3,7 @@
 // Scope: pure logic that doesn't require Redis/Postgres connectivity.
 // The Redis-backed end-to-end handler test is done at runtime (see
 // 03_implementation_v3_cms_phase0.md §Runtime verify).
-package service
+package observability
 
 import (
 	"encoding/json"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"cdc-cms-service/internal/service/health/probes"
+	"cdc-cms-service/internal/infra/observability/probes"
 )
 
 func TestComputeOverall(t *testing.T) {
@@ -66,7 +66,7 @@ func TestComputeAlertsPerSection(t *testing.T) {
 }
 
 func TestSanitizeErrRedactsURLs(t *testing.T) {
-	// Helper moved to internal/service/health/probes (T15 split). Test
+	// Helper moved to internal/infra/observability/probes (T15 split). Test
 	// stays in service package because it owns the regression budget
 	// for the redaction contract; pointing at the canonical impl is fine.
 	got := probes.SanitizeErr(errors.New(`Get "http://admin:secret@kafka.internal:18083/connectors/xyz": dial error`))

@@ -15,7 +15,7 @@
 // Per-probe timeout is 2s via context.WithTimeout; a failed probe records
 // its section as `unknown`/`down` but never blocks the others (errgroup
 // swallows non-nil errors by using g.Go funcs that always return nil).
-package service
+package observability
 
 import (
 	"context"
@@ -26,7 +26,7 @@ import (
 
 	infrahttp "cdc-cms-service/internal/infra/http"
 	"cdc-cms-service/internal/infra/persistence"
-	"cdc-cms-service/internal/service/health/probes"
+	"cdc-cms-service/internal/infra/observability/probes"
 	"cdc-cms-service/pkgs/rediscache"
 
 	"go.uber.org/zap"

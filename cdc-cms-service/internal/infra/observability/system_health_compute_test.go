@@ -5,7 +5,7 @@
 // Project convention: collector orchestration tests live in
 // system_health_collector_test.go; this file only covers the two
 // pure helpers that translate Snapshot → alerts/overall.
-package service
+package observability
 
 import (
 	"strings"

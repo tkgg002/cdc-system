@@ -7,7 +7,7 @@
 // (DebeziumConnectorFailed / HighConsumerLag / ReconDrift /
 // InfrastructureDown) and the type-coerce contract that lets
 // the rules read JSON-numeric variants safely.
-package service
+package observability
 
 import (
 	"testing"

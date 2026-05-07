@@ -11,10 +11,10 @@ import (
 	"cdc-cms-service/internal/app/queries"
 	infrahttp "cdc-cms-service/internal/infra/http"
 	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/infra/observability"
 	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/router"
-	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/database"
 	"cdc-cms-service/pkgs/natsconn"
 	"cdc-cms-service/pkgs/rediscache"
@@ -34,7 +34,7 @@ type Server struct {
 	nats            *natsconn.NatsClient
 	redis           *rediscache.RedisCache
 	app             *fiber.App
-	healthCollector *service.Collector
+	healthCollector *observability.Collector
 	collectorCancel context.CancelFunc
 	auditLogger     *middleware.AuditLogger
 	auditCancel     context.CancelFunc
@@ -232,8 +232,8 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prom client: %w", err)
 	}
-	healthCollector := service.NewCollector(
-		service.CollectorConfig{
+	healthCollector := observability.NewCollector(
+		observability.CollectorConfig{
 			WorkerURL:        cfg.System.WorkerURL,
 			KafkaConnectURL:  cfg.System.KafkaConnectURL,
 			NATSMonitorURL:   cfg.System.NatsMonitorURL,

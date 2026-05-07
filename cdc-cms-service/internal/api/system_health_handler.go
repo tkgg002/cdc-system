@@ -1,7 +1,8 @@
 // Package api — system_health_handler.go (v3)
 //
 // The handler is deliberately thin: it reads the latest Snapshot from Redis
-// (written by `service.Collector` every 15s) and returns it. This keeps the
+// (written by `observability.Collector` every 15s) and returns it. This keeps the
+// API path on Redis-only — no service-package call on the hot path.
 // API p99 well under 50ms even during a cascading outage elsewhere, because
 // no external call is made on the hot path.
 //
@@ -31,8 +32,8 @@ import (
 	"cdc-cms-service/internal/app/commands"
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/infra/observability"
 	"cdc-cms-service/internal/middleware"
-	"cdc-cms-service/internal/service"
 	"cdc-cms-service/pkgs/natsconn"
 	"cdc-cms-service/pkgs/rediscache"
 
@@ -105,7 +106,7 @@ func (h *SystemHealthHandler) Health(c *fiber.Ctx) error {
 		})
 	}
 
-	var snap service.Snapshot
+	var snap observability.Snapshot
 	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
 		h.logger.Error("snapshot unmarshal failed", zap.Error(err))
 		return c.Status(500).JSON(fiber.Map{"error": "snapshot corrupt"})

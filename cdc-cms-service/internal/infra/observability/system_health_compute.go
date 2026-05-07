@@ -4,7 +4,7 @@
 // vocabulary are defined there; splitting these out keeps the
 // orchestration file (system_health_collector.go) under the 300-line
 // readability budget without exposing internal-only helpers.
-package service
+package observability
 
 import "fmt"
 

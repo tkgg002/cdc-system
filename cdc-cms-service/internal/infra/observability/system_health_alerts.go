@@ -20,7 +20,7 @@
 // "disappear after 60s" experience requested in the task brief (the FE never
 // sees them in /active).
 
-package service
+package observability
 
 import (
 	"context"

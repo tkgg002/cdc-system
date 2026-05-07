@@ -3,9 +3,9 @@
 // Lives next to the collector (same package) because it touches
 // Collector internals (db, logger, cfg.ProbeTimeout) but is logically
 // independent of the external HTTP probes that already moved to
-// internal/service/health/probes. Keeping these here means the probes
+// internal/infra/observability/probes. Keeping these here means the probes
 // package stays a leaf with no inbound dependency on service.
-package service
+package observability
 
 import (
 	"context"

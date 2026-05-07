@@ -9,7 +9,7 @@ import (
 //
 // The table is the canonical state store for observability alerts. The
 // fingerprint column is a stable hash of name + sorted(labels) and is the
-// natural key used by `service.AlertManager` for dedup across collector ticks.
+// natural key used by `persistence.AlertManager` for dedup across collector ticks.
 //
 // JSON tags are deliberately stable — the FE alert banner consumes them
 // verbatim via `GET /api/alerts/active`. Fields are ordered to match the
