@@ -26,7 +26,7 @@ shadowDb:
   connMaxLifetime: 5m
 
 nats:
-  url: nats://cms_service:cms_secret_2026@localhost:14222
+  url: nats://cdc_worker:worker_secret_2026@localhost:14222
   name: cdc-cms
   maxReconnect: -1
   reconnectWait: 2s
@@ -38,7 +38,7 @@ redis:
 
 system:
   workerUrl: http://localhost:8090
-  kafkaConnectUrl: http://localhost:18083
+  kafkaConnectUrl: http://127.0.0.1:18083
   natsMonitorUrl: http://localhost:18222
   prometheusUrl: ""
   kafkaExporterUrl: ""

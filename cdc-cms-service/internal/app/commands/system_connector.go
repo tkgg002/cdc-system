@@ -16,7 +16,9 @@ import (
 // satisfies it via Go structural typing — keeps commands package free
 // of the infra/http dependency.
 type KafkaConnectorWriter interface {
+	GetConfig(ctx context.Context, name string) (map[string]string, error)
 	Create(ctx context.Context, name string, cfg map[string]string) (map[string]any, error)
+	UpdateConfig(ctx context.Context, name string, cfg map[string]string) (map[string]any, error)
 	Delete(ctx context.Context, name string) error
 	Restart(ctx context.Context, name string) error
 	RestartTask(ctx context.Context, name, taskID string) error
@@ -201,5 +203,77 @@ func (h *LifecycleSystemConnectorHandler) Handle(ctx context.Context, c ports.Co
 		"task_id":   cmd.TaskID,
 		"status":    cmd.Operation + "_triggered",
 	})
+	return body, nil
+}
+
+// ── Update Config ──────────────────────────────────────────────────────
+
+const KeepSecretSentinel = "__KEEP__"
+
+type UpdateSystemConnectorConfigCommand struct {
+	ports.SyncCommandMixin
+	Name        string            `json:"name"`
+	Config      map[string]string `json:"config"`
+	Fingerprint *model.Source     `json:"fingerprint,omitempty"`
+	UpdatedBy   string            `json:"updated_by,omitempty"`
+}
+
+func (UpdateSystemConnectorConfigCommand) Type() string { return "system-connector.update-config" }
+
+func (c UpdateSystemConnectorConfigCommand) Validate() error {
+	if c.Name == "" {
+		return errors.New("name required")
+	}
+	if len(c.Config) == 0 {
+		return errors.New("config required")
+	}
+	return nil
+}
+
+type UpdateSystemConnectorConfigHandler struct {
+	writer     KafkaConnectorWriter
+	sourceRepo SourceFingerprintRepo
+	logger     *zap.Logger
+}
+
+func NewUpdateSystemConnectorConfigHandler(w KafkaConnectorWriter, repo SourceFingerprintRepo, logger *zap.Logger) *UpdateSystemConnectorConfigHandler {
+	return &UpdateSystemConnectorConfigHandler{writer: w, sourceRepo: repo, logger: logger}
+}
+
+func (h *UpdateSystemConnectorConfigHandler) Handle(ctx context.Context, c ports.Command) (json.RawMessage, error) {
+	cmd, ok := c.(UpdateSystemConnectorConfigCommand)
+	if !ok {
+		return nil, errors.New("system-connector.update-config: command type mismatch")
+	}
+	if h.writer == nil {
+		return nil, errors.New("kafka connect client not ready")
+	}
+
+	current, err := h.writer.GetConfig(ctx, cmd.Name)
+	if err != nil {
+		return nil, err
+	}
+	merged := make(map[string]string, len(current)+len(cmd.Config))
+	for k, v := range current {
+		merged[k] = v
+	}
+	for k, v := range cmd.Config {
+		if v == KeepSecretSentinel {
+			continue
+		}
+		merged[k] = v
+	}
+
+	resp, err := h.writer.UpdateConfig(ctx, cmd.Name, merged)
+	if err != nil {
+		return nil, err
+	}
+	if h.sourceRepo != nil && cmd.Fingerprint != nil {
+		if uerr := h.sourceRepo.Upsert(ctx, cmd.Fingerprint); uerr != nil && h.logger != nil {
+			h.logger.Warn("source fingerprint update failed",
+				zap.String("connector", cmd.Name), zap.Error(uerr))
+		}
+	}
+	body, _ := json.Marshal(resp)
 	return body, nil
 }

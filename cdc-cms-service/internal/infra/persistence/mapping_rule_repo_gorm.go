@@ -218,7 +218,16 @@ func (r *mappingRuleRepoGorm) ListPaginated(ctx context.Context, f mapping.Filte
 var errNotImplementedP4 = errors.New("mapping_rule_repo_gorm: write methods not implemented in P2 demo — see Phase 2 v2 / P4")
 
 func (r *mappingRuleRepoGorm) GetByID(ctx context.Context, id int64) (*mapping.Rule, error) {
-	return nil, errNotImplementedP4
+	q := baseSelect + ` AND mr.id = ? ORDER BY sb.updated_at DESC NULLS LAST, sb.id DESC NULLS LAST LIMIT 1`
+	var rows []mappingRuleRow
+	if err := r.db.WithContext(ctx).Raw(q, id).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	rule := rows[0].toDomain()
+	return &rule, nil
 }
 
 func (r *mappingRuleRepoGorm) Save(ctx context.Context, _ *mapping.Rule) error {

@@ -1,0 +1,20 @@
+server:
+  name: cdc-auth-service
+  port: ":8081"
+  mode: production
+
+db:
+  host: ""
+  port: 5432
+  username: ""
+  password: ""
+  database: ""
+  sslMode: require
+  maxOpenConn: 50
+  maxIdleConn: 25
+  connMaxLifetime: 5m
+
+jwt:
+  secret: ""
+  accessExpiration: 1h
+  refreshExpiration: 24h

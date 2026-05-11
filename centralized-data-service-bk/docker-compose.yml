@@ -1,0 +1,225 @@
+# ============================================================
+# centralized-data-service — CORE CDC infra
+# Phase B5 (2026-05-05) — split: chỉ giữ những service mà cdc-worker
+# pipeline core BẮT BUỘC cần để chạy. Các source/destination DB do
+# admin/CMS cấu hình đã được tách sang `cdc-system/cdc-docker-dev/`.
+#
+# Network: external `cdc-bridge` — 2 compose dùng chung.
+# Bootstrap (1 lần): `docker network create cdc-bridge`
+# ============================================================
+services:
+  # 1. Message Broker — NATS JetStream (worker + cms event bus).
+  nats:
+    image: nats:2.9-alpine
+    container_name: gpay-nats
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    ports:
+      - "14222:4222"
+      - "18222:8222"
+    volumes:
+      - ./deployments/nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+    networks:
+      - cdc-bridge
+
+  # 2. CDC control plane — cdc_system + shadow_<src> schemas.
+  postgres-cdc:
+    image: postgres:15-alpine
+    container_name: gpay-postgres-cdc
+    environment:
+      POSTGRES_USER: ${CDC_PG_USER:-gpay_admin}
+      POSTGRES_PASSWORD: ${CDC_PG_PASSWORD:-gpay_pass}
+      POSTGRES_DB: ${CDC_PG_DATABASE:-cdc_dw}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_cdc_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CDC_PG_USER:-gpay_admin} -d ${CDC_PG_DATABASE:-cdc_dw}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cdc-bridge
+
+  # 3. Redis — schema-inspector cache + dedupe state.
+  redis:
+    image: redis:7-alpine
+    container_name: gpay-redis
+    ports:
+      - "16379:6379"
+    networks:
+      - cdc-bridge
+
+  # 4. cdc-worker (Go core).
+  cdc-worker:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.worker
+    container_name: gpay-cdc-worker
+    depends_on:
+      - nats
+      - postgres-cdc
+      - redis
+    environment:
+      - NATS_URL=${NATS_URL:-nats://cdc_worker:worker_secret_2026@nats:4222}
+      - CDC_CONTROL_PLANE_URL=${CDC_CONTROL_PLANE_URL:-postgres://gpay_admin:gpay_pass@postgres-cdc:5432/cdc_dw?sslmode=disable}
+      - CDC_SYSTEM_DB_URL=${CDC_SYSTEM_DB_URL:-postgres://gpay_admin:gpay_pass@postgres-cdc:5432/cdc_dw?sslmode=disable}
+      - CDC_SHADOW_DB_URL=${CDC_SHADOW_DB_URL:-postgres://gpay_admin:gpay_pass@postgres-cdc:5432/cdc_dw?sslmode=disable}
+      # Master/dest DSN: hostname `gpay-postgres-dest` resolves qua external
+      # network `cdc-bridge` khi cdc-docker-dev/docker-compose.yml chạy song song.
+      - CDC_MASTER_DB_URL=${CDC_MASTER_DB_URL:-postgres://gpay_admin:gpay_pass@gpay-postgres-dest:5432/goopay_dest?sslmode=disable}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka:9092}
+      - KAFKA_SCHEMA_REGISTRY_URL=${KAFKA_SCHEMA_REGISTRY_URL:-http://schema-registry:8081}
+      # Source DSNs — dev container hostnames resolve qua cdc-bridge.
+      - SOURCE_DSN_POSTGRES_PRIMARY=${SOURCE_DSN_POSTGRES_PRIMARY:-postgres://src_user:src_pass@gpay-postgres-source:5432/goopay_source?sslmode=disable}
+      - SOURCE_DSN_MONGODB_PRIMARY=${SOURCE_DSN_MONGODB_PRIMARY:-mongodb://gpay-mongo:27017/?replicaSet=rs0}
+      - MONGODB_URL=${MONGODB_URL:-mongodb://gpay-mongo:27017/?replicaSet=rs0}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      - BATCH_SIZE=${BATCH_SIZE:-500}
+      - BATCH_TIMEOUT=${BATCH_TIMEOUT:-2s}
+      - WORKER_POOL_SIZE=${WORKER_POOL_SIZE:-10}
+    networks:
+      - cdc-bridge
+
+  # 5. Kafka (KRaft mode — no ZooKeeper).
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: gpay-kafka
+    ports:
+      - "19092:29092"
+      - "19093:9093"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - cdc-bridge
+
+  # 6. Schema Registry (Avro).
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.0
+    container_name: gpay-schema-registry
+    depends_on:
+      - kafka
+    ports:
+      - "18081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_HEAP_OPTS: "-Xmx256m -Xms128m"
+    networks:
+      - cdc-bridge
+
+  # 7. Kafka Connect + Debezium plugins. KHÔNG depends_on mongodb (đã
+  # tách qua dev compose — cross-compose dependency = anti-pattern).
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.6.0
+    container_name: gpay-kafka-connect
+    depends_on:
+      - kafka
+      - schema-registry
+    ports:
+      - "18083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: cdc-connect-group
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_HEAP_OPTS: "-Xmx512m -Xms256m"
+    command:
+      - bash
+      - -c
+      - |
+        confluent-hub install --no-prompt debezium/debezium-connector-mongodb:2.5.4
+        confluent-hub install --no-prompt debezium/debezium-connector-postgresql:2.5.4
+        confluent-hub install --no-prompt debezium/debezium-connector-mysql:2.5.4
+        /etc/confluent/docker/run
+    networks:
+      - cdc-bridge
+
+  # 8. Kafka Exporter — Prometheus consumer-lag metrics.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: gpay-kafka-exporter
+    depends_on:
+      - kafka
+    command:
+      - '--kafka.server=kafka:9092'
+      - '--web.listen-address=:9308'
+      - '--topic.filter=^cdc\..*'
+      - '--group.filter=.*'
+    ports:
+      - "9308:9308"
+    networks:
+      - cdc-bridge
+    restart: unless-stopped
+
+  # 9. Redpanda Console — Kafka UI.
+  redpanda-console:
+    image: redpandadata/console:v2.7.2
+    container_name: gpay-redpanda-console
+    depends_on:
+      - kafka
+      - schema-registry
+    ports:
+      - "18088:8080"
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_SCHEMAREGISTRY_ENABLED: "true"
+      KAFKA_SCHEMAREGISTRY_URLS: http://schema-registry:8081
+      CONNECT_ENABLED: "true"
+      CONNECT_CLUSTERS_NAME: cdc-connect
+      CONNECT_CLUSTERS_URL: http://kafka-connect:8083
+    networks:
+      - cdc-bridge
+    # Phase B5 (2026-05-05): Kafka cold-start race — redpanda-console
+    # bỏ cuộc sau 31s retry. Restart policy giúp tự gắn lại khi Kafka up.
+    restart: unless-stopped
+
+  # 10. OpenTelemetry Collector.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: gpay-otel-collector
+    command: ["--config=/etc/otel-collector-config.yml"]
+    volumes:
+      - ./deployments/otel-collector-config.yml:/etc/otel-collector-config.yml:ro
+    ports:
+      - "14318:4318"
+      - "14317:4317"
+    networks:
+      - cdc-bridge
+
+volumes:
+  pg_cdc_data:
+  kafka_data:
+
+networks:
+  cdc-bridge:
+    external: true

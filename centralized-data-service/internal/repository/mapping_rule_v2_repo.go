@@ -50,3 +50,12 @@ func (r *MappingRuleV2Repo) Create(ctx context.Context, item *model.MappingRuleV
 func (r *MappingRuleV2Repo) Update(ctx context.Context, item *model.MappingRuleV2) error {
 	return r.db.WithContext(ctx).Save(item).Error
 }
+
+func (r *MappingRuleV2Repo) GetActiveRulesBySourceTable(ctx context.Context, sourceTable string) ([]model.MappingRuleV2, error) {
+	var items []model.MappingRuleV2
+	err := r.db.WithContext(ctx).
+		Joins("JOIN cdc_system.source_object_registry so ON cdc_system.mapping_rule_v2.source_object_id = so.id").
+		Where("so.source_object_name = ? AND cdc_system.mapping_rule_v2.is_active = ? AND cdc_system.mapping_rule_v2.status = ?", sourceTable, true, "approved").
+		Find(&items).Error
+	return items, err
+}

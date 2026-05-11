@@ -1,0 +1,52 @@
+server:
+  name: cdc-cms-service
+  port: ":8083"
+  mode: production
+
+# Production: secrets/DSN empty. Required env at deploy time:
+#   CMS_DB_HOST / CMS_DB_USERNAME / CMS_DB_PASSWORD / CMS_DB_DATABASE
+#   CMS_NATS_URL (or NATS_URL) / CMS_REDIS_URL (or REDIS_URL)
+#   CMS_JWT_SECRET (or JWT_SECRET) — must NOT be default placeholder
+#   CMS_SYSTEM_WORKER_URL (preview /metrics scrape)
+#   CMS_SYSTEM_KAFKA_CONNECT_URL / CMS_SYSTEM_NATS_MONITOR_URL
+#   CMS_OTEL_ENDPOINT (or OTEL_EXPORTER_OTLP_ENDPOINT)
+db:
+  host: ""
+  port: 5432
+  username: ""
+  password: ""
+  database: ""
+  sslMode: require
+  maxOpenConn: 50
+  maxIdleConn: 25
+  connMaxLifetime: 5m
+
+nats:
+  url: ""
+  name: cdc-cms
+  maxReconnect: -1
+  reconnectWait: 2s
+
+redis:
+  url: ""
+  password: ""
+  db: 0
+
+system:
+  workerUrl: ""
+  kafkaConnectUrl: ""
+  natsMonitorUrl: ""
+  prometheusUrl: ""
+  kafkaExporterUrl: ""
+  debeziumConnector: ""
+  healthCacheKey: system_health:snapshot
+
+jwt:
+  secret: ""
+  expiration: 1h
+
+otel:
+  enabled: true
+  serviceName: cdc-cms
+  endpoint: ""
+  sampleRatio: 0.1

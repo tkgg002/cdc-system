@@ -1,0 +1,28 @@
+services:
+  postgres-auth:
+    image: postgres:15-alpine
+    container_name: gpay-postgres
+    environment:
+      POSTGRES_USER: ${AUTH_DB_USERNAME:-gpay_admin}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-gpay_pass}
+      POSTGRES_DB: ${AUTH_DB_DATABASE:-gpay_auth}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_auth_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${AUTH_DB_USERNAME:-gpay_admin} -d ${AUTH_DB_DATABASE:-gpay_auth}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cdc-bridge
+
+volumes:
+  pg_auth_data:
+    external: true
+    name: centralized-data-service_pg_auth_data
+
+networks:
+  cdc-bridge:
+    external: true

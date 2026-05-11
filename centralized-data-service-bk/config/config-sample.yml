@@ -1,0 +1,116 @@
+server:
+  name: centralized-data-service
+  port: ":8082"
+  mode: worker
+
+# ----------------------------------------------------------------------
+# Phase 01 split E2E — multi-PG layout.
+#
+#   gpay-postgres-cdc   localhost:5433  cdc_dw         (control plane + shadow)
+#   gpay-postgres-dest  localhost:5434  goopay_dest    (master + dw_<binding>)
+#
+# `db.*` is the legacy single-DSN view. Worker treats it as the
+# control-plane connection (registry reads + shadow writes), so it
+# points at gpay-postgres-cdc / cdc_dw.
+# ----------------------------------------------------------------------
+db:
+  host: localhost
+  port: 5433
+  username: gpay_admin
+  password: gpay_pass
+  database: cdc_dw
+  sslMode: disable
+  url: ""
+  maxOpenConn: 50
+  maxIdleConn: 25
+  connMaxLifetime: 5m
+
+# Logical role: control plane registry (cdc_system.*).
+systemDb:
+  url: postgres://gpay_admin:gpay_pass@localhost:5433/cdc_dw?sslmode=disable
+
+# Logical role: shadow_<src>.* — co-located with control plane in cdc_dw.
+shadowDb:
+  defaultKey: default
+  urls:
+    default: postgres://gpay_admin:gpay_pass@localhost:5433/cdc_dw?sslmode=disable
+
+# Logical role: master + dw_<binding>.* — destination DW instance.
+masterDb:
+  defaultKey: default
+  urls:
+    default: postgres://gpay_admin:gpay_pass@localhost:5434/goopay_dest?sslmode=disable
+
+# Phase 01 split E2E (T-C1) — control-plane physical DSN.
+# `pkgs/database/multi.go` resolves GetDB("cdc") from this block.
+# GetDB("dest") derives from masterDb.urls[masterDb.defaultKey] —
+# single source of truth, no separate `destination:` block.
+controlPlane:
+  url: postgres://gpay_admin:gpay_pass@localhost:5433/cdc_dw?sslmode=disable
+
+# Track D Hardening (architect ruling Q2=c) — external source DSNs.
+# Keys are referenced by source_object_registry.connection_code and
+# Debezium connector registration scripts. New keys added here are
+# resolved through cfg.SourceURL("<key>").
+sources:
+  mongodb_primary: mongodb://localhost:17017/?directConnection=true
+  postgres_primary: postgres://src_user:src_pass@localhost:5435/goopay_source?sslmode=disable
+
+nats:
+  url: nats://cdc_worker:worker_secret_2026@localhost:14222
+  name: cdc-worker
+  maxReconnect: -1
+  reconnectWait: 2s
+
+kafka:
+  enabled: true
+  brokers:
+    - localhost:19092
+  groupId: cdc-worker-group
+  # Multi-engine unified pipeline — worker subscribes to the UNION of
+  # all prefixes. Backward-compat: a YAML scalar (`topicPrefix: cdc.gpay`)
+  # still works (decoded as singleton list).
+  topicPrefix:
+    - cdc.gpay      # Postgres source rig (E2E)
+    - cdc.goopay    # MongoDB (production-intent)
+    - cdc.mariadb   # MariaDB (incoming, gpay-mariadb container)
+  schemaRegistryUrl: http://localhost:18081
+
+otel:
+  enabled: true
+  serviceName: cdc-worker
+  endpoint: http://otel-collector:4318
+  sampleRatio: 1.0
+  logs:
+    sampleBySeverity:
+      debug: 0.0
+      info: 0.1
+      warn: 1.0
+      error: 1.0
+      fatal: 1.0
+    memoryLimitMib: 256
+    fallback:
+      degradedAfterErrors: 10
+      recoverAfter: 5m
+
+redis:
+  url: redis://localhost:16379
+  password: ""
+  db: 0
+
+worker:
+  poolSize: 10
+  batchSize: 500
+  batchTimeout: 2s
+  fetchSize: 1000
+  transformInterval: 5m
+  scanInterval: 1h
+
+airbyte:
+  apiUrl: http://localhost:18000
+  clientId: ""
+  clientSecret: ""
+
+jwt:
+  secret: change-me-in-production
+  expiration: 24h

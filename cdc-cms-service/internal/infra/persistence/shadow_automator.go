@@ -19,12 +19,16 @@ import (
 // shadowSchema (= "shadow_<source_db>") before invoking. Sonyflake
 // helpers live in cdc_system via migration 028 — no inline bootstrap.
 type ShadowAutomator struct {
-	db     *gorm.DB
-	logger *zap.Logger
+	shadowDB  *gorm.DB // DDL + trigger (cdc_shadow)
+	controlDB *gorm.DB // markCreated → cdc_table_registry (cdc_dw)
+	logger    *zap.Logger
 }
 
-func NewShadowAutomator(db *gorm.DB, logger *zap.Logger) *ShadowAutomator {
-	return &ShadowAutomator{db: db, logger: logger}
+// NewShadowAutomator constructs the automator.
+// shadowDB: kết nối tới cdc_shadow — dùng cho DDL + trigger.
+// controlDB: kết nối tới cdc_dw — dùng cho markCreated (cdc_table_registry).
+func NewShadowAutomator(shadowDB, controlDB *gorm.DB, logger *zap.Logger) *ShadowAutomator {
+	return &ShadowAutomator{shadowDB: shadowDB, controlDB: controlDB, logger: logger}
 }
 
 // EnsureShadowTable creates <shadowSchema>.<target> + attaches sonyflake
@@ -46,6 +50,8 @@ func (s *ShadowAutomator) EnsureShadowTable(
 	if err := s.attachSonyflakeTrigger(ctx, shadowSchema, reg.TargetTable); err != nil {
 		return fmt.Errorf("attach trigger: %w", err)
 	}
+	// markCreated phải dùng controlDB (cdc_dw) vì cdc_table_registry
+	// là control-plane table, không có trong shadow DB.
 	if err := s.markCreated(ctx, reg); err != nil {
 		return fmt.Errorf("mark created: %w", err)
 	}
@@ -90,7 +96,7 @@ func (s *ShadowAutomator) createShadowDDL(
 			"idx_"+target+"_raw", schema, target),
 	}
 	for _, stmt := range stmts {
-		if err := s.db.WithContext(ctx).Exec(stmt).Error; err != nil {
+		if err := s.shadowDB.WithContext(ctx).Exec(stmt).Error; err != nil {
 			return err
 		}
 	}
@@ -102,7 +108,7 @@ func (s *ShadowAutomator) createShadowDDL(
 func (s *ShadowAutomator) attachSonyflakeTrigger(
 	ctx context.Context, schema, table string,
 ) error {
-	return s.db.WithContext(ctx).Exec(
+	return s.shadowDB.WithContext(ctx).Exec(
 		"SELECT cdc_system.ensure_shadow_sonyflake_trigger(?, ?)", schema, table,
 	).Error
 }
@@ -110,7 +116,7 @@ func (s *ShadowAutomator) attachSonyflakeTrigger(
 // markCreated flips cdc_system.cdc_table_registry.is_table_created so
 // the legacy Worker NATS path short-circuits when it eventually runs.
 func (s *ShadowAutomator) markCreated(ctx context.Context, reg *model.TableRegistry) error {
-	return s.db.WithContext(ctx).Model(&model.TableRegistry{}).
+	return s.controlDB.WithContext(ctx).Model(&model.TableRegistry{}).
 		Where("id = ?", reg.ID).
 		Update("is_table_created", true).Error
 }

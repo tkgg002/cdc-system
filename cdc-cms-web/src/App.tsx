@@ -9,7 +9,7 @@ import {
   SettingOutlined,
   LogoutOutlined,
   CompassOutlined,
-  ThunderboltOutlined,
+  ThunderboltOutlined
 } from '@ant-design/icons';
 import QueryErrorBoundary from './components/QueryErrorBoundary';
 
@@ -88,9 +88,9 @@ function AppLayout() {
           label: <Link to="/sources">Sources & Connectors</Link>,
         },
         {
-          key: '/registry',
+          key: '/shadow',
           icon: <DatabaseOutlined />,
-          label: <Link to="/registry">Source Objects</Link>,
+          label: <Link to="/shadow">Shadow</Link>,
         },
         {
           key: '/masters',
@@ -151,7 +151,9 @@ function AppLayout() {
   ];
 
   const selectedMenuKey =
-    location.pathname.startsWith('/registry/') ? '/registry' : location.pathname;
+    location.pathname.startsWith('/registry/') || location.pathname.startsWith('/shadow/')
+      ? '/shadow'
+      : location.pathname;
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -178,12 +180,14 @@ function AppLayout() {
               <Routes>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/schema-changes" element={<SchemaChanges />} />
-                <Route path="/registry" element={<TableRegistry />} />
+                <Route path="/shadow" element={<TableRegistry />} />
+                <Route path="/shadow/:id/mappings" element={<MappingFieldsPage />} />
+                <Route path="/registry" element={<Navigate to="/shadow" replace />} />
+                <Route path="/registry/:id/mappings" element={<Navigate to="/shadow" replace />} />
                 <Route path="/cdc-internal" element={<Navigate to="/registry" replace />} />
                 <Route path="/masters" element={<MasterRegistry />} />
                 <Route path="/schema-proposals" element={<SchemaProposals />} />
                 <Route path="/schedules" element={<TransmuteSchedules />} />
-                <Route path="/registry/:id/mappings" element={<MappingFieldsPage />} />
                 <Route path="/sources" element={<SourceConnectors />} />
                 <Route path="/queue" element={<Navigate to="/system-health" replace />} />
                 <Route path="/activity-log" element={<ActivityLog />} />

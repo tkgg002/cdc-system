@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -69,7 +70,7 @@ type KafkaConnectClient struct {
 func NewKafkaConnectClient(baseURL string) *KafkaConnectClient {
 	return &KafkaConnectClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -127,6 +128,14 @@ func (c *KafkaConnectClient) Create(ctx context.Context, name string, cfg map[st
 	return resp, err
 }
 
+// UpdateConfig replaces the connector config using Kafka Connect's
+// PUT /connectors/:name/config endpoint.
+func (c *KafkaConnectClient) UpdateConfig(ctx context.Context, name string, cfg map[string]string) (map[string]any, error) {
+	var resp map[string]any
+	err := c.doJSON(ctx, http.MethodPut, "/connectors/"+url.PathEscape(name)+"/config", cfg, &resp)
+	return resp, err
+}
+
 // Delete removes a connector.
 func (c *KafkaConnectClient) Delete(ctx context.Context, name string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/connectors/"+url.PathEscape(name), nil, nil)
@@ -140,6 +149,8 @@ func (c *KafkaConnectClient) Lifecycle(ctx context.Context, name, op string) err
 
 func (c *KafkaConnectClient) doJSON(ctx context.Context, method, relPath string, body any, target any) error {
 	u := c.baseURL + relPath
+	log.Printf("[KafkaConnect] %s %s", method, u)
+	start := time.Now()
 
 	var reqBody io.Reader
 	if body != nil {
@@ -160,6 +171,7 @@ func (c *KafkaConnectClient) doJSON(ctx context.Context, method, relPath string,
 	}
 
 	resp, err := c.httpClient.Do(req)
+	log.Printf("[KafkaConnect] %s %s finished in %v, err=%v", method, u, time.Since(start), err)
 	if err != nil {
 		return fmt.Errorf("connect call: %w", err)
 	}

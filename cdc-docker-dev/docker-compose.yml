@@ -1,0 +1,162 @@
+# ============================================================
+# cdc-docker-dev
+#
+# Up: `docker compose -f cdc-system/cdc-docker-dev/docker-compose.yml up -d`
+# ============================================================
+services:
+  # 1. Postgres SOURCE (Debezium logical decoding source).
+  postgres-source:
+    image: postgres:15-alpine
+    container_name: gpay-postgres-source
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+    environment:
+      POSTGRES_USER: ${PG_SOURCE_USER:-src_user}
+      POSTGRES_PASSWORD: ${PG_SOURCE_PASSWORD:-src_pass}
+      POSTGRES_DB: ${PG_SOURCE_DATABASE:-goopay_source}
+    ports:
+      - "5435:5432"
+    volumes:
+      - pg_source_data:/var/lib/postgresql/data
+      - ./init/postgres-source:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${PG_SOURCE_USER:-src_user} -d ${PG_SOURCE_DATABASE:-goopay_source}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cdc-bridge
+
+  # 2. Postgres SHADOW (data-lake layer, raw landing per source).
+  # `centralized-data-service/.env.example::CDC_SHADOW_SCHEMA_PREFIX`.
+  postgres-shadow:
+    image: postgres:15-alpine
+    container_name: gpay-postgres-shadow
+    environment:
+      POSTGRES_USER: ${PG_SHADOW_USER:-gpay_admin}
+      POSTGRES_PASSWORD: ${PG_SHADOW_PASSWORD:-gpay_pass}
+      POSTGRES_DB: ${PG_SHADOW_DATABASE:-cdc_shadow}
+    ports:
+      - "5436:5432"
+    volumes:
+      - pg_shadow_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${PG_SHADOW_USER:-gpay_admin} -d ${PG_SHADOW_DATABASE:-cdc_shadow}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cdc-bridge
+
+  # 3. Postgres DEST (master + dw_<binding>).
+  postgres-dest:
+    image: postgres:15-alpine
+    container_name: gpay-postgres-dest
+    environment:
+      POSTGRES_USER: ${PG_DEST_USER:-gpay_admin}
+      POSTGRES_PASSWORD: ${PG_DEST_PASSWORD:-gpay_pass}
+      POSTGRES_DB: ${PG_DEST_DATABASE:-goopay_dest}
+    ports:
+      - "5434:5432"
+    volumes:
+      - pg_dest_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${PG_DEST_USER:-gpay_admin} -d ${PG_DEST_DATABASE:-goopay_dest}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cdc-bridge
+
+  # 4. MongoDB SOURCE — replSet bật cho oplog Debezium.
+  mongodb:
+    image: mongo:6.0
+    container_name: gpay-mongo
+    command: [ "--replSet", "rs0", "--bind_ip_all" ]
+    ports:
+      - "17017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: echo "try { rs.status() } catch (err) { rs.initiate() }" | mongosh --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cdc-bridge
+
+  # 5. MySQL SOURCE — binlog ROW format.
+  mysql:
+    image: mysql:8.0
+    container_name: gpay-mysql
+    command:
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-goopay_db}
+    ports:
+      - "13306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - cdc-bridge
+
+  # 6. MariaDB SOURCE — binlog ROW + GTID strict.
+  mariadb:
+    image: mariadb:10.11
+    container_name: gpay-mariadb
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-goopay_legacy_maria}
+      MARIADB_USER: ${MARIADB_USER:-cdc}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-cdc_pass}
+    command:
+      - --server-id=10
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --gtid-strict-mode=1
+      - --gtid-domain-id=10
+    ports:
+      - "13307:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./init/mariadb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD", "healthcheck.sh", "--connect", "--innodb_initialized" ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      - cdc-bridge
+
+volumes:
+  pg_source_data:
+    #external: true
+    name: centralized-data-service_pg_source_data
+  pg_dest_data:
+    #external: true
+    name: centralized-data-service_pg_dest_data
+  pg_shadow_data:
+    name: cdc_docker_dev_pg_shadow_data
+  mongo_data:
+    #external: true
+    name: centralized-data-service_mongo_data
+  mysql_data:
+    #external: true
+    name: centralized-data-service_mysql_data
+  mariadb_data:
+    #external: true
+    name: centralized-data-service_mariadb_data
+
+networks:
+  cdc-bridge: #external: true

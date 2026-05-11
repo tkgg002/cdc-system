@@ -1,34 +1,35 @@
 package api
 
 import (
+	"cdc-cms-service/internal/model"
 	"strconv"
+	"time"
 
 	"cdc-cms-service/internal/app/queries"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // SourcesHandler serves the Connection Fingerprint registry
-// (Systematic Flow F-1.2/1.3). Reads only — writes are side effects of
-// /api/v1/system/connectors Create/Delete. Read paths delegate to
-// `internal/app/queries/list_sources.go`.
 type SourcesHandler struct {
 	logger *zap.Logger
 	listQ  *queries.ListSourcesHandler
 	getQ   *queries.GetSourceHandler
+	db     *gorm.DB
 }
 
 func NewSourcesHandler(
 	logger *zap.Logger,
 	listQ *queries.ListSourcesHandler,
 	getQ *queries.GetSourceHandler,
+	db *gorm.DB,
 ) *SourcesHandler {
-	return &SourcesHandler{logger: logger, listQ: listQ, getQ: getQ}
+	return &SourcesHandler{logger: logger, listQ: listQ, getQ: getQ, db: db}
 }
 
 // List returns every non-deleted source.
-// GET /api/v1/sources
 func (h *SourcesHandler) List(c *fiber.Ctx) error {
 	res, err := h.listQ.Handle(c.UserContext(), queries.ListSourcesQuery{})
 	if err != nil {
@@ -37,10 +38,37 @@ func (h *SourcesHandler) List(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": res.Data, "count": res.Count})
 }
 
-// Get returns a single source by numeric id. Response includes
-// collection_include_list so the Registry modal can populate its
-// collection dropdown.
-// GET /api/v1/sources/:id
+// Create registers a new source connection without a Debezium connector (Flow 1).
+// POST /api/v1/sources
+func (h *SourcesHandler) Create(c *fiber.Ctx) error {
+	var req struct {
+		ConnectionCode  string `json:"connection_code"`
+		AdapterType     string `json:"adapter_type"`
+		ServerAddress   string `json:"server_address"`
+		DefaultDatabase string `json:"default_database"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "bad request"})
+	}
+
+	source := model.Source{
+		ConnectorName:       req.ConnectionCode, // Use code as name for standalone sources
+		SourceType:          req.AdapterType,
+		ServerAddress:       req.ServerAddress,
+		DatabaseIncludeList: req.DefaultDatabase,
+		Status:              "created",
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
+	}
+
+	if err := h.db.Create(&source).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to create source: " + err.Error()})
+	}
+
+	return c.Status(201).JSON(source)
+}
+
+// Get returns a single source by numeric id.
 func (h *SourcesHandler) Get(c *fiber.Ctx) error {
 	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {

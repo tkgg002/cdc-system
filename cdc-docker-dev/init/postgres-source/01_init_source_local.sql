@@ -1,0 +1,91 @@
+-- -- 1. Tables ------------------------------------------------------------------
+-- CREATE TABLE IF NOT EXISTS public.orders (
+--     id          BIGSERIAL PRIMARY KEY,
+--     user_id     BIGINT       NOT NULL,
+--     amount      NUMERIC(15,2) NOT NULL,
+--     status      VARCHAR(32)  NOT NULL,
+--     notes       TEXT,
+--     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+--     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+-- );
+
+-- CREATE TABLE IF NOT EXISTS public.users (
+--     id          BIGSERIAL PRIMARY KEY,
+--     username    VARCHAR(100) NOT NULL UNIQUE,
+--     email       VARCHAR(200) NOT NULL UNIQUE,
+--     full_name   VARCHAR(200),
+--     is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
+--     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+--     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+-- );
+
+-- CREATE TABLE IF NOT EXISTS public.payments (
+--     id           BIGSERIAL PRIMARY KEY,
+--     order_id     BIGINT       NOT NULL,`
+--     method       VARCHAR(32)  NOT NULL,
+--     amount       NUMERIC(15,2) NOT NULL,
+--     status       VARCHAR(32)  NOT NULL,
+--     transaction_id VARCHAR(100),
+--     paid_at      TIMESTAMPTZ,
+--     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+--     updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+-- );
+
+-- -- 2. REPLICA IDENTITY FULL — Debezium needs full row image cho UPDATE/DELETE
+-- ALTER TABLE public.orders   REPLICA IDENTITY FULL;
+-- ALTER TABLE public.users    REPLICA IDENTITY FULL;
+-- ALTER TABLE public.payments REPLICA IDENTITY FULL;
+
+-- -- 3. Replication grant cho Debezium connector user
+-- ALTER USER src_user WITH REPLICATION;
+
+-- -- 4. Seed 10 rows mỗi bảng -----------------------------------------------------
+-- INSERT INTO public.users (username, email, full_name) VALUES
+--     ('alice',    'alice@example.com',    'Alice Nguyen'),
+--     ('bob',      'bob@example.com',      'Bob Tran'),
+--     ('charlie',  'charlie@example.com',  'Charlie Le'),
+--     ('diana',    'diana@example.com',    'Diana Pham'),
+--     ('eve',      'eve@example.com',      'Eve Vu'),
+--     ('frank',    'frank@example.com',    'Frank Hoang'),
+--     ('grace',    'grace@example.com',    'Grace Do'),
+--     ('henry',    'henry@example.com',    'Henry Ly'),
+--     ('ivy',      'ivy@example.com',      'Ivy Mai'),
+--     ('jack',     'jack@example.com',     'Jack Bui')
+-- ON CONFLICT (username) DO NOTHING;
+
+-- INSERT INTO public.orders (user_id, amount, status, notes) VALUES
+--     (1, 100.00, 'paid',      'first order'),
+--     (2, 250.50, 'pending',   'awaiting confirmation'),
+--     (3, 75.25,  'paid',      NULL),
+--     (4, 1200.00,'paid',      'wholesale'),
+--     (5, 45.00,  'cancelled', 'user request'),
+--     (6, 320.00, 'paid',      NULL),
+--     (7, 89.99,  'pending',   'card declined retry'),
+--     (8, 500.00, 'paid',      NULL),
+--     (9, 15.50,  'refunded',  'goods damaged'),
+--     (10, 999.99,'paid',      'priority delivery');
+
+-- INSERT INTO public.payments (order_id, method, amount, status, transaction_id, paid_at) VALUES
+--     (1,  'card',    100.00,  'success', 'tx_001', NOW()),
+--     (2,  'bank',    250.50,  'pending', 'tx_002', NULL),
+--     (3,  'wallet',  75.25,   'success', 'tx_003', NOW()),
+--     (4,  'card',    1200.00, 'success', 'tx_004', NOW()),
+--     (5,  'card',    45.00,   'failed',  'tx_005', NULL),
+--     (6,  'wallet',  320.00,  'success', 'tx_006', NOW()),
+--     (7,  'card',    89.99,   'pending', 'tx_007', NULL),
+--     (8,  'bank',    500.00,  'success', 'tx_008', NOW()),
+--     (9,  'card',    15.50,   'refunded','tx_009', NOW()),
+--     (10, 'wallet',  999.99,  'success', 'tx_010', NOW());
+
+-- -- 5. Verify counts via NOTICE
+-- DO $$
+-- DECLARE
+--   c_users    INT;
+--   c_orders   INT;
+--   c_payments INT;
+-- BEGIN
+--   SELECT count(*) INTO c_users    FROM public.users;
+--   SELECT count(*) INTO c_orders   FROM public.orders;
+--   SELECT count(*) INTO c_payments FROM public.payments;
+--   RAISE NOTICE 'source seeded: users=%, orders=%, payments=%', c_users, c_orders, c_payments;
+-- END $$;

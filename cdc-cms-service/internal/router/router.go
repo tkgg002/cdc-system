@@ -193,6 +193,11 @@ func SetupRoutes(
 
 	// Debezium Command Center — Kafka Connect REST proxy. Replaces the
 	registerDestructive("/v1/system/connectors", systemConnectorsHandler.Create)
+	{
+		handlers := append([]fiber.Handler{}, destructiveChain...)
+		handlers = append(handlers, systemConnectorsHandler.UpdateConfig)
+		apiGroup.Patch("/v1/system/connectors/:name/config", handlers...)
+	}
 	registerDestructive("/v1/system/connectors/:name/restart", systemConnectorsHandler.Restart)
 	registerDestructive("/v1/system/connectors/:name/tasks/:taskId/restart", systemConnectorsHandler.RestartTask)
 	registerDestructive("/v1/system/connectors/:name/pause", systemConnectorsHandler.Pause)
@@ -316,14 +321,24 @@ func SetupRoutes(
 	shared.Get("/v1/source-objects/registry/:id/dispatch-status", registryHandler.DispatchStatus)
 	shared.Get("/v1/source-objects/registry/:id/transform-status", registryHandler.TransformStatus)
 	dualGet(shared, "/mapping-rules", mappingHandler.List)
+	
+	// Introspection (Priority)
+	dualGet(shared, "/introspection/mongo/databases", introspectionHandler.DiscoverMongoDatabases)
+	dualGet(shared, "/introspection/mongo/:db/collections", introspectionHandler.DiscoverMongoCollections)
 	dualGet(shared, "/introspection/scan/:table", introspectionHandler.Scan)
 	dualGet(shared, "/introspection/scan-raw/:table", introspectionHandler.ScanRawData)
+
 	shared.Get("/v1/system/connectors", systemConnectorsHandler.List)
 	shared.Get("/v1/system/connectors/:name", systemConnectorsHandler.Get)
 	shared.Get("/v1/system/connector-plugins", systemConnectorsHandler.Plugins)
 	// Systematic Flow F-1.2/1.3 — Sources registry reads.
 	shared.Get("/v1/sources", sourcesHandler.List)
+	shared.Post("/v1/sources", sourcesHandler.Create)
 	shared.Get("/v1/sources/:id", sourcesHandler.Get)
+
+	// Backward-compat aliases for registry pages (F-1.x legacy)
+	shared.Get("/v1/registry/connections", sourcesHandler.List)
+	shared.Post("/v1/registry/connections", sourcesHandler.Create)
 	// Systematic Flow F-3.2/3.5 — Wizard state machine reads.
 	shared.Get("/v1/wizard/sessions/:id", wizardHandler.Get)
 	shared.Get("/v1/wizard/sessions/:id/progress", wizardHandler.Progress)

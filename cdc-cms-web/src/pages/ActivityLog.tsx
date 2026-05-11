@@ -120,7 +120,11 @@ export default function ActivityLog() {
   const columns: ColumnsType<ActivityLogEntry> = [
     {
       title: 'Time', dataIndex: 'started_at', width: 160,
-      render: (v) => new Date(v).toLocaleString('vi-VN', { hour12: false }),
+      render: (v) => {
+        if (!v) return '-';
+        const d = new Date(v);
+        return isNaN(d.getTime()) ? '-' : d.toLocaleString('vi-VN', { hour12: false });
+      },
     },
     {
       title: 'Operation', dataIndex: 'operation', width: 160,

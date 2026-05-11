@@ -26,6 +26,7 @@ import (
 type CommandHandler struct {
 	db           *gorm.DB
 	mappingRepo  *repository.MappingRuleRepo
+	mappingV2Repo *repository.MappingRuleV2Repo
 	registryRepo *repository.RegistryRepo
 	pendingRepo  *repository.PendingFieldRepo
 	shadowDB     *gorm.DB // Phase A3 Hybrid — connection to cdc_shadow
@@ -38,6 +39,8 @@ type CommandHandler struct {
 	// result events (cdc.result.*). The NATS library does not expose the
 	// connection from *nats.Subscription so we inject it explicitly.
 	natsConn *nats.Conn
+	// mongoSvc — for MongoDB introspection (Flow 1)
+	mongoSvc *service.MongoIntrospectionService
 }
 
 // SetKafkaConnectURL injects the Kafka Connect REST base URL (used by
@@ -59,6 +62,10 @@ func (h *CommandHandler) SetMetadataRegistry(metadata service.MetadataRegistry) 
 	h.metadata = metadata
 }
 
+func (h *CommandHandler) SetMongoService(svc *service.MongoIntrospectionService) {
+	h.mongoSvc = svc
+}
+
 // CommandResult is the admin-facing result envelope. It must stay
 // sanitized before being logged, stored in ActivityLog, or published to
 // downstream control-plane consumers.
@@ -74,6 +81,7 @@ type CommandResult struct {
 func NewCommandHandler(
 	db *gorm.DB,
 	mappingRepo *repository.MappingRuleRepo,
+	mappingV2Repo *repository.MappingRuleV2Repo,
 	registryRepo *repository.RegistryRepo,
 	pendingRepo *repository.PendingFieldRepo,
 	shadowDB *gorm.DB,
@@ -82,6 +90,7 @@ func NewCommandHandler(
 	return &CommandHandler{
 		db:           db,
 		mappingRepo:  mappingRepo,
+		mappingV2Repo: mappingV2Repo,
 		registryRepo: registryRepo,
 		pendingRepo:  pendingRepo,
 		shadowDB:     shadowDB,
@@ -110,7 +119,7 @@ func (h *CommandHandler) ensureCDCColumnsInSchema(schemaName, tableName string) 
 		schemaName = "public"
 	}
 	var exists bool
-	h.db.Raw(
+	h.shadowDB.Raw(
 		"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = ?)",
 		tableName,
 		schemaName,
@@ -130,10 +139,10 @@ func (h *CommandHandler) ensureCDCColumnsInSchema(schemaName, tableName string) 
 		{"_updated_at", "TIMESTAMP DEFAULT NOW()"},
 	}
 	for _, col := range cdcColumns {
-		h.db.Exec(fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`, quoteCommandIdent(schemaName), quoteCommandIdent(tableName), col.name, col.def))
+		h.shadowDB.Exec(fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`, quoteCommandIdent(schemaName), quoteCommandIdent(tableName), col.name, col.def))
 	}
 	indexName := fmt.Sprintf("idx_%s_raw", tableName)
-	h.db.Exec(fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s.%s USING GIN(_raw_data)`, quoteCommandIdent(indexName), quoteCommandIdent(schemaName), quoteCommandIdent(tableName)))
+	h.shadowDB.Exec(fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s.%s USING GIN(_raw_data)`, quoteCommandIdent(indexName), quoteCommandIdent(schemaName), quoteCommandIdent(tableName)))
 	return nil
 }
 
@@ -147,7 +156,7 @@ func (h *CommandHandler) hasColumnInSchema(schemaName, tableName, columnName str
 		schemaName = "public"
 	}
 	var exists bool
-	h.db.Raw(
+	h.shadowDB.Raw(
 		"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?)",
 		schemaName,
 		tableName,
@@ -166,7 +175,7 @@ func (h *CommandHandler) tableExistsInSchema(schemaName, tableName string) bool 
 		schemaName = "public"
 	}
 	var exists bool
-	h.db.Raw(
+	h.shadowDB.Raw(
 		"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = ?)",
 		tableName,
 		schemaName,
@@ -247,7 +256,7 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 	columnsAdded := 0
 
 	if !tableAlreadyExists {
-		if err := h.db.Exec(fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteCommandIdent(schemaName))).Error; err != nil {
+		if err := h.shadowDB.Exec(fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteCommandIdent(schemaName))).Error; err != nil {
 			h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: "create schema: " + err.Error()})
 			return
 		}
@@ -280,65 +289,47 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 			quoteCommandIdent(pkField),
 			pkType,
 		)
-		if err := h.db.Exec(createSQL).Error; err != nil {
+		if err := h.shadowDB.Exec(createSQL).Error; err != nil {
 			h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: "create table: " + err.Error()})
 			return
 		}
-		if err := h.ensureCDCColumnsInSchema(schemaName, payload.TargetTable); err != nil {
-			h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: err.Error()})
-			return
-		}
-
-		// Thêm approved fields vào table mới
-		rules, err := h.mappingRepo.GetByTable(context.Background(), payload.SourceTable)
-		if err == nil {
-			for _, rule := range rules {
-				if !rule.IsActive {
-					continue
-				}
-				alterSQL := fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`,
-					quoteCommandIdent(schemaName), quoteCommandIdent(payload.TargetTable), quoteCommandIdent(rule.TargetColumn), rule.DataType)
-				if err := h.db.Exec(alterSQL).Error; err != nil {
-					h.logger.Warn("failed to add column", zap.String("column", rule.TargetColumn), zap.Error(err))
-					continue
-				}
-				columnsAdded++
-			}
-		}
-
-		// Update legacy bridge state when present
-		h.db.Model(&model.TableRegistry{}).Where("target_table = ?", payload.TargetTable).Update("is_table_created", true)
-		if payload.SourceObjectID > 0 {
-			h.db.Table("cdc_system.shadow_binding").
-				Where("source_object_id = ?", payload.SourceObjectID).
-				Updates(map[string]interface{}{"ddl_status": "created", "updated_at": gorm.Expr("NOW()")})
-		}
-
-		h.logger.Info("table created with default columns",
-			zap.String("schema", schemaName),
-			zap.String("table", payload.TargetTable),
-			zap.Int("approved_fields", columnsAdded),
-		)
-	} else {
-		if err := h.ensureCDCColumnsInSchema(schemaName, payload.TargetTable); err != nil {
-			h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: err.Error()})
-			return
-		}
-		columnsAdded = 8 // 8 CDC columns
-
-		// Update states
-		h.db.Model(&model.TableRegistry{}).Where("target_table = ?", payload.TargetTable).Update("is_table_created", true)
-		if payload.SourceObjectID > 0 {
-			h.db.Table("cdc_system.shadow_binding").
-				Where("source_object_id = ?", payload.SourceObjectID).
-				Updates(map[string]interface{}{"ddl_status": "created", "updated_at": gorm.Expr("NOW()")})
-		}
-
-		h.logger.Info("CDC system columns added to existing legacy table",
-			zap.String("schema", schemaName),
-			zap.String("table", payload.TargetTable),
-		)
 	}
+
+	// Always ensure CDC system columns and approved mapping rules exist
+	if err := h.ensureCDCColumnsInSchema(schemaName, payload.TargetTable); err != nil {
+		h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: err.Error()})
+		return
+	}
+
+	// 2. Add approved business fields (works for both new and existing tables)
+	// V2 Schema Migration: We read from mapping_rule_v2 via source_table join.
+	rules, err := h.mappingV2Repo.GetActiveRulesBySourceTable(context.Background(), payload.SourceTable)
+	if err == nil {
+		for _, rule := range rules {
+			// GetActiveRulesBySourceTable already filters for IsActive=true and Status="approved"
+			alterSQL := fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`,
+				quoteCommandIdent(schemaName), quoteCommandIdent(payload.TargetTable), quoteCommandIdent(rule.TargetColumn), rule.DataType)
+			if err := h.shadowDB.Exec(alterSQL).Error; err != nil {
+				h.logger.Warn("failed to add column", zap.String("column", rule.TargetColumn), zap.Error(err))
+				continue
+			}
+			columnsAdded++
+		}
+	}
+
+	// 3. Update states
+	h.db.Model(&model.TableRegistry{}).Where("target_table = ?", payload.TargetTable).Update("is_table_created", true)
+	if payload.SourceObjectID > 0 {
+		h.db.Table("cdc_system.shadow_binding").
+			Where("source_object_id = ?", payload.SourceObjectID).
+			Updates(map[string]interface{}{"ddl_status": "created", "updated_at": gorm.Expr("NOW()")})
+	}
+
+	h.logger.Info("default columns ensured",
+		zap.String("schema", schemaName),
+		zap.String("table", payload.TargetTable),
+		zap.Int("columns_processed", columnsAdded),
+	)
 
 	h.publishResult(msg, CommandResult{
 		Command:      "create-default-columns",
@@ -362,6 +353,7 @@ func (h *CommandHandler) HandleDiscover(msg *nats.Msg) {
 		SourceTable   string `json:"source_table"`
 		Provisioning  bool   `json:"provisioning,omitempty"`
 		SourceID      int64  `json:"source_id,omitempty"`
+		ReplyTo       string `json:"reply_to"`
 		CorrelationID string `json:"correlation_id,omitempty"`
 		TraceID       string `json:"trace_id,omitempty"`
 		SpanID        string `json:"span_id,omitempty"`
@@ -762,6 +754,79 @@ func (h *CommandHandler) HandleMasterSwap(msg *nats.Msg) {
 	}
 }
 
+// HandleDiscoverMongoDatabases handles MongoDB database discovery
+func (h *CommandHandler) HandleDiscoverMongoDatabases(msg *nats.Msg) {
+	h.logger.Info("received mongo database discovery command", zap.ByteString("payload", msg.Data))
+	var req struct {
+		Host    string `json:"host"`
+		Port    string `json:"port"`
+		ReplyTo string `json:"reply_to"`
+	}
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		return
+	}
+
+	if h.mongoSvc == nil {
+		return
+	}
+
+	dbs, err := h.mongoSvc.DiscoverDatabases(req.Host, req.Port)
+	respPayload := map[string]any{}
+	if err != nil {
+		h.logger.Error("mongo discovery failed", zap.Error(err))
+		respPayload["error"] = err.Error()
+	} else {
+		h.logger.Info("mongo discovery success", zap.Strings("databases", dbs))
+		respPayload["databases"] = dbs
+	}
+
+	resp, _ := json.Marshal(respPayload)
+	
+	// Trả về subject tường minh nếu có, không thì dùng Respond mặc định
+	if req.ReplyTo != "" {
+		if err := h.natsConn.Publish(req.ReplyTo, resp); err != nil {
+			h.logger.Error("failed to publish discovery response", zap.String("reply_to", req.ReplyTo), zap.Error(err))
+		} else {
+			h.logger.Info("published discovery response", zap.String("reply_to", req.ReplyTo))
+		}
+	} else {
+		msg.Respond(resp)
+	}
+}
+
+// HandleDiscoverMongoCollections handles MongoDB collection discovery
+func (h *CommandHandler) HandleDiscoverMongoCollections(msg *nats.Msg) {
+	var req struct {
+		Host    string `json:"host"`
+		Port    string `json:"port"`
+		DB      string `json:"db"`
+		ReplyTo string `json:"reply_to"`
+	}
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		return
+	}
+
+	if h.mongoSvc == nil {
+		return
+	}
+
+	cols, err := h.mongoSvc.DiscoverCollections(req.Host, req.Port, req.DB)
+	respPayload := map[string]any{}
+	if err != nil {
+		respPayload["error"] = err.Error()
+	} else {
+		respPayload["collections"] = cols
+	}
+
+	resp, _ := json.Marshal(respPayload)
+	
+	if req.ReplyTo != "" {
+		h.natsConn.Publish(req.ReplyTo, resp)
+	} else {
+		msg.Respond(resp)
+	}
+}
+
 // HandleIntrospect subscribes to "cdc.cmd.introspect" and scans a sample of _raw_data
 // from the DW table to find unmapped fields. It replies via NATS Request-Reply.
 
@@ -862,16 +927,23 @@ func (h *CommandHandler) HandleBatchTransform(msg *nats.Msg) {
 // HandleScanRawData scans _raw_data JSONB column to find fields not yet mapped.
 // Subject: "cdc.cmd.scan-raw-data" (request-reply pattern)
 func (h *CommandHandler) HandleScanRawData(msg *nats.Msg) {
-	targetTable := string(msg.Data)
+	var payload struct {
+		TargetTable string `json:"target_table"`
+		ReplyTo     string `json:"reply_to"`
+	}
+	// Backward compatibility: if not JSON, treat as raw targetTable string
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		payload.TargetTable = string(msg.Data)
+	}
+
+	targetTable := payload.TargetTable
 	h.logger.Info("scanning _raw_data for unmapped fields", zap.String("table", targetTable))
 	schemaName := h.resolveTargetSchema(targetTable)
 
 	// 0. Check table + _raw_data exists
 	if !h.tableExists(targetTable) || !h.hasColumn(targetTable, "_raw_data") {
 		res, _ := json.Marshal(map[string]interface{}{"status": "skipped", "reason": "table or _raw_data column not found"})
-		if msg.Reply != "" {
-			msg.Respond(res)
-		}
+		h.nats_publish(msg, "cdc.result.scan-raw-data", res)
 		return
 	}
 
@@ -890,7 +962,7 @@ func (h *CommandHandler) HandleScanRawData(msg *nats.Msg) {
 			"error":  fmt.Sprintf("failed to scan _raw_data: %s", err.Error()),
 		}
 		resBytes, _ := json.Marshal(res)
-		_ = msg.Respond(resBytes)
+		h.nats_publish(msg, "cdc.result.scan-raw-data", resBytes)
 		return
 	}
 
@@ -934,9 +1006,7 @@ func (h *CommandHandler) HandleScanRawData(msg *nats.Msg) {
 	}
 	res = sanitizeAdminResultMap(res)
 	resBytes, _ := json.Marshal(res)
-	if msg.Reply != "" {
-		_ = msg.Respond(resBytes)
-	}
+	h.nats_publish(msg, "cdc.result.scan-raw-data", resBytes)
 
 	h.logger.Info("_raw_data scan completed",
 		zap.String("table", targetTable),
@@ -1033,11 +1103,7 @@ func (h *CommandHandler) publishResult(msg *nats.Msg, result CommandResult) {
 	safeResult := result
 	safeResult.Error = sanitizeAdminError(result.Error)
 	data, _ := json.Marshal(safeResult)
-	if msg.Reply != "" {
-		if err := msg.Respond(data); err != nil {
-			h.logger.Error("failed to reply to NATS", zap.Error(err))
-		}
-	}
+	h.nats_publish(msg, "cdc.result."+result.Command, data)
 	h.logCommandResult(safeResult)
 
 	// Activity Log — every command result
@@ -1259,6 +1325,7 @@ func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 		SyncEngine     string `json:"sync_engine"`
 		SourceType     string `json:"source_type"`
 		LegacySourceID string `json:"legacy_source_id"`
+		ReplyTo        string `json:"reply_to"`
 	}
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		h.logger.Error("cdc.cmd.scan-fields: invalid payload", zap.Error(err))
@@ -1540,6 +1607,18 @@ func (h *CommandHandler) HandleAlterColumn(msg *nats.Msg) {
 // nats_publish emits a sanitized result event to the configured subject
 // when the caller used pub/sub; falls back to request-reply otherwise.
 func (h *CommandHandler) nats_publish(msg *nats.Msg, subject string, data []byte) {
+	var payload struct {
+		ReplyTo string `json:"reply_to"`
+	}
+	_ = json.Unmarshal(msg.Data, &payload)
+
+	if payload.ReplyTo != "" && h.natsConn != nil {
+		if err := h.natsConn.Publish(payload.ReplyTo, data); err != nil {
+			h.logger.Warn("publish result failed (reply_to)", zap.String("subject", payload.ReplyTo), zap.Error(err))
+		}
+		return
+	}
+
 	if msg.Reply != "" {
 		_ = msg.Respond(data)
 		return

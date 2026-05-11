@@ -312,6 +312,7 @@ func (sa *SchemaAdapter) createShadowTableV1WithCols(
 	}
 
 	ddl := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		"_gpay_id" BIGINT,
 		%s TEXT,%s
 		"_raw_data" JSONB,
 		"_source" VARCHAR(20) DEFAULT 'airbyte',

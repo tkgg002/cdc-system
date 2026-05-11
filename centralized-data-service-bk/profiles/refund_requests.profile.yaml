@@ -1,0 +1,30 @@
+table: refund_requests
+sample_size: 80
+generated_at: "2026-04-21T01:59:56Z"
+fields:
+  - field: _id
+    detected_type: string
+    number_locale:
+      de_DE: 1
+      en_US: 1
+      vi_VN: 1
+    confidence: 1
+    null_rate: 0
+    sample_size: 80
+    is_financial: false
+  - field: seed_for
+    detected_type: string
+    confidence: 1
+    null_rate: 0
+    sample_size: 80
+    is_financial: false
+  - field: updated_at
+    detected_type: string
+    number_locale:
+      de_DE: 1
+      en_US: 1
+      vi_VN: 1
+    confidence: 1
+    null_rate: 0
+    sample_size: 80
+    is_financial: false

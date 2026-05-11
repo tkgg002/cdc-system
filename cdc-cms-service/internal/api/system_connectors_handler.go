@@ -204,6 +204,56 @@ func (h *SystemConnectorsHandler) Create(c *fiber.Ctx) error {
 	return c.Status(201).JSON(body)
 }
 
+// UpdateConfig updates an existing connector config and refreshes the
+// persisted source fingerprint row.
+// PATCH /api/v1/system/connectors/:name/config
+func (h *SystemConnectorsHandler) UpdateConfig(c *fiber.Ctx) error {
+	name := strings.TrimSpace(c.Params("name"))
+	if !connectorNameRE.MatchString(name) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_connector_name"})
+	}
+	var req struct {
+		Config map[string]string `json:"config"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "bad_json"})
+	}
+	if len(req.Config) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "config_required"})
+	}
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+	user := middleware.GetUsername(c)
+	fp := parseFingerprint(req.Config)
+	rawCfg, _ := json.Marshal(infrahttp.FilterSafeConfig(req.Config))
+	cmd := commands.UpdateSystemConnectorConfigCommand{
+		Name:   name,
+		Config: req.Config,
+		Fingerprint: &model.Source{
+			ConnectorName:         name,
+			SourceType:            fp.sourceType,
+			ConnectorClass:        req.Config["connector.class"],
+			TopicPrefix:           fp.topicPrefix,
+			ServerAddress:         fp.serverAddress,
+			DatabaseIncludeList:   fp.dbList,
+			CollectionIncludeList: fp.collectionList,
+			RawConfigSanitized:    rawCfg,
+			Status:                "created",
+			CreatedBy:             user,
+		},
+		UpdatedBy: user,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		return c.Status(502).JSON(fiber.Map{"error": "connector_update_failed", "detail": err.Error()})
+	}
+	var body map[string]interface{}
+	_ = json.Unmarshal(res.ResultBody, &body)
+	return c.Status(200).JSON(body)
+}
+
 // Delete removes a connector (use with care — consumer offsets may replay).
 // DELETE /api/v1/system/connectors/:name
 func (h *SystemConnectorsHandler) Delete(c *fiber.Ctx) error {
@@ -296,7 +346,7 @@ func parseFingerprint(cfg map[string]string) fingerprint {
 		fp.dbList = cfg["database.include.list"]
 		fp.collectionList = cfg["table.include.list"]
 	case strings.Contains(cls, "Postgres"):
-		fp.sourceType = "postgres"
+		fp.sourceType = "postgresql"
 		fp.serverAddress = joinHostPort(cfg["database.hostname"], cfg["database.port"])
 		fp.dbList = cfg["database.dbname"]
 		fp.collectionList = cfg["table.include.list"]

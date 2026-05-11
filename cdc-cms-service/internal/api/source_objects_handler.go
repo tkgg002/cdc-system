@@ -116,7 +116,7 @@ func (h *SourceObjectsHandler) GetStats(c *fiber.Ctx) error {
 			ORDER BY sb.is_active DESC, sb.updated_at DESC, sb.id DESC
 			LIMIT 1
 		) sb ON TRUE
-		LEFT JOIN cdc_table_registry tr
+		LEFT JOIN cdc_system.cdc_table_registry tr
 		  ON tr.source_db = so.source_database
 		 AND tr.source_table = so.source_object_name
 		 AND (
@@ -269,7 +269,7 @@ func (h *SourceObjectsHandler) ListShadowBindings(c *fiber.Ctx) error {
 		FROM cdc_system.shadow_binding sb
 		JOIN cdc_system.source_object_registry so
 		  ON so.id = sb.source_object_id
-		LEFT JOIN cdc_table_registry tr
+		LEFT JOIN cdc_system.cdc_table_registry tr
 		  ON tr.source_db = so.source_database
 		 AND tr.source_table = so.source_object_name
 		 AND tr.target_table = sb.shadow_table
@@ -277,7 +277,7 @@ func (h *SourceObjectsHandler) ListShadowBindings(c *fiber.Ctx) error {
 			SELECT
 				rr.diff,
 				rr.checked_at
-			FROM cdc_reconciliation_report rr
+			FROM cdc_system.cdc_reconciliation_report rr
 			WHERE rr.target_table = sb.shadow_table
 			ORDER BY rr.checked_at DESC
 			LIMIT 1

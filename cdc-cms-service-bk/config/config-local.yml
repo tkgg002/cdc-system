@@ -1,0 +1,45 @@
+server:
+  name: cdc-cms-service
+  port: ":8083"
+  mode: dev
+
+db:
+  host: localhost
+  port: 5433
+  username: gpay_admin
+  password: gpay_pass
+  database: cdc_dw
+  sslMode: disable
+  maxOpenConn: 25
+  maxIdleConn: 10
+  connMaxLifetime: 5m
+
+nats:
+  url: nats://cms_service:cms_secret_2026@localhost:14222
+  name: cdc-cms
+  maxReconnect: -1
+  reconnectWait: 2s
+
+redis:
+  url: redis://localhost:16379
+  password: ""
+  db: 0
+
+system:
+  workerUrl: http://localhost:8090
+  kafkaConnectUrl: http://localhost:18083
+  natsMonitorUrl: http://localhost:18222
+  prometheusUrl: ""
+  kafkaExporterUrl: ""
+  debeziumConnector: goopay-mongodb-cdc
+  healthCacheKey: system_health:snapshot
+
+jwt:
+  secret: change-me-in-production
+  expiration: 24h
+
+otel:
+  enabled: true
+  serviceName: cdc-cms
+  endpoint: http://localhost:14318
+  sampleRatio: 1.0

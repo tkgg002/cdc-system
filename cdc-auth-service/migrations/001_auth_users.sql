@@ -1,10 +1,3 @@
--- Auth Service: Users table (Phase 39 REWRITE — schema cdc_auth_service)
--- Database goopay_dw shared với CDC system, nhưng schema tách bạch:
---   cdc_system        → CDC control plane
---   cdc_auth_service  → Auth service tables (chỉ cdc-auth-service đọc/ghi)
--- Bounded context: cdc-cms-service KHÔNG đọc trực tiếp bảng này, chỉ
--- verify JWT do cdc-auth-service ký.
-
 BEGIN;
 
 CREATE SCHEMA IF NOT EXISTS cdc_auth_service;
@@ -28,8 +21,6 @@ CREATE INDEX IF NOT EXISTS idx_auth_users_username
 CREATE INDEX IF NOT EXISTS idx_auth_users_role
     ON cdc_auth_service.auth_users (role);
 
--- Seed: default admin user (password: admin123 — bcrypt hash)
--- Thay đổi password sau khi deploy
 INSERT INTO cdc_auth_service.auth_users (username, email, password, full_name, role)
 VALUES (
     'admin',

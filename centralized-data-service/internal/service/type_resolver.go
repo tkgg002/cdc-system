@@ -98,6 +98,27 @@ func (r *TypeResolver) ValidateValue(ctx context.Context, spec string, value any
 		return fmt.Sprintf("enum %s: %q not in members %v", enumName, s, members)
 	}
 
+	// Catch plain numeric types without precision bounds
+	specUpper := strings.ToUpper(spec)
+	if specUpper == "SMALLINT" || specUpper == "INTEGER" || specUpper == "BIGINT" || specUpper == "REAL" || specUpper == "DOUBLE PRECISION" || specUpper == "NUMERIC" || specUpper == "DECIMAL" {
+		var s string
+		switch v := value.(type) {
+		case string:
+			s = strings.TrimSpace(v)
+		case float64:
+			s = strconv.FormatFloat(v, 'f', -1, 64)
+		case int64:
+			s = strconv.FormatInt(v, 10)
+		case int:
+			s = strconv.FormatInt(int64(v), 10)
+		default:
+			return fmt.Sprintf("expected numeric for %s, got %T", spec, value)
+		}
+		if _, err := strconv.ParseFloat(s, 64); err != nil {
+			return fmt.Sprintf("expected valid numeric format for %s, got %q", spec, s)
+		}
+	}
+
 	return ""
 }
 
@@ -162,6 +183,10 @@ func validateNumericPrecision(value any, precision, scale int, spec string) stri
 		s = strconv.FormatInt(int64(v), 10)
 	default:
 		return fmt.Sprintf("expected numeric for %s, got %T", spec, value)
+	}
+	s = strings.TrimSpace(s)
+	if _, err := strconv.ParseFloat(s, 64); err != nil {
+		return fmt.Sprintf("expected valid numeric format for %s, got %q", spec, s)
 	}
 	s = strings.TrimPrefix(s, "-")
 	dotIdx := strings.Index(s, ".")

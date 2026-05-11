@@ -1,0 +1,100 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"strconv"
+	"strings"
+	"time"
+
+	"cdc-cms-service/internal/app/commands"
+	"cdc-cms-service/internal/app/ports"
+	"cdc-cms-service/internal/app/queries"
+	"cdc-cms-service/internal/infra/messaging"
+	"cdc-cms-service/internal/infra/persistence"
+	"cdc-cms-service/internal/middleware"
+	"cdc-cms-service/internal/model"
+	"cdc-cms-service/pkgs/natsconn"
+
+	"github.com/gofiber/fiber/v2"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
+)
+
+type RegistryHandler struct {
+	repo           ports.RegistryRepo
+	db             *gorm.DB
+	natsClient     *natsconn.NatsClient
+	bus            ports.CommandBus
+	automator      *persistence.ShadowAutomator
+	v2sync         *persistence.SourceObjectV2SyncService
+	activityLogger *persistence.ActivityLogger
+	logger         *zap.Logger
+	syncHealthQ    *queries.GetSyncHealthHandler
+	bridgeReader   queries.BridgeStatusReader
+}
+
+func NewRegistryHandler(
+	repo ports.RegistryRepo,
+	db *gorm.DB,
+	nats *natsconn.NatsClient,
+	bus ports.CommandBus,
+	automator *persistence.ShadowAutomator,
+	v2sync *persistence.SourceObjectV2SyncService,
+	activityLogger *persistence.ActivityLogger,
+	logger *zap.Logger,
+	syncHealthQ *queries.GetSyncHealthHandler,
+	bridgeReader queries.BridgeStatusReader,
+) *RegistryHandler {
+	return &RegistryHandler{
+		repo:           repo,
+		db:             db,
+		natsClient:     nats,
+		bus:            bus,
+		automator:      automator,
+		v2sync:         v2sync,
+		activityLogger: activityLogger,
+		logger:         logger,
+		syncHealthQ:    syncHealthQ,
+		bridgeReader:   bridgeReader,
+	}
+}
+
+// List is kept as a compatibility delegate for V2 read models and internal
+// operator-flow bridges. It is intentionally no longer mounted directly.
+func (h *RegistryHandler) List(c *fiber.Ctx) error {
+	filter := ports.RegistryFilter{
+		Page:     intQuery(c, "page", 1),
+		PageSize: intQuery(c, "page_size", 20),
+	}
+	if v := c.Query("source_db"); v != "" {
+		filter.SourceDB = &v
+	}
+	if v := c.Query("sync_engine"); v != "" {
+		filter.SyncEngine = &v
+	}
+	if v := c.Query("priority"); v != "" {
+		filter.Priority = &v
+	}
+	if v := c.Query("is_active"); v != "" {
+		b := v == "true"
+		filter.IsActive = &b
+	}
+	if v := c.Query("destination_id"); v != "" {
+		filter.DestinationID = &v
+	}
+
+	entries, total, err := h.repo.GetAll(c.Context(), filter)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to fetch registry"})
+	}
+
+	return c.JSON(fiber.Map{"data": entries, "total": total, "page": filter.Page})
+}
+
+// Register is kept as a compatibility delegate behind the V2
+// /api/v1/source-objects/register facade.
+func (h *RegistryHandler) Register(c *fiber.Ctx) error {
+	var entry model.TableRegistry
+	if err := c.BodyParser(&entry); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})

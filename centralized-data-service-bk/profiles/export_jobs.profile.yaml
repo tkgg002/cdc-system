@@ -1,0 +1,114 @@
+table: export_jobs
+sample_size: 117
+generated_at: "2026-04-21T02:05:00Z"
+source: manual_sql_profile  # Go tool blocked by sandbox (port inference); SQL path used via docker exec
+method: "SELECT jsonb_each(_raw_data) FROM public.export_jobs TABLESAMPLE BERNOULLI(100)"
+fields:
+  - field: __v
+    detected_type: number
+    confidence: 1.0
+    null_rate: 0.026
+    sample_size: 114
+    is_financial: false
+  - field: _id
+    detected_type: object      # MongoDB ObjectId (extended JSON form)
+    confidence: 1.0
+    null_rate: 0.0
+    sample_size: 117
+    is_financial: false
+  - field: add_field_alter
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.889
+    sample_size: 13
+    is_financial: false
+  - field: add_field_alter_1
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.889
+    sample_size: 13
+    is_financial: false
+  - field: add_field_alter_2
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.991
+    sample_size: 1
+    is_financial: false
+  - field: createdAt
+    detected_type: object      # Extended JSON date / ISODate wrapper
+    confidence: 1.0
+    null_rate: 0.0
+    sample_size: 117
+    is_financial: false
+  - field: error
+    detected_type: mixed       # 100 null + 14 string
+    confidence: 0.877          # majority = null (87.7%)
+    null_rate: 0.877
+    sample_size: 114
+    is_financial: false
+  - field: exportType
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.009
+    sample_size: 116
+    is_financial: false
+  - field: fileUrl
+    detected_type: mixed       # 16 null + 100 string
+    confidence: 0.862
+    null_rate: 0.138
+    sample_size: 116
+    is_financial: false
+  - field: jobId
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.009
+    sample_size: 116
+    is_financial: false
+  - field: jobName
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.991
+    sample_size: 1
+    is_financial: false
+  - field: lastUpdatedAt
+    detected_type: object      # Extended JSON date wrapper
+    confidence: 1.0
+    null_rate: 0.026
+    sample_size: 114
+    is_financial: false
+  - field: merchantId
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.009
+    sample_size: 116
+    is_financial: false
+  - field: params
+    detected_type: object
+    confidence: 1.0
+    null_rate: 0.009
+    sample_size: 116
+    is_financial: false
+  - field: progress
+    detected_type: number
+    confidence: 1.0
+    null_rate: 0.009
+    sample_size: 116
+    is_financial: false
+  - field: status
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.0
+    sample_size: 117
+    is_financial: false
+  - field: totalRecords
+    detected_type: number
+    confidence: 1.0
+    null_rate: 0.009
+    sample_size: 116
+    is_financial: false
+  - field: userId
+    detected_type: string
+    confidence: 1.0
+    null_rate: 0.009
+    sample_size: 116
+    is_financial: false

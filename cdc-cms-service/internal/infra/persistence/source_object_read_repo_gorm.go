@@ -48,7 +48,7 @@ const listBaseFromWhere = `
 		ORDER BY sb.is_active DESC, sb.updated_at DESC, sb.id DESC
 		LIMIT 1
 	) sb ON TRUE
-	LEFT JOIN cdc_table_registry tr
+	LEFT JOIN cdc_system.cdc_table_registry tr
 	  ON tr.source_db = so.source_database
 	 AND tr.source_table = so.source_object_name
 	 AND (
@@ -61,7 +61,7 @@ const listBaseFromWhere = `
 			rr.diff,
 			rr.status,
 			rr.checked_at
-		FROM cdc_reconciliation_report rr
+		FROM cdc_system.cdc_reconciliation_report rr
 		WHERE rr.target_table = COALESCE(sb.shadow_table, tr.target_table)
 		ORDER BY rr.checked_at DESC
 		LIMIT 1
@@ -201,15 +201,20 @@ func (r *sourceObjectReadRepoGorm) GetMappingContextByRegistryID(ctx context.Con
 				ELSE 'v2_source_only'
 			END AS metadata_status,
 			COALESCE(rr.diff, 0) AS recon_drift,
-			COALESCE(so.created_at, tr.created_at) AS created_at,
-			GREATEST(COALESCE(so.updated_at, tr.updated_at), COALESCE(sb.updated_at, tr.updated_at), tr.updated_at) AS updated_at,
+			COALESCE(so.created_at, tr.created_at)::timestamptz AS created_at,
+			GREATEST(
+				COALESCE(so.updated_at, tr.updated_at)::timestamptz,
+				COALESCE(sb.updated_at, tr.updated_at)::timestamptz,
+				tr.updated_at::timestamptz
+			) AS updated_at,
 			COALESCE(so.notes, tr.notes) AS notes
-		FROM cdc_table_registry tr
+		FROM cdc_system.cdc_table_registry tr
 		LEFT JOIN cdc_system.source_object_registry so
 		  ON so.source_database = tr.source_db
 		 AND so.source_object_name = tr.source_table
 		LEFT JOIN LATERAL (
 			SELECT
+				sb.id,
 				sb.shadow_schema,
 				sb.shadow_table,
 				sb.physical_table_fqn,
@@ -226,7 +231,7 @@ func (r *sourceObjectReadRepoGorm) GetMappingContextByRegistryID(ctx context.Con
 				rr.target_table,
 				rr.diff,
 				rr.status
-			FROM cdc_reconciliation_report rr
+			FROM cdc_system.cdc_reconciliation_report rr
 			WHERE rr.target_table = tr.target_table
 			ORDER BY rr.checked_at DESC
 			LIMIT 1

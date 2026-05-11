@@ -13,7 +13,6 @@ import ConfirmDestructiveModal from '../components/ConfirmDestructiveModal';
 const { Panel } = Collapse;
 const { Title, Text } = Typography;
 
-// Phase multi_engine_unified — engine badge color map.
 const ENGINE_COLOR: Record<string, string> = {
   postgresql: 'blue',
   mongodb: 'green',
@@ -21,8 +20,6 @@ const ENGINE_COLOR: Record<string, string> = {
   mariadb: 'orange',
 };
 
-// Phase multi_engine_unified — provisioning_state chip color map.
-// Aligned with migration 047 state machine.
 const STATE_COLOR: Record<ProvisioningState, string> = {
   draft: 'default',
   shadow_pending: 'processing',
@@ -38,8 +35,6 @@ const STATE_COLOR: Record<ProvisioningState, string> = {
   archived: 'default',
 };
 
-// State at which auto→manual flip should warn the operator: an
-// in-flight orchestrator command may already be racing.
 const STATE_NEEDS_CONFIRM = (s?: ProvisioningState) =>
   !!s && (s.endsWith('_pending') || s === 'failed');
 
@@ -107,16 +102,16 @@ const SyncStatusIndicator = ({ sourceDB, sourceTable }: { sourceDB: string; sour
 
   const badgeStatus =
     status === 'RUNNING' ? 'success' :
-    status === 'PAUSED' ? 'warning' :
-    status === 'FAILED' ? 'error' :
-    status === 'not_configured' ? 'default' :
-    status === 'loading' ? 'processing' : 'default';
+      status === 'PAUSED' ? 'warning' :
+        status === 'FAILED' ? 'error' :
+          status === 'not_configured' ? 'default' :
+            status === 'loading' ? 'processing' : 'default';
 
   const label =
     status === 'not_configured' ? 'Chưa có connector' :
-    status === 'loading' ? '...' :
-    status === 'error' ? 'Lỗi' :
-    status;
+      status === 'loading' ? '...' :
+        status === 'error' ? 'Lỗi' :
+          status;
 
   return (
     <Tooltip title={connectorName ? `Connector: ${connectorName}` : 'Không có Debezium connector match collection này'}>
@@ -202,7 +197,6 @@ function AsyncRowActions({ record, onChange }: AsyncActionsProps) {
       if (confirm.kind === 'scan-fields') await scan.dispatchAsync({ reason });
       closeConfirm();
     } catch {
-      // hook already surfaced the error via message.error
     }
   };
 
@@ -284,11 +278,10 @@ export default function TableRegistry() {
   const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
   const [activeLoadingId, setActiveLoadingId] = useState<number | null>(null);
   const [form] = Form.useForm();
-  // Systematic Flow: sources for Register modal dropdown.
+
   const [sources, setSources] = useState<SourceRow[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
 
-  // Phase multi_engine_unified — client-side engine filter.
   const filteredByEngine = useMemo(() => {
     if (!engineFilter) return data;
     return data.filter(d => {
@@ -297,7 +290,6 @@ export default function TableRegistry() {
     });
   }, [data, engineFilter]);
 
-  // Nhóm dữ liệu theo source_db
   const groupedData = useMemo(() => {
     const groups: Record<string, TRegistry[]> = {};
     filteredByEngine.forEach(item => {
@@ -345,8 +337,6 @@ export default function TableRegistry() {
     fetchShadowBindings();
   }, [fetchData, fetchShadowBindings]);
 
-  // Load sources once when the Register modal opens. Keeps the dropdown
-  // fresh between re-opens without polling.
   useEffect(() => {
     if (!registerVisible) return;
     cmsApi.get('/api/v1/sources')
@@ -354,8 +344,6 @@ export default function TableRegistry() {
       .catch(() => setSources([]));
   }, [registerVisible]);
 
-  // When user picks a source, auto-fill source_db + source_type so they
-  // only have to choose a collection + target name.
   const selectedSource = useMemo(
     () => sources.find((s) => s.id === selectedSourceId) || null,
     [sources, selectedSourceId],
@@ -402,10 +390,6 @@ export default function TableRegistry() {
     }
   };
 
-  // Phase multi_engine_unified — Toggle Auto/Manual via
-  // /api/v1/cms/sources/:id/provisioning/mode.
-  // Confirm dialog only fires when flipping auto → manual while an
-  // orchestrator command may be in flight (state ∈ *_pending|failed).
   const performModeFlip = async (id: number, nextMode: ProvisioningMode, sourceObjectName: string) => {
     setModeLoadingId(id);
     try {
@@ -464,9 +448,6 @@ export default function TableRegistry() {
     }
   };
 
-  // Gap 5b — Snapshot Now: publish NATS cdc.cmd.debezium-signal via CMS
-  // /api/tools/trigger-snapshot/:table. Worker writes Mongo debezium_signal
-  // collection → Debezium performs incremental snapshot.
   const handleSnapshot = (e: React.MouseEvent, record: TRegistry) => {
     e.stopPropagation();
     Modal.confirm({
@@ -478,7 +459,11 @@ export default function TableRegistry() {
         try {
           await cmsApi.post(
             `/api/tools/trigger-snapshot/${encodeURIComponent(record.source_table)}`,
-            { database: record.source_db, collection: record.source_table },
+            { 
+              database: record.source_db, 
+              collection: record.source_table,
+              reason: `Trigger manual snapshot for ${record.source_table}`
+            },
             { headers: { 'Idempotency-Key': `snapshot-${record.id}-${Date.now()}` } },
           );
           message.success(`Snapshot dispatched: ${record.source_table}`);
@@ -495,9 +480,7 @@ export default function TableRegistry() {
   const handleCreateTable = (e: React.MouseEvent, record: TRegistry) => {
     e.stopPropagation();
     setActionLoadingId(record.id);
-    const endpoint = record.registry_id
-      ? `/api/v1/source-objects/registry/${record.registry_id}/create-default-columns`
-      : `/api/v1/source-objects/${record.id}/create-default-columns`;
+    const endpoint = `/api/v1/source-objects/${record.id}/create-default-columns`;
     cmsApi.post(endpoint)
       .then(() => { message.success('Đang tạo table đích + field mặc định...'); fetchData(); })
       .catch((err) => {
@@ -510,9 +493,7 @@ export default function TableRegistry() {
   const handleCreateDefaultFields = (e: React.MouseEvent, record: TRegistry) => {
     e.stopPropagation();
     setActionLoadingId(record.id);
-    const endpoint = record.registry_id
-      ? `/api/v1/source-objects/registry/${record.registry_id}/standardize`
-      : `/api/v1/source-objects/${record.id}/standardize`;
+    const endpoint = `/api/v1/source-objects/${record.id}/standardize`;
     cmsApi.post(endpoint)
       .then(() => { message.success('Đang tạo System Default Fields...'); fetchData(); })
       .catch((err) => {
@@ -586,8 +567,29 @@ export default function TableRegistry() {
         return <Tag color={STATE_COLOR[state] || 'default'}>{state}</Tag>;
       },
     },
-    { title: 'Source DB', dataIndex: 'source_db', width: 120 },
-    { title: 'Source Table', dataIndex: 'source_table', width: 180, render: (t) => <strong style={{color: '#1890ff'}}>{t}</strong> },
+    {
+      title: 'Source DB',
+      dataIndex: 'source_db',
+      width: 120,
+      render: (db, record) => (
+        <Space direction="vertical" size={0}>
+          <Text strong>{db}</Text>
+          <Tag color={ENGINE_COLOR[record.source_engine_type || record.source_type] || 'default'} style={{ fontSize: 10 }}>
+            {record.source_engine_type || record.source_type}
+          </Tag>
+        </Space>
+      )
+    },
+    { 
+      title: 'Source Object', 
+      dataIndex: 'source_table', 
+      width: 180, 
+      render: (t, record) => (
+        <Text strong style={{ color: record.source_type === 'mongodb' ? '#52c41a' : '#1890ff' }}>
+          {t}
+        </Text>
+      ) 
+    },
     { title: 'Shadow Table', dataIndex: 'target_table', width: 180 },
     {
       title: 'Sync Engine', dataIndex: 'sync_engine', width: 160,
@@ -677,9 +679,9 @@ export default function TableRegistry() {
                 onClick={(e) => handleSnapshot(e, record)}>Snapshot Now</Button>
             </Tooltip>
             <Tooltip title="Đi tới Master Registry để tạo / chạy Transmute">
-              <Button size="small" icon={<RocketOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation();
+                      <Button size="small" icon={<RocketOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation();
                   const params = new URLSearchParams({
                     source_shadow: record.target_table,
                     source_label: getShadowFqn(record),
@@ -716,7 +718,7 @@ export default function TableRegistry() {
 
   return (
     <div>
-      <Title level={4} style={{ marginBottom: 24, textAlign: 'left' }}>Source Objects</Title>
+      <Title level={4} style={{ marginBottom: 24, textAlign: 'left' }}>Shadow</Title>
       <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
         Mỗi row đại diện cho 1 source object đã được route sang 1 shadow target. Ở phase hiện tại, shadow namespace hiển thị theo quy ước <Text code>shadow_{"<source_db>"}</Text>.
       </Text>
@@ -749,7 +751,7 @@ export default function TableRegistry() {
         items={[
           {
             key: 'source-objects',
-            label: 'Source Objects',
+            label: 'Shadow Objects',
             children: (
               <Collapse defaultActiveKey={Object.keys(groupedData)} ghost expandIconPosition="end">
                 {Object.entries(groupedData).map(([db, tables]) => (
@@ -770,7 +772,7 @@ export default function TableRegistry() {
                       scroll={{ x: 1000 }}
                       onRow={(record) => ({
                         onClick: () => {
-                          if (record.registry_id) navigate(`/registry/${record.registry_id}/mappings`);
+                          if (record.registry_id) navigate(`/shadow/${record.registry_id}/mappings`);
                         },
                         style: { cursor: record.registry_id ? 'pointer' : 'default' }
                       })}

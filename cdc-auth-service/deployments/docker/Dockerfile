@@ -9,6 +9,7 @@ FROM alpine:3.20
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /app/auth-service .
-COPY --from=builder /app/config/config-local.yml ./config/config-local.yml
+COPY --from=builder /app/config ./config
 EXPOSE 8081
+# Runtime prod: set cfgPath=./config/config-production.yml + AUTH_DB_*/AUTH_JWT_SECRET via env.
 CMD ["./auth-service"]

@@ -245,21 +245,28 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	}
 
 	// 10b. Command handler — handles DW operations relayed via NATS from the API.
-	cmdHandler := handler.NewCommandHandler(db, mappingRepo, registryRepo, pendingRepo, shadowDB, logger)
+	cmdHandler := handler.NewCommandHandler(db, mappingRepo, mappingRuleV2Repo, registryRepo, pendingRepo, shadowDB, logger)
 	cmdHandler.SetMetadataRegistry(registrySvc)
-	// Inject Kafka Connect URL so boundary-refactor handlers (restart,
-	// sync-state) can call the Connect REST API without leaking through
-	// the CMS. Empty string keeps those handlers idle.
 	cmdHandler.SetKafkaConnectURL(cfg.Debezium.KafkaConnectURL)
 	cmdHandler.SetNATSConn(natsClient.Conn)
+
+	mongoIntrospectSvc := service.NewMongoIntrospectionService()
+	cmdHandler.SetMongoService(mongoIntrospectSvc)
+
 	natsClient.Conn.Subscribe("cdc.cmd.standardize", cmdHandler.HandleStandardize)
 	natsClient.Conn.Subscribe("cdc.cmd.discover", cmdHandler.HandleDiscover)
+	natsClient.Conn.Subscribe("cdc.cmd.introspect", cmdHandler.HandleDiscover)
 	natsClient.Conn.Subscribe("cdc.cmd.backfill", cmdHandler.HandleBackfill)
 	natsClient.Conn.Subscribe("cdc.cmd.scan-raw-data", cmdHandler.HandleScanRawData)
 	natsClient.Conn.Subscribe("cdc.cmd.batch-transform", cmdHandler.HandleBatchTransform)
 	natsClient.Conn.Subscribe("cdc.cmd.periodic-scan", cmdHandler.HandlePeriodicScan)
 	natsClient.Conn.Subscribe("cdc.cmd.drop-gin-index", cmdHandler.HandleDropGINIndex)
 	natsClient.Conn.Subscribe("cdc.cmd.create-default-columns", cmdHandler.HandleCreateDefaultColumns)
+
+	// MongoDB Discovery — Flow 1
+	natsClient.Conn.Subscribe("cdc.cmd.introspect.mongo.databases", cmdHandler.HandleDiscoverMongoDatabases)
+	natsClient.Conn.Subscribe("cdc.cmd.introspect.mongo.collections", cmdHandler.HandleDiscoverMongoCollections)
+
 	// Boundary-refactor handlers — kept for Debezium-native flows.
 	natsClient.Conn.Subscribe("cdc.cmd.scan-fields", cmdHandler.HandleScanFields)
 	natsClient.Conn.Subscribe("cdc.cmd.sync-register", cmdHandler.HandleSyncRegister)

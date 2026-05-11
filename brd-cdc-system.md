@@ -1,8 +1,9 @@
 # BRD — CDC System (4 repo)
 
+> **v2.1 — 2026-05-06** · patch §4 (cms-service Hexagonal/CQRS rebuild) + Provisioning Mode subsystem (replace CS3 stub).
 > **v2.0 — 2026-04-27** · rewrite từ scratch.
-> Nguồn: code path:line + `agent/memory/workspaces/feature-cdc-integration/05_progress.md` (audit log) + `09_*solution*.md` (verified runtime).
-> v1.0 (cùng ngày, buổi sáng) đã deprecate: code-as-built thuần, bỏ pivot timeline, R-status từ plan 1+2 không đối chiếu.
+> Nguồn: code path:line + `agent/memory/workspaces/feature-cdc-integration/05_progress.md` (audit log) + `04_decisions_provisioning_mode.md` + `09_*solution*.md`.
+> v1.0 (2026-04-27 sáng) đã deprecate: code-as-built thuần, bỏ pivot timeline.
 
 ---
 
@@ -27,7 +28,7 @@ Hai mặt phẳng: **Control plane** (auth + cms-service + cms-web — quản tr
 |:-:|:-|:-|
 | **CS1** | **Airbyte RETIRED hoàn toàn** (Sprint 3, 2026-04-21). `pkgs/airbyte/` xóa vật lý, ~2100 LOC bị cắt. Stub `ShouldUseAirbyte()` luôn `false`. | Plan 1+2 R1 (Airbyte hybrid) chết. Mọi đề cập "Airbyte" trong doc cũ là history. |
 | **CS2** | **Backbone CDC events = Kafka (KRaft) + Avro + Schema Registry**. ADR-015 ban đầu chọn NATS JetStream → REVERSED 2026-04-15. | NATS chỉ còn cho `cdc.cmd.*`, `cdc.event.*`, `schema.*` (internal command bus). |
-| **CS3** | **Wizard "🚀 Automate Everything" = STUB**. `wizardHandler.Execute` chỉ flip `status=running` + log 1 dòng. **KHÔNG** orchestrate 11 bước thật. | UI hứa automation, BE chưa làm. Admin vẫn phải tự click qua từng page. |
+| **CS3** | **Wizard "🚀 Automate Everything" = STUB** (legacy surface). `wizardHandler.Execute` chỉ flip `status=running` + log 1 dòng. ⚠ Đã có **Provisioning Mode** (parallel orchestrator subsystem) thay thế thực sự — xem §4.5.7 + §7.9. Wizard UI cần migrate sang `/api/v1/cms/sources/:id/provisioning/*`. | Wizard route giữ làm legacy compat; Provisioning là canonical kể từ Phase D (2026-04-29). |
 | **CS4** | **Schema drift workflow canonical = `schema_proposal`** (migration 025), KHÔNG phải `pending_fields`. Table `pending_fields` vẫn tồn tại (mig 001/005/037) nhưng KHÔNG có code path đọc/ghi. | Plan 1+2 R3 đã pivot 2026-04-07. Pending_fields = dead schema, chưa drop. |
 | **CS5** | **Production SLO chưa đo**. Plan 1+2 R9 yêu cầu 50K evt/s, p99<100ms. Local đo được 5,640 rows/sec (bridge load test 2026-04-14). Production p99 unmeasured. | Mọi claim performance là local-only. |
 | **CS6** | **2-tier storage**: shadow `cdc_internal.<table>` (Sonyflake `_gpay_source_id` OCC) → master `public.<name>` (post-Transmuter, atomic-swappable). Architecture.md từng vẽ 1 tầng — đó là drift. | Plan 1+2 R2 (JSONB landing zone `_raw_data`) PIVOT: shadow row có `_raw_data JSONB` nhưng KHÔNG còn populate từ Airbyte typed tables. |
@@ -55,6 +56,8 @@ Hai mặt phẳng: **Control plane** (auth + cms-service + cms-web — quản tr
 | 2026-04-21 | TransmuterModule thay Dynamic Mapper | Phase 2 enrichment plan → `transmuter.go` ~470 LOC + 7-fn whitelist + 2-layer gate | `05_progress.md:842` |
 | 2026-04-24 | Shadow/Master 2-tier + Systematic Connect→Master Flow | Single-tier PG → `cdc_internal.*` shadow + `public.<master>`; Wizard state machine; Atomic Swap 1 TX | `05_progress.md:969`, `07_status_systematic_flow.md` |
 | Sau 2026-04-24 | V2 Control Plane | `public.*` metadata → `cdc_system.*` (mig 029-038); thêm `connection_registry`, `source_object_registry`, `shadow_binding`, `master_binding`, `mapping_rule_v2` | mig 029-038 |
+| 2026-04-29 | **Provisioning Mode subsystem** (Phase D Option-A, Architect ruling D1-D8) | Wizard stateful UI-driven → **Stateless DB-CAS state machine**: 12 states, 4 transitions, dual-side orchestrator (CMS = REST trigger + metadata seed; Worker = step_completed handler + RecoveryLoop TTL sweep). Replace CS3 stub. | `04_decisions_provisioning_mode.md`, `internal/service/provisioning_orchestrator.go` |
+| Phase 2 v2 / P2 | **CMS Hexagonal/CQRS rebuild** | Flat `internal/api+model+repository+service` → 4-layer `api / app / domain / infra`. CQRS Q-side (17 query handler), domain aggregates (5 aggregate root), infra adapter (8 GORM read repo + Kafka Connect HTTP client). | `internal/app/`, `internal/domain/`, `internal/infra/` |
 
 ---
 
@@ -181,39 +184,85 @@ migrations/         001_auth_users.sql (seed admin/admin123 bcrypt)
 
 ## §4. Repo 2 — `cdc-cms-service`
 
+> **v2.1 patch (2026-05-06)** · §4 viết lại từ scratch. Repo đã đại tu kiến trúc thành **Hexagonal + CQRS** (Phase 2 v2 / P2 rebuild) và bổ sung **Provisioning Mode subsystem** (Phase D Option-A) thay thế Wizard.Execute stub.
+
 ### 4.1 Vai trò
-Control plane API — 18 handler nghiệp vụ phục vụ FE: source connector, table registry, mapping rule, schema proposal, master binding, transmute schedule, reconciliation, alert, system health, audit trail. Phát NATS command tới worker.
+Control plane API · **20 handler** nghiệp vụ phục vụ FE: source connector, source object registry (V2 dual-surface), mapping rule, schema proposal, master binding, transmute schedule, reconciliation, alert, system health, audit trail, **provisioning state machine**, introspection. Phát NATS command tới worker; consume CQRS read models cho Q-side queries.
 
 ### 4.2 Stack
-Go 1.26 · Fiber v2 · GORM · PostgreSQL · Redis (idempotency) · NATS (command publish) · Zap · Viper · Prometheus client.
+Go 1.26 · Fiber v2 · GORM · PostgreSQL · Redis (idempotency) · NATS (command publish + request-response) · Zap · Viper · Prometheus client · OpenTelemetry (W3C TraceContext propagation).
 
-### 4.3 Cấu trúc
+### 4.3 Cấu trúc — 4 layer Hexagonal/CQRS
+
 ```
 cmd/server/main.go
-config/config-local.yml          server :8083 + db + nats + redis + JWT secret
+config/config-local.yml            server :8083 + db + nats + redis + JWT secret + otel
+
 internal/
-  api/                           18 handler (1 file/domain)
-  model/                         12 GORM struct
-  repository/                    1:1 với model
-  service/                       8 service:
-                                   approval_service · shadow_automator · master_swap
-                                   reconciliation_service · alert_manager · prom_client
-                                   system_health_collector · alerts
+  api/                             20 HTTP handler (Fiber) — 1 file/domain
+                                     auth_handler · audit_handler · alert_handler
+                                     approval_handler · failed_sync_handler
+                                     health_handler · introspection_handler ← v2.1
+                                     mapping_handler · master_handler
+                                     provisioning_handler ← v2.1 (7 endpoints)
+                                     recon_handler · registry_handler
+                                     schedule_handler · schema_handler
+                                     source_object_actions_handler ← v2.1 (V2 dual-surface)
+                                     source_objects_handler ← v2.1 (CQRS Q-side, 4 GET)
+                                     system_connectors_handler · tools_handler
+                                     wizard_handler · error_messages_vi
+
+  app/                             ← Hexagonal "application" layer (v2.1)
+    commands/                        (placeholder — doc.go; commands chạy qua handler hiện tại)
+    queries/                         **17 query handler** (CQRS Q-side):
+                                       list_source_objects · get_source_object_mapping_context
+                                       list_shadow_bindings · ... (read-only handler trả DTO)
+    queries/read_models/             3 file DTO bất biến (read model schema)
+    ports/                           4 interface contract:
+                                       command_bus.go · publisher.go
+                                       query_bus.go · repository.go
+
+  domain/                          ← Aggregate roots (v2.1) — pure Go, không import DB
+    job/         · mapping/        · master/
+    reconciliation/ · source/      (5 aggregate, 6 file)
+
+  infra/                           ← Adapter (v2.1)
+    cache/                           Redis impl
+    http/                            Kafka Connect REST client
+    messaging/                       NATS publisher + subscriber
+    persistence/                     **8 GORM read-repo** impl `app/ports/repository.go`
+
+  service/                         **11 service**:
+                                     approval_service · shadow_automator · master_swap
+                                     reconciliation_service · alert_manager · prom_client
+                                     system_health_collector · alerts
+                                     provisioning_orchestrator ← v2.1 (729 LOC)
+                                     provisioning_state_machine ← v2.1 (76 LOC, pure FSM)
+                                     source_object_v2_sync ← v2.1
+
+  model/                           14 GORM struct (thêm SourceObjectRegistry, MasterBinding,
+                                   WizardSession + provisioning_* columns)
+  repository/                      1:1 với model
+
   middleware/
-    jwt.go                       Parse Bearer
-    rbac.go                      RequireRole · RequireOpsAdmin
-    idempotency.go               RFC draft-ietf-httpapi-idempotency-key-05
-    audit.go                     Async admin_actions, reason ≥10 chars
-    ratelimit.go                 Restart 3/h/user
-  router/router.go               3-tier middleware chain
-  server/server.go               DI bootstrap
-migrations/                      4 file riêng (003,004,005,013) — core schema ở worker repo
-docs/                            Swagger
+    jwt.go                         Parse Bearer
+    rbac.go                        RequireRole · RequireOpsAdmin
+    idempotency.go                 RFC draft-ietf-httpapi-idempotency-key-05
+    audit.go                       Async admin_actions, reason ≥10 chars
+    ratelimit.go                   Restart 3/h/user
+
+  router/router.go                 3-tier middleware chain · ~98 route
+  server/server.go                 DI bootstrap (wire `app.queries` + `infra.persistence`)
+
+migrations/                        4 file riêng (003,004,005,013) — core schema ở worker repo
+docs/                              Swagger
 ```
 
-### 4.4 HTTP routes — 3 tier
+**Quy ước layer**: `api/*` chỉ depend `app/*` (qua port) + `service/*`. `domain/*` không import bất kỳ infra package nào. `infra/persistence/*` implement `app/ports/repository.go`. Đây là quy ước Hexagonal — vi phạm = lỗi build review.
 
-**Tier 1 — Destructive** (chain: `JWTAuth → RequireOpsAdmin → Idempotency → Audit`):
+### 4.4 HTTP routes — 3 tier (~98 route)
+
+**Tier 1 — Destructive** (`JWTAuth → RequireOpsAdmin → Idempotency → Audit`):
 
 | METHOD | PATH | Mục đích |
 |:-|:-|:-|
@@ -223,69 +272,150 @@ docs/                            Swagger
 | DELETE | `/v1/system/connectors/:name` | Xóa + soft-delete sources |
 | POST | `/v1/masters` + `/v1/masters/:n/{approve\|reject\|toggle-active}` | Master state |
 | POST | `/v1/masters/:n/swap` | **Atomic RENAME 1 TX** |
-| POST | `/v1/wizard/sessions/:id/execute` | **STUB — chỉ flip status** (xem CS3) |
+| POST | `/v1/wizard/sessions/:id/execute` | **STUB legacy** — Provisioning Mode replace (CS3) |
 | POST | `/v1/schema-proposals/:id/{approve\|reject}` | Approve = ALTER + INSERT mapping rule (1 TX) |
 | POST | `/v1/schedules` + `/v1/schedules/:id/run-now` + PATCH | Transmute schedule |
-| POST | `/v1/mapping-rules/preview` | gjson eval 3 sample (đặt destructive vì nặng) |
+| POST | `/v1/mapping-rules/preview` | gjson eval 3 sample |
 | POST | `/reconciliation/{check, check/:t, heal/:t}` | Trigger recon |
 | POST | `/failed-sync-logs/:id/retry` | DLQ retry |
 | POST | `/tools/{reset-debezium-offset, trigger-snapshot/:t}` | Worker tools |
 | POST (rate-limit 3/h/user) | `/tools/restart-debezium` | |
 | POST | `/recon/backfill-source-ts` | Background backfill |
 | POST | `/alerts/:fingerprint/{ack, silence}` | Alert state |
+| POST | `/api/v1/cms/sources/:id/provisioning/{advance,pause,resume,retry,archive,mode}` | **Provisioning Mode** ← v2.1 (6 destructive) |
 
 **Tier 2 — Admin-only** (`RequireRole admin`):
 
 | METHOD | PATH | Mục đích |
 |:-|:-|:-|
-| POST + PATCH | `/registry`, `/registry/:id`, `/registry/batch` | Source object register |
-| POST | `/registry/scan-source`, `/registry/:id/{sync, scan-fields, transform, standardize, discover, drop-gin-index, create-default-columns, detect-timestamp-field}` | Async dispatch |
+| POST + PATCH | `/registry`, `/registry/:id`, `/registry/batch` | Source object register (legacy) |
+| POST | `/registry/scan-source`, `/registry/:id/{sync, scan-fields, transform, standardize, discover, drop-gin-index, create-default-columns, detect-timestamp-field, dispatch-status, transform-status}` | Async dispatch (legacy bridge) |
+| POST + PATCH | `/api/v1/source-objects/:id`, `/api/v1/source-objects/:id/{create-default-columns, scan-fields, standardize, dispatch-status, detect-timestamp-field, transform-status}` | **V2 direct** ← v2.1 (dual-surface) |
 | POST + PATCH | `/mapping-rules`, `/mapping-rules/{batch, :id}` | Mapping CRUD |
 | POST | `/mapping-rules/reload`, `/mapping-rules/:id/backfill` | Reload + backfill |
 | POST | `/schema-changes/:id/{approve, reject}` | Schema approval |
 | POST + PATCH | `/worker-schedule`, `/worker-schedule/:id` | |
 | POST + PATCH | `/v1/wizard/sessions`, `/v1/wizard/sessions/:id` | Draft + edit (re-tier 2026-04-24) |
 
-**Tier 3 — Shared (admin + operator) read-only**: 20+ GET cho registry, mappings, schemas, masters, sources, alerts, recon report, activity log, system health.
+**Tier 3 — Shared (admin + operator) read-only**: ~30 GET endpoint cho registry, mappings, schemas, masters, sources, alerts, recon report, activity log, system health, **+ V2 source-objects** (`GET /api/v1/source-objects[/stats|/registry/:id]`, `GET /api/v1/shadow-bindings`), **+ Provisioning** (`GET /api/v1/cms/sources/:id/provisioning` snapshot), **+ Introspection** (`GET /api/introspection/scan/:table`, `/scan-raw/:table` — NATS request-response 10 s timeout).
 
 ### 4.5 Domain logic
+
 - **AuditLogger** (`middleware/audit.go:88`) — async pipeline, queue 100, reason ≥10 chars (`auditReasonMin = 10`), payload cap 64 KiB, drop-oldest.
 - **Idempotency** (`middleware/idempotency.go:113`) — Redis TTL 1h, key `<scope>:<user>:<header>`, replay cached response.
 - **RequireOpsAdmin** (`rbac.go:133`) — accept `ops-admin` OR legacy `admin` (widening tạm; chờ IdP rollout).
 - **ApprovalService** — Approve schema proposal trong 1 TX: ALTER shadow + INSERT mapping rule.
 - **ShadowAutomator** (`service/shadow_automator.go`) — `EnsureShadowTable` synchronous: validate ident → ensure Sonyflake fn → create 8-col shadow → attach trigger → mark `is_table_created=true`.
 - **MasterSwap** (`service/master_swap.go`) — `BEGIN; SET LOCAL lock_timeout='3s'; ALTER RENAME current→_old, ALTER RENAME v2→current; COMMIT;` — 409 nếu lock timeout.
-- **WizardSession state machine** (`api/wizard_handler.go`) — UUID v4, 4 status `draft|running|done|failed`, JSONB `step_payload` + `progress_log`, allow-list field cho Patch. **Execute = stub** (CS3).
+- **WizardSession state machine** (`api/wizard_handler.go`) — UUID v4, 4 status `draft|running|done|failed`, JSONB `step_payload` + `progress_log`, allow-list field cho Patch. **Execute = stub legacy** (CS3) — Provisioning Orchestrator là canonical thay thế.
 - **SystemConnectorsHandler** — REST proxy sang Kafka Connect; tail upsert `cdc_system.sources` với fingerprint sanitized.
 
+#### 4.5.7 ProvisioningOrchestrator — canonical "Automate Everything" (v2.1)
+
+**Vị trí**: `internal/service/provisioning_orchestrator.go` (729 LOC) + `provisioning_state_machine.go` (76 LOC, **byte-equivalent** với worker copy — D6 ruling).
+
+**State machine — 12 state · 4 transition**:
+
+```
+draft ──shadow_bind──▶ shadow_pending ─(worker ack)─▶ shadow_active
+shadow_active ──master_bind──▶ master_pending ──▶ master_active
+master_active ──discover──▶ mapping_pending ──▶ mapping_ready
+mapping_ready ──schedule_enable──▶ schedule_pending ──▶ running
+running ⇄ paused           (Pause/Resume)
+any   → failed → from_state (Retry)
+any   → archived           (Archive · terminal)
+provisioned                (D4 — legacy backfill terminal, không trong Transitions)
+```
+
+**4 NATS subject mới** (worker subscribe; xem §6.7):
+| State trigger | Subject | Pending → Finalize |
+|:-|:-|:-|
+| `draft` | `cdc.cmd.shadow.bind` | shadow_pending → shadow_active |
+| `shadow_active` | `cdc.cmd.master.bind` | master_pending → master_active |
+| `master_active` | `cdc.cmd.discover` | mapping_pending → mapping_ready |
+| `mapping_ready` | `cdc.cmd.schedule.enable` | schedule_pending → running |
+
+**CAS update pattern** (D6 — bắt buộc cho mọi UPDATE state):
+
+```sql
+UPDATE cdc_system.source_object_registry
+SET provisioning_state = $next,
+    provisioning_step_log = cdc_system.append_step_log_capped(provisioning_step_log, $entry::jsonb, $cap),
+    last_step_error = $err, updated_at = now()
+WHERE id = $id AND provisioning_state = $expected
+```
+
+`RowsAffected == 0` → trả `ErrProvisioningConflict` (HTTP 409 — "state changed concurrently — retry after refreshing"). Không có CAS = race với worker → state corruption.
+
+**Step-specific seed**: trước khi `Advance` từ `shadow_active` → `master_pending`, orchestrator UPSERT `cdc_system.master_binding` với `binding_code = 'auto_src_<source_id>'` (idempotent ON CONFLICT), tránh worker fail vì missing binding.
+
+**OTel propagation** (D8): `injectProvisioningTraceContext` chèn `traceparent` vào NATS message header → worker continue trace span.
+
+**HTTP surface** (`api/provisioning_handler.go` · 222 LOC):
+| METHOD | PATH | Tier | Mô tả |
+|:-|:-|:-|:-|
+| GET | `/api/v1/cms/sources/:id/provisioning` | shared | Snapshot (state + mode + step_log) |
+| POST | `…/advance` | destructive | Fire next transition (state machine lookup) |
+| POST | `…/pause` · `…/resume` · `…/retry` | destructive | Lifecycle |
+| POST | `…/archive` | destructive | Terminal |
+| POST | `…/mode` body `{"mode":"auto\|manual"}` | destructive | Flip auto/manual |
+
+Error map: `ErrSourceNotFound→404`, `ErrInvalidTransition→422`, `ErrConflict→409`, default→500.
+
+#### 4.5.8 V2 dual-surface routing pattern (v2.1)
+`source_object_actions_handler.go` wrap `RegistryHandler` cho **2 surface song song**:
+- **Legacy bridge**: `/api/v1/source-objects/registry/:registry_id/*` — FE cũ (Schedule Panel, ScanFields modal) gọi qua `registry_id` (PK của shadow row).
+- **V2 direct**: `/api/v1/source-objects/:source_object_id/*` — FE mới gọi qua `source_object_id`; handler resolve → JOIN `source_object_registry × shadow_binding` (status='active'), 409 nếu >1 active binding.
+
+Cùng business logic, 2 URL space — migration không phá FE cũ.
+
 ### 4.6 DB schema
-cms-service không own toàn bộ schema. Chỉ 4 migration riêng:
+
+cms-service không own toàn bộ schema (38 migration ở worker repo). Chỉ 4 migration riêng:
 - `003_add_mapping_rule_status.sql`
 - `004_bridge_columns.sql`
-- `005_admin_actions.sql` — bảng audit
-- `013_alerts.sql` — alert state machine
+- `005_admin_actions.sql` — audit
+- `013_alerts.sql`
 
-Schema còn lại do **centralized-data-service/migrations/** (38 file) own. cms-service chỉ đọc/ghi qua GORM struct.
+**Provisioning columns trên `cdc_system.source_object_registry`** (worker mig 035-038):
+| Column | Type | Mặc định | Vai trò |
+|:-|:-|:-|:-|
+| `provisioning_mode` | TEXT | `'auto'` | `auto` / `manual` |
+| `provisioning_state` | TEXT | `'draft'` | 1 trong 12 state |
+| `provisioning_step_log` | JSONB | `'[]'::jsonb` | Append-only log capped (default 50 entry) |
+| `last_step_error` | TEXT | `NULL` | Last error message |
+| `provisioning_updated_at` | timestamptz | `now()` | CAS witness |
+
+**PG fn** `cdc_system.append_step_log_capped(log JSONB, entry JSONB, cap INT) RETURNS JSONB` — append rồi cắt đầu log nếu vượt cap. Env override `PROVISIONING_STEP_LOG_MAX` (default 50).
 
 ### 4.7 Tích hợp
 - **JWT**: shared secret với cdc-auth-service.
-- **Worker NATS**: publish `cdc.cmd.*` (xem §6.7). Subscribe dispatch-status để FE poll.
+- **Worker NATS**: publish `cdc.cmd.*` (xem §6.7); subscribe dispatch-status để FE poll.
+- **CQRS Q-side**: `app/ports/repository.go` định nghĩa contract; `infra/persistence/*` cung cấp 8 GORM read-repo. `api/source_objects_handler.go` chỉ depend `app/queries.*` (không touch GORM trực tiếp).
 - **Kafka Connect REST**: `system.kafkaConnectUrl` (`localhost:18083`).
 - **Redis**: idempotency cache + dispatch-status key.
 - **Prometheus**: scrape worker `:9090`.
+- **OpenTelemetry**: W3C TraceContext propagation qua NATS header (provisioning + dispatch).
 - **DB**: cùng instance PostgreSQL `goopay_dw` với worker.
 
 ### 4.8 Pattern
 - **3-tier middleware** với comment cảnh báo Fiber `Group("",mw).Use` quirk (`router.go:90-99`): destructive routes phải mount TRƯỚC shared/admin Groups vì `Use` leak xuống.
-- **registerDestructive helper** (`router.go:125`) clone chain per-route, không Group-with-Use.
+- **registerDestructive helper** clone chain per-route, không Group-with-Use.
 - **Idempotency-Key + reason ≥10 chars** RFC compliant.
+- **CAS update (Compare-And-Swap)** — mọi UPDATE state phải pair `From` value với `WHERE provisioning_state = $expected`. RowsAffected==0 → 409 conflict (D6 ruling). Áp dụng cho `source_object_registry.provisioning_state` (orchestrator) và `wizard_sessions.status` (legacy).
+- **Dual-surface V2** — legacy bridge + V2 direct cùng wrap 1 handler core; phục vụ migration FE không downtime.
+- **Hexagonal + CQRS** — api → app(ports) → infra; domain pure. Q-side query handler trả DTO read-model bất biến.
+- **Append-only step log** capped via PG fn (không read-modify-write từ Go → tránh race).
+- **Pure FSM duplicated** — `provisioning_state_machine.go` byte-equivalent ở cả cms-service và centralized-data-service (no module replace; DB là source of truth).
 
 ### 4.9 Gap
-1. **`wizardHandler.Execute` chỉ flip `status=running`** — UI hứa "Automate Everything", BE chưa làm. **P0**.
+1. **Wizard.Execute UI vẫn gọi stub** — backend đã có Provisioning Mode (canonical), FE `SourceToMasterWizard.tsx` chưa migrate sang `/api/v1/cms/sources/:id/provisioning/*`. **P1** (giảm từ P0 vì có replace path).
 2. `cdc_internal_registry_handler.go` orphan (file còn, router không wire).
 3. Bridge route đã remove, handler có thể vẫn còn code dead.
 4. Audit log retention chưa rõ — `admin_actions` không partition.
-5. Migration scattered: cms 4 file rời rạc, không liên tiếp với worker — dễ bỏ sót.
+5. Migration scattered: cms 4 file rời rạc, không liên tiếp với worker 38 file — dễ bỏ sót.
+6. **`app/commands/` mới chỉ có `doc.go`** — Hexagonal C-side chưa được rút khỏi `service/*` và `api/*`. Migration nửa chừng. **P2**.
+7. **Provisioning step log chưa có UI render** — JSONB log có sẵn nhưng FE chưa hiển thị timeline.
 
 ---
 
@@ -518,7 +648,18 @@ cdc.cmd.standardize · discover · backfill · scan-raw-data · batch-transform
         recon-check · recon-heal · retry-failed
         debezium-signal · debezium-snapshot
         recon-backfill-source-ts · detect-timestamp-field
+        introspect
+
+# Provisioning Mode (v2.1) — dot-form (KHÔNG dash, khác master-create)
+cdc.cmd.shadow.bind        ← state draft         → shadow_pending
+cdc.cmd.master.bind        ← state shadow_active → master_pending
+cdc.cmd.discover           ← state master_active → mapping_pending
+cdc.cmd.schedule.enable    ← state mapping_ready → schedule_pending
 ```
+
+**NATS request-response** (cms-service blocking call, worker reply, 10 s timeout):
+- `cdc.cmd.introspect` — `GET /api/introspection/scan/:table` (introspect_handler).
+- `cdc.cmd.scan-raw-data` — `GET /api/introspection/scan-raw/:table`.
 
 **NATS publish (worker outbound)**:
 - `cdc.cmd.transmute-shadow` — SinkWorker post-ingest.
@@ -655,16 +796,16 @@ COMMIT;
 
 Fail mode: lock timeout → 409 trả FE; không leave half-swap. Smoke verify: `smoke_master ↔ smoke_master_v2` thành công 2026-04-24.
 
-### 7.6 Wizard State Machine (Execute = STUB)
+### 7.6 Wizard State Machine (Execute = STUB legacy — đã có replacement)
 
 ```
 draft ──user fills──▶ draft ──Execute──▶ running ──(stub: chỉ flip flag)──▶ ???
                                               │
-                                              └─ TODO: orchestrate 11-step pipeline
-                                                  (CS3 — chưa làm)
+                                              └─ Replacement: Provisioning Mode
+                                                  (canonical từ Phase D, xem §7.9)
 ```
 
-`cdc_wizard_sessions` UUID PK, `progress_log JSONB ||` append, `step_payload JSONB`, status enum. FE poll 2s khi running. Resume qua URL `?session_id=`.
+`cdc_wizard_sessions` UUID PK, `progress_log JSONB ||` append, `step_payload JSONB`, status enum. FE poll 2s khi running. Resume qua URL `?session_id=`. **CS3**: route giữ làm legacy compat; flow thực sự chạy trên `source_object_registry.provisioning_state` machine.
 
 ### 7.7 Sensitive field masking
 
@@ -694,6 +835,73 @@ OTLP HTTP ──▶ SigNoz :4318
 ```
 
 Severity-aware sampler: ERROR luôn lấy 100%, INFO sample theo rate config.
+
+### 7.9 Provisioning State Machine flow (canonical replacement cho Wizard.Execute)
+
+> Ra đời 2026-04-29 (Phase D Option-A · `04_decisions_provisioning_mode.md`). Là parallel orchestrator gắn lên `source_object_registry`, KHÔNG đụng `cdc_wizard_sessions`. CMS vs worker đồng bộ qua **CAS** + **NATS request/event**.
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft
+    draft --> shadow_pending: Advance / cdc.cmd.shadow.bind
+    shadow_pending --> shadow_active: worker ack
+    shadow_active --> master_pending: Advance / cdc.cmd.master.bind\n(seed master_binding ON CONFLICT auto_src_<id>)
+    master_pending --> master_active: worker ack
+    master_active --> mapping_pending: Advance / cdc.cmd.discover
+    mapping_pending --> mapping_ready: worker ack (mapping rules created)
+    mapping_ready --> schedule_pending: Advance / cdc.cmd.schedule.enable
+    schedule_pending --> running: worker ack (transmute schedule active)
+    running --> paused: Pause
+    paused --> running: Resume
+    running --> failed: worker error
+    paused --> failed: timeout
+    failed --> shadow_active: Retry (rollback to from_state)
+    failed --> master_active: Retry
+    failed --> mapping_ready: Retry
+    failed --> running: Retry
+    running --> archived: Archive
+    paused --> archived: Archive
+    failed --> archived: Archive
+    archived --> [*]
+```
+
+**Sequence — happy path Advance** (4 transitions):
+
+```mermaid
+sequenceDiagram
+    actor Admin
+    participant FE as cms-web
+    participant CMS as cms-service
+    participant DB as PostgreSQL
+    participant NATS as NATS
+    participant W as worker
+
+    Admin->>FE: Click "Advance"
+    FE->>CMS: POST /api/v1/cms/sources/:id/provisioning/advance
+    CMS->>DB: SELECT registry row (state, mode)
+    CMS->>CMS: lookup ProvisioningTransitions[state]
+    CMS->>DB: UPSERT master_binding (nếu master_bind step)
+    CMS->>DB: CAS UPDATE state → next_pending\n  WHERE provisioning_state = $expected
+    DB-->>CMS: RowsAffected (0 → 409)
+    CMS->>NATS: publish cdc.cmd.<step> + traceparent
+    CMS-->>FE: 202 Accepted {action,source_id,actor}
+    NATS-->>W: deliver command
+    W->>W: execute step (bind/discover/enable)
+    W->>DB: CAS UPDATE state → next_finalize\n  WHERE provisioning_state = $pending
+    W->>NATS: publish cdc.event.provisioning.* (optional)
+    FE->>CMS: GET /api/v1/cms/sources/:id/provisioning (poll)
+    CMS-->>FE: snapshot {state, step_log[]}
+```
+
+**Invariants**:
+1. **CAS guard bắt buộc** (D6) — `WHERE provisioning_state = $expected` cho mọi UPDATE. RowsAffected=0 → trả 409, FE refresh + retry.
+2. **Step log append-only via PG fn** — `cdc_system.append_step_log_capped(log, entry, cap)` không read-modify-write từ Go.
+3. **State machine duplicated byte-equivalent** — CMS và worker mỗi bên 1 copy `provisioning_state_machine.go`. DB là source of truth.
+4. **Trace propagation** (D8) — `traceparent` chèn vào NATS msg header; worker continue trace.
+5. **Mode auto vs manual** — `auto`: orchestrator tự fire next step khi worker ack. `manual`: dừng ở `*_active`/`*_ready`, đợi admin click Advance.
+6. **D4 `provisioned`** — terminal legacy-only (backfill source), KHÔNG nằm trong `ProvisioningTransitions`.
+
+**Quan hệ với Wizard**: Wizard UI (`SourceToMasterWizard.tsx`) hiện vẫn POST `/v1/wizard/sessions/:id/execute` (stub). FE migration plan: thay Execute call bằng chuỗi POST `/provisioning/advance` qua state machine. Backend đã sẵn sàng.
 
 ---
 
@@ -760,21 +968,22 @@ Wizard tier classification (re-tier 2026-04-24): Create/Patch ở admin (draft m
 | 3 | auth | Refresh token không blacklist sau rotation | `auth_service.go:113` |
 | 4 | auth | JWT secret hardcode `change-me-in-production` trong YAML | `config-local.yml` |
 | 5 | auth | Không rate-limit login → brute-force open | — |
-| 6 | cms | **Wizard `Execute` chỉ flip status flag** — UI hứa automation, BE chưa làm | §4.9 #1 |
-| 7 | worker | **SinkWorker không có DLQ Phase 1** — fail = re-deliver vô hạn | §6.9 #2 |
-| 8 | worker | KafkaConsumer legacy auto-commit at-most-once | §6.9 #4 |
-| 9 | worker | SinkWorker không re-discover topic — Debezium thêm collection = restart thủ công | §6.9 #1 |
+| 6 | worker | **SinkWorker không có DLQ Phase 1** — fail = re-deliver vô hạn | §6.9 #2 |
+| 7 | worker | KafkaConsumer legacy auto-commit at-most-once | §6.9 #4 |
+| 8 | worker | SinkWorker không re-discover topic — Debezium thêm collection = restart thủ công | §6.9 #1 |
 
 ### P1 — data freshness / observability
 
 | # | Repo | Gap | Evidence |
 |:-:|:-|:-|:-|
+| 9 | cms+web | **Wizard UI chưa migrate sang Provisioning Mode** — BE đã có canonical replacement, FE còn gọi stub Execute | §4.9 #1 · §7.9 |
 | 10 | worker | Transmuter mapping cache 60s không event-invalidate (R6 SLA <5s không đáp ứng) | §6.9 #3 |
 | 11 | worker | Transmuter shadow `is_active` cache 60s — toggle off chờ ≤60s | §6.9 #6 |
 | 12 | worker | SchemaManager column cache không TTL — stale tới restart | §6.9 #7 |
 | 13 | cms | Audit log retention chưa rõ — `admin_actions` không partition | §4.9 #4 |
 | 14 | system | Production SLO 50K evt/s, p99<100ms chưa đo | R9 |
 | 15 | worker | Recon disabled khi Mongo không config — silent skip | §6.9 #10 |
+| 15b | cms+web | **Provisioning step log chưa render UI timeline** — JSONB ready, FE thiếu component | §4.9 #7 |
 
 ### P2 — operability
 
@@ -791,6 +1000,7 @@ Wizard tier classification (re-tier 2026-04-24): Create/Patch ở admin (draft m
 | 24 | auth | Binary `server` ~36MB lưu trong repo | §3.8 #7 |
 | 25 | auth | Zero test file | §3.8 #6 |
 | 26 | system | Migration scattered: cms 4 file rời rạc, không liên tiếp với worker | §4.9 #5 |
+| 27 | cms | `internal/app/commands/` mới chỉ có `doc.go` — Hexagonal C-side migration nửa chừng | §4.9 #6 |
 
 ---
 
@@ -815,7 +1025,7 @@ Wizard tier classification (re-tier 2026-04-24): Create/Patch ở admin (draft m
 | Repo | Counts |
 |:-|:-|
 | **cdc-auth-service** | 1 handler · 1 service · 1 repo · 1 model · 1 migration |
-| **cdc-cms-service** | 18 handler · 8 service · 12 model · 5 middleware · 4 migration riêng |
+| **cdc-cms-service** | **20 handler · 11 service** · 14 model · 5 middleware · 4 migration riêng · 17 query handler (CQRS Q-side) · 5 domain aggregate · 8 GORM read-repo · 4 port interface · ~98 route |
 | **cdc-cms-web** | 15 active page · 4 hook · 5 shared component · 3 axios instance · 2 orphan file |
 | **centralized-data-service** | 38 migration · 12+ worker subsystem · 3 NATS stream · 1 Worker binary + 1 SinkWorker binary + 1 CLI |
 
@@ -827,6 +1037,8 @@ Wizard tier classification (re-tier 2026-04-24): Create/Patch ở admin (draft m
 | ADR-010 | CMS Approval Workflow | ✅ ACTIVE | 1-TX ALTER + INSERT mapping rule. |
 | ADR-011 | Schema Drift via `schema_proposal` | ✅ ACTIVE | Canonical workflow; `pending_fields` deprecated. |
 | ADR-015 | NATS JetStream cho CDC events | ❌ REVERSED 2026-04-15 | Pivot sang Kafka KRaft + Avro + Schema Registry. NATS giữ `cdc.cmd.*` internal. |
+| ADR-PROV (D1-D8) | **Provisioning Mode subsystem** | ✅ ACTIVE từ 2026-04-29 | Phase D Option-A. D1 path scope `cdc_system.source_object_registry`, D4 `provisioned` legacy terminal, D5 path-based REST, D6 CAS mọi UPDATE state, D8 W3C trace propagation. State machine 12 state · 4 transition · duplicated byte-equivalent CMS↔worker. Replace Wizard.Execute stub (CS3). |
+| ADR-CMS-HEX | **CMS Hexagonal/CQRS rebuild** (Phase 2 v2 / P2) | ⚠ IN-PROGRESS | api → app(ports) → domain + infra. Q-side đã hoàn tất (17 query handler · 8 read-repo · 5 aggregate). C-side `app/commands/` mới có `doc.go` — chưa rút logic khỏi `service/*` + `api/*`. |
 
 Workspace: `agent/memory/workspaces/feature-cdc-integration/`.
 
@@ -836,5 +1048,6 @@ Workspace: `agent/memory/workspaces/feature-cdc-integration/`.
 
 | Version | Date | Note |
 |:-|:-|:-|
+| **v2.1** | 2026-05-06 | **Patch §4 cms-service.** Tích hợp (a) **Provisioning Mode subsystem** (Phase D Option-A) thay thế Wizard.Execute stub — §4.5.7, §6.7, §7.9, ADR-PROV (D1-D8); (b) **Hexagonal/CQRS rebuild** — §4.3 cấu trúc 4 layer, §4.7 CQRS port, ADR-CMS-HEX. Cập nhật count: 18 → 20 handler, 8 → 11 service. CS3 re-frame: Wizard stub vẫn còn nhưng có canonical replacement. P0 #6 (wizard) re-rank xuống P1. Thêm 2 pivot row §1 (Provisioning Mode 2026-04-29 · CMS Hexagonal rebuild Phase 2 v2/P2). 4 NATS subject mới (`shadow.bind`, `master.bind`, `discover`, `schedule.enable` — dot-form). |
 | **v2.0** | 2026-04-27 chiều | **Rewrite từ scratch.** Thêm Critical State box (§0.2), Pivot timeline (§1), R-status table (§9), Open questions (§11), ADR index (§12.2). Tích hợp 9 pivot lớn từ `05_progress.md`. Đối chiếu Plan 1+2 với reality. |
 | v1.0 | 2026-04-27 sáng | Initial code-as-built. **DEPRECATED**: bỏ pivot timeline, không R-status, người đọc tưởng plan 1+2 còn hiệu lực. |

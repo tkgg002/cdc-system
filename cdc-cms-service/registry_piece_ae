@@ -1,0 +1,100 @@
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.ScanFieldsCommand{
+		RegistryID:  entry.ID,
+		SyncEngine:  entry.SyncEngine,
+		SourceType:  entry.SourceType,
+		SourceDB:    entry.SourceDB,
+		SourceTable: entry.SourceTable,
+		TargetTable: entry.TargetTable,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
+			Operation: "scan-fields", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
+	}
+
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
+		Operation: "scan-fields", TargetTable: entry.TargetTable, Status: "accepted",
+		Details: map[string]any{"user": user, "sync_engine": entry.SyncEngine},
+	})
+
+	return c.Status(202).JSON(fiber.Map{
+		"message":      "scan-fields command accepted",
+		"target_table": entry.TargetTable,
+		"sync_engine":  entry.SyncEngine,
+	})
+}
+
+// (removed: inferSQLType) — schema inference now lives in Worker
+
+// SyncHealth returns overall sync health summary. Delegates the
+// 5 aggregate counts to queries.GetSyncHealthHandler. The JSON
+// surface stays byte-identical because queries.SyncHealthSnapshot
+// owns the wire tags.
+func (h *RegistryHandler) SyncHealth(c *fiber.Ctx) error {
+	res, err := h.syncHealthQ.Handle(c.UserContext(), queries.GetSyncHealthQuery{})
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(res.Snapshot)
+}
+
+func intQuery(c *fiber.Ctx, key string, defaultVal int) int {
+	v, err := strconv.Atoi(c.Query(key))
+	if err != nil || v <= 0 {
+		return defaultVal
+	}
+	return v
+}
+
+// (removed: createMappingRulesFromSchema) — moved to Worker
+
+// (removed: inferDataTypeFromSchema) — moved to Worker
+
+// Transform triggers batch transformation of _raw_data → typed columns
+func (h *RegistryHandler) Transform(c *fiber.Ctx) error {
+	id, _ := c.ParamsInt("id")
+	entry, err := h.repo.GetByID(c.Context(), uint(id))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "registry entry not found"})
+	}
+
+	if err := h.natsClient.Conn.Publish("cdc.cmd.batch-transform", []byte(entry.TargetTable)); err != nil {
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
+			Operation: "transform", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: err.Error(),
+		})
+		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch transform command: " + err.Error()})
+	}
+
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
+		Operation: "transform", TargetTable: entry.TargetTable, Status: "success",
+		Details: map[string]any{"user": middleware.GetUsername(c)},
+	})
+
+	return c.Status(202).JSON(fiber.Map{
+		"message":      "transform command accepted",
+		"target_table": entry.TargetTable,
+	})
+}
+
+// TransformStatus returns the transform progress for a table
+func (h *RegistryHandler) TransformStatus(c *fiber.Ctx) error {
+	id, _ := c.ParamsInt("id")
+	entry, err := h.repo.GetByID(c.Context(), uint(id))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "registry entry not found"})
+	}
+
+	probe, err := h.bridgeReader.ProbeBridgeStatus(c.UserContext(), "public", entry.TargetTable)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !probe.Exists {
+		return c.JSON(fiber.Map{
+			"target_table":   entry.TargetTable,
+			"total_rows":     0,
+			"bridged_rows":   0,
+			"pending_bridge": 0,
+			"last_bridge_at": entry.LastBridgeAt,

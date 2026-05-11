@@ -68,7 +68,7 @@ kafka:
   enabled: true
   brokers:
     - localhost:19092
-  groupId: cdc-worker-group
+  groupId: cdc-worker-group-debug-v1
   # Multi-engine unified pipeline — worker subscribes to the UNION of
   # all prefixes. Backward-compat: a YAML scalar (`topicPrefix: cdc.gpay`)
   # still works (decoded as singleton list).
@@ -76,6 +76,7 @@ kafka:
     - cdc.gpay      # Postgres source rig (E2E)
     - cdc.goopay    # MongoDB (production-intent)
     - cdc.mariadb   # MariaDB (incoming, gpay-mariadb container)
+    - cdc.market    # New Market DB (Flow 1)
   schemaRegistryUrl: http://localhost:18081
 
 otel:

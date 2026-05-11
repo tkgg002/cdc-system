@@ -117,6 +117,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	sourceObjectReader := persistence.NewSourceObjectReadRepo(db)
 	listSourceObjectsH := queries.NewListSourceObjectsHandler(sourceObjectReader)
 	getSourceMappingContextH := queries.NewGetSourceObjectMappingContextHandler(sourceObjectReader)
+	resolveMappingScopeH := queries.NewResolveMappingScopeHandler(db)
 
 	masterReader := persistence.NewMasterReadRepo(db)
 	listMastersH := queries.NewListMastersHandler(masterReader)
@@ -213,12 +214,12 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSubject("mapping.alter-column", "cdc.cmd.alter-column")
 	cmdBus.RegisterSubject("transmute.run", "cdc.cmd.transmute")
 	cmdBus.RegisterSubject("master.create", "cdc.cmd.master-create")
+	cmdBus.RegisterSubject("master.swap", "cdc.cmd.master-swap")
 
 	// Services
 	approvalSvc := persistence.NewApprovalService(db, pendingRepo, schemaLogRepo, natsClient, logger)
-	shadowAutomator := persistence.NewShadowAutomator(shadowDB, logger)
+	shadowAutomator := persistence.NewShadowAutomator(shadowDB, db, logger)
 	sourceObjectV2Sync := persistence.NewSourceObjectV2SyncService(db, logger)
-	masterSwap := persistence.NewMasterSwap(db, jobRepo, logger)
 	// Phase 2 T13 — single owner of cdc_activity_log writes/reads. Shared
 	// across registry, source-object actions, and reconciliation handlers.
 	activityLogger := persistence.NewActivityLogger(db, logger)
@@ -230,13 +231,13 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger, listSourceObjectsH, getSourceMappingContextH)
 	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(bridgeStatusReader, cmdBus, activityLogger, logger)
 	systemConnectorsHandler := api.NewSystemConnectorsHandler(kafkaConnectClient, sourceRepo, cmdBus, logger, listConnectorsH, getConnectorH, listConnectorPluginsH)
-	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH)
+	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH, db)
 	wizardHandler := api.NewWizardHandler(wizardRepo, logger, getWizardSessionH, getWizardProgressH, cmdBus)
-	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, masterSwap, logger, listMastersH, cmdBus)
+	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, logger, listMastersH, cmdBus)
 	schemaProposalHandler := api.NewSchemaProposalHandler(db, cmdBus, logger)
 	scheduleHandler2 := api.NewTransmuteScheduleHandler(db, natsClient, cmdBus, logger, listTransmuteSchedulesH)
 	mappingPreviewHandler := api.NewMappingPreviewHandler(db, logger)
-	mappingHandler := api.NewMappingRuleHandler(natsClient, cmdBus, listMappingRulesH, db)
+	mappingHandler := api.NewMappingRuleHandler(natsClient, cmdBus, listMappingRulesH, resolveMappingScopeH, mappingRuleRepoV2)
 	introspectionHandler := api.NewIntrospectionHandler(natsClient)
 	activityLogHandler := api.NewActivityLogHandler(listActivityLogsH, getActivityStatsH)
 	scheduleHandler := api.NewScheduleHandler(db, workerScheduleReader, listWorkerSchedulesH, cmdBus)
@@ -307,6 +308,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSync("schema-proposal.reject", commands.NewRejectSchemaProposalHandler(db))
 	cmdBus.RegisterSync("schema-proposal.approve", commands.NewApproveSchemaProposalHandler(db))
 	cmdBus.RegisterSync("system-connector.create", commands.NewCreateSystemConnectorHandler(kafkaConnectClient, sourceRepo, logger))
+	cmdBus.RegisterSync("system-connector.update-config", commands.NewUpdateSystemConnectorConfigHandler(kafkaConnectClient, sourceRepo, logger))
 	cmdBus.RegisterSync("system-connector.delete", commands.NewDeleteSystemConnectorHandler(kafkaConnectClient, sourceRepo, logger))
 	cmdBus.RegisterSync("system-connector.lifecycle", commands.NewLifecycleSystemConnectorHandler(kafkaConnectClient, logger))
 	alertsHandler := api.NewAlertsHandler(alertMgr, cmdBus, logger)

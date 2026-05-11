@@ -1,0 +1,100 @@
+	}
+
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+
+	user := middleware.GetUsername(c)
+	registerCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	registerCmd := commands.RegisterRegistryCommand{Entry: entry, CreatedBy: user}
+	res, err := h.bus.Execute(registerCtx, registerCmd)
+	if err != nil {
+		if errors.Is(err, commands.ErrShadowDDLFailed) {
+			return c.Status(500).JSON(fiber.Map{"error": "shadow DDL failed: " + err.Error()})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "failed to register table: " + err.Error()})
+	}
+
+	var body struct {
+		Message string              `json:"message"`
+		Entry   model.TableRegistry `json:"entry"`
+	}
+	_ = json.Unmarshal(res.ResultBody, &body)
+	created := body.Entry
+
+	dispatched := []string{}
+	dispatchIdem := c.Get("Idempotency-Key")
+	if dispatchIdem != "" {
+		dispatchIdem += ":cdc"
+	}
+	dispatchCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), dispatchIdem)
+	createCmd := commands.CreateDefaultColumnsCommand{
+		RegistryID:      created.ID,
+		TargetTable:     created.TargetTable,
+		SourceTable:     created.SourceTable,
+		PrimaryKeyField: created.PrimaryKeyField,
+		PrimaryKeyType:  created.PrimaryKeyType,
+	}
+	if _, derr := h.bus.Dispatch(dispatchCtx, createCmd); derr != nil {
+		h.logger.Warn("publish create-default-columns failed", zap.Error(derr))
+	} else {
+		dispatched = append(dispatched, "cdc.cmd.create-default-columns")
+	}
+
+	if h.bus != nil {
+		syncCmd := commands.V2SyncCommand{Entry: &created}
+		if _, err := h.bus.Execute(dispatchCtx, syncCmd); err != nil {
+			h.logger.Error("post-register v2 sync failed", zap.Uint("registry_id", created.ID), zap.Error(err))
+		}
+	}
+
+	return c.Status(202).JSON(fiber.Map{
+		"message":    "table registered — external sync dispatched",
+		"entry":      created,
+		"dispatched": dispatched,
+	})
+}
+
+// Update is kept as a compatibility delegate behind the V2
+// /api/v1/source-objects/registry/:id facade.
+func (h *RegistryHandler) Update(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
+	}
+
+	existing, err := h.repo.GetByID(c.Context(), uint(id))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "not found"})
+	}
+
+	var update struct {
+		SyncEngine     *string `json:"sync_engine"`
+		SyncInterval   *string `json:"sync_interval"`
+		Priority       *string `json:"priority"`
+		IsActive       *bool   `json:"is_active"`
+		Notes          *string `json:"notes"`
+		TimestampField *string `json:"timestamp_field"`
+	}
+	if err := c.BodyParser(&update); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Selective update — only changed fields to avoid column mismatch
+	updates := map[string]interface{}{}
+	if update.SyncEngine != nil {
+		updates["sync_engine"] = *update.SyncEngine
+		existing.SyncEngine = *update.SyncEngine
+	}
+	if update.SyncInterval != nil {
+		updates["sync_interval"] = *update.SyncInterval
+		existing.SyncInterval = *update.SyncInterval
+	}
+	if update.Priority != nil {
+		updates["priority"] = *update.Priority
+		existing.Priority = *update.Priority
+	}
+	if update.IsActive != nil {
+		updates["is_active"] = *update.IsActive
+		existing.IsActive = *update.IsActive
+	}

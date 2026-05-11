@@ -109,6 +109,9 @@ func (h *EventHandler) processEvent(ctx context.Context, start time.Time, event 
 
 		// Use PK field as-is from registry (registry stores correct column name for target table)
 		pgPKField := pkField
+		if pkField == "_id" {
+			pgPKField = "id"
+		}
 
 		record := &model.UpsertRecord{
 			TableName:        targetTable,

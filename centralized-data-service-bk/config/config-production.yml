@@ -1,0 +1,97 @@
+server:
+  name: centralized-data-service
+  port: ":8082"
+  mode: production
+
+# Phase 01 split E2E — production. All DSN/credential fields empty.
+# Required env injection at deploy time (orchestrator: k8s/ECS/etc.):
+#
+#   CDC_SYSTEM_DB_URL          -> systemDB (cdc_system control plane)
+#   CDC_CONTROL_PLANE_URL      -> controlPlane (shadow_<src> writes)
+#   CDC_SHADOW_DB_URL          -> shadowDb.urls.default (or CDC_SHADOW_DB_URLS for multi)
+#   CDC_MASTER_DB_URL          -> masterDb.urls.default (destination DW)
+#   SOURCE_DSN_<KEY>           -> sources[<key>] for Debezium connectors
+#   NATS_URL / REDIS_URL
+#   KAFKA_BROKERS / KAFKA_SCHEMA_REGISTRY_URL / KAFKA_CONNECT_URL
+#   OTEL_ENDPOINT / JWT_SECRET / DEBEZIUM_CONNECTOR_NAME
+db:
+  host: ""
+  port: 5432
+  username: ""
+  password: ""
+  database: ""
+  sslMode: require
+  url: ""
+  maxOpenConn: 100
+  maxIdleConn: 50
+  connMaxLifetime: 5m
+
+systemDb:
+  url: ""
+
+shadowDb:
+  defaultKey: default
+  urls: {}
+
+masterDb:
+  defaultKey: default
+  urls: {}
+
+controlPlane:
+  url: ""
+
+sources: {}
+
+nats:
+  url: ""
+  name: cdc-worker
+  maxReconnect: -1
+  reconnectWait: 2s
+
+kafka:
+  enabled: true
+  brokers: []
+  groupId: cdc-worker-group
+  topicPrefix: []
+  schemaRegistryUrl: ""
+
+redis:
+  url: ""
+  password: ""
+  db: 0
+
+worker:
+  poolSize: 50
+  batchSize: 1000
+  batchTimeout: 5s
+  fetchSize: 2000
+  transformInterval: 5m
+  scanInterval: 1h
+
+otel:
+  enabled: true
+  serviceName: cdc-worker
+  endpoint: ""
+  sampleRatio: 0.1
+  logs:
+    sampleBySeverity:
+      debug: 0.0
+      info: 0.05
+      warn: 1.0
+      error: 1.0
+      fatal: 1.0
+    memoryLimitMib: 512
+    fallback:
+      degradedAfterErrors: 50
+      recoverAfter: 10m
+
+debezium:
+  signalCollection: debezium_signal
+  connectorStatusUrl: ""
+  incrementalChunkSize: 1000
+  kafkaConnectUrl: ""
+  connectorName: ""
+
+jwt:
+  secret: ""
+  expiration: 1h

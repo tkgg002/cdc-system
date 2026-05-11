@@ -1,0 +1,40 @@
+{
+  "name": "cdc-mariadb-source",
+  "config": {
+    "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "mariadb",
+    "database.port": "3306",
+    "database.user": "cdc",
+    "database.password": "cdc_pass",
+    "database.server.id": "1010",
+    "database.server.name": "gpay-mariadb",
+
+    "topic.prefix": "cdc.mariadb",
+    "database.include.list": "goopay_legacy_maria",
+    "table.include.list": "goopay_legacy_maria.legacy_orders",
+
+    "schema.history.internal.kafka.bootstrap.servers": "kafka:9092",
+    "schema.history.internal.kafka.topic": "cdc.mariadb.schema-history",
+
+    "snapshot.mode": "initial",
+    "snapshot.locking.mode": "minimal",
+    "include.schema.changes": "false",
+    "heartbeat.interval.ms": "10000",
+
+    "schema.name.adjustment.mode": "avro",
+    "field.name.adjustment.mode": "avro",
+    "sanitize.field.names": "true",
+
+    "key.converter": "io.confluent.connect.avro.AvroConverter",
+    "key.converter.schema.registry.url": "http://gpay-schema-registry:8081",
+    "key.converter.scrub.invalid.names": "true",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://gpay-schema-registry:8081",
+    "value.converter.scrub.invalid.names": "true",
+
+    "max.batch.size": "2048",
+    "max.queue.size": "8192"
+  }
+}

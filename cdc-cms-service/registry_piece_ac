@@ -1,0 +1,100 @@
+	if update.Notes != nil {
+		updates["notes"] = *update.Notes
+		existing.Notes = update.Notes
+	}
+	// Bug B fix (2026-04-20): allow CMS to update Mongo timestamp field so
+	// recon source agent can filter the right field (updated_at vs
+	// lastUpdatedAt vs createdAt). Whitelist regexp guards against DB-level
+	// mischief even though recon_source_agent.go re-validates on use.
+	if update.TimestampField != nil {
+		tsf := *update.TimestampField
+		if !isValidTimestampField(tsf) {
+			return c.Status(400).JSON(fiber.Map{
+				"error": "invalid timestamp_field: must match [A-Za-z_][A-Za-z0-9_]{0,63}",
+			})
+		}
+		updates["timestamp_field"] = tsf
+		existing.TimestampField = &tsf
+	}
+
+	if len(updates) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "no fields to update"})
+	}
+
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+
+	user := middleware.GetUsername(c)
+	cmd := commands.UpdateRegistryCommand{
+		ID:             existing.ID,
+		SyncEngine:     update.SyncEngine,
+		SyncInterval:   update.SyncInterval,
+		Priority:       update.Priority,
+		IsActive:       update.IsActive,
+		Notes:          update.Notes,
+		TimestampField: update.TimestampField,
+		UpdatedBy:      user,
+	}
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	res, err := h.bus.Execute(ctx, cmd)
+	if err != nil {
+		switch {
+		case errors.Is(err, commands.ErrRegistryNotFound):
+			return c.Status(404).JSON(fiber.Map{"error": "not found"})
+		case errors.Is(err, commands.ErrRegistryNoFields):
+			return c.Status(400).JSON(fiber.Map{"error": "no fields to update"})
+		case errors.Is(err, commands.ErrRegistryInvalidTSField):
+			return c.Status(400).JSON(fiber.Map{
+				"error": "invalid timestamp_field: must match [A-Za-z_][A-Za-z0-9_]{0,63}",
+			})
+		default:
+			return c.Status(500).JSON(fiber.Map{"error": "failed to update: " + err.Error()})
+		}
+	}
+
+	if h.bus != nil {
+		// Re-fetch so the v2 sync sees the post-update row state. Cheap
+		// — single PK lookup; the alternative would be threading the
+		// updated entry out of the bus result body which couples this
+		// API to the command's wire shape.
+		if updated, getErr := h.repo.GetByID(c.Context(), existing.ID); getErr == nil {
+			syncCmd := commands.V2SyncCommand{Entry: updated}
+			if _, syncErr := h.bus.Execute(ctx, syncCmd); syncErr != nil {
+				h.logger.Error("post-update v2 sync failed", zap.Uint("registry_id", existing.ID), zap.Error(syncErr))
+			}
+		}
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.Status(202).Send(res.ResultBody)
+}
+
+// BulkRegister is kept as a compatibility delegate behind the V2
+// /api/v1/source-objects/register-batch facade.
+func (h *RegistryHandler) BulkRegister(c *fiber.Ctx) error {
+	var entries []model.TableRegistry
+	if err := c.BodyParser(&entries); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if h.bus == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
+	}
+
+	user := middleware.GetUsername(c)
+	registerCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	registerCmd := commands.BulkRegisterRegistryCommand{Entries: entries, CreatedBy: user}
+	res, err := h.bus.Execute(registerCtx, registerCmd)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "bulk register failed: " + err.Error()})
+	}
+
+	var body struct {
+		Message string                `json:"message"`
+		Created int                   `json:"created"`
+		Entries []model.TableRegistry `json:"entries"`
+	}
+	_ = json.Unmarshal(res.ResultBody, &body)
+
+	dispatched := 0

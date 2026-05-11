@@ -50,13 +50,13 @@ interface StepSpec {
 
 const STEPS: StepSpec[] = [
   { title: '1. Debezium Connector', description: 'Tạo connector cho source mới.', goto: '/sources', verify: 'Connector state=RUNNING.', icon: <DatabaseOutlined /> },
-  { title: '2. Register Shadow', description: 'Register source object và shadow binding theo metadata V2.', goto: '/registry', verify: 'Row mới trong /registry, is_table_created=true.', icon: <DatabaseOutlined /> },
-  { title: '3. Shadow DDL', description: 'EnsureShadowTable synchronous trong Register. Trigger Sonyflake attached.', goto: '/registry', verify: '\\d shadow_<source_db>.<target> có 8 cols + trigger.', icon: <SettingOutlined /> },
-  { title: '4. Snapshot Now', description: 'Trigger Debezium incremental snapshot.', goto: '/registry', verify: 'SinkWorker log "shadow upsert".', icon: <ThunderboltOutlined /> },
-  { title: '5. Wait for Ingest', description: 'SinkWorker consume Kafka → upsert shadow.', goto: '/registry', verify: 'COUNT(shadow) > 0.', icon: <ThunderboltOutlined /> },
+  { title: '2. Register Shadow', description: 'Register source object và shadow binding theo metadata V2.', goto: '/shadow', verify: 'Row mới trong /shadow, is_table_created=true.', icon: <DatabaseOutlined /> },
+  { title: '3. Shadow DDL', description: 'EnsureShadowTable synchronous trong Register. Trigger Sonyflake attached.', goto: '/shadow', verify: '\\d shadow_<source_db>.<target> có 8 cols + trigger.', icon: <SettingOutlined /> },
+  { title: '4. Snapshot Now', description: 'Trigger Debezium incremental snapshot.', goto: '/shadow', verify: 'SinkWorker log "shadow upsert".', icon: <ThunderboltOutlined /> },
+  { title: '5. Wait for Ingest', description: 'SinkWorker consume Kafka → upsert shadow.', goto: '/shadow', verify: 'COUNT(shadow) > 0.', icon: <ThunderboltOutlined /> },
   { title: '6. Review Proposals', description: 'SchemaManager emit proposals.', goto: '/schema-proposals', verify: 'Pending count > 0.', icon: <BranchesOutlined /> },
   { title: '7. Approve Proposals', description: 'Approve → ALTER shadow + mapping rule.', goto: '/schema-proposals', verify: 'Proposal status=approved.', icon: <CheckCircleOutlined /> },
-  { title: '8. Mapping Rules', description: 'Thêm custom rule nếu cần.', goto: '/registry', verify: 'Preview trả 3 sample.', icon: <EyeOutlined /> },
+  { title: '8. Mapping Rules', description: 'Thêm custom rule nếu cần.', goto: '/shadow', verify: 'Preview trả 3 sample.', icon: <EyeOutlined /> },
   { title: '9. Create Master', description: 'Declare master binding + transform spec.', goto: '/masters', verify: 'schema_status=pending_review.', icon: <RocketOutlined /> },
   { title: '10. Approve Master', description: 'Approve → worker CREATE TABLE.', goto: '/masters', verify: 'schema_status=approved.', icon: <CheckCircleOutlined /> },
   { title: '11. Activate + Swap', description: 'Atomic swap public.<master> khi v2 ready.', goto: '/schedules', verify: 'Worker "transmute complete". Rows in master.', icon: <SettingOutlined /> },

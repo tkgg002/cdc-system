@@ -10,6 +10,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { cmsApi } from '../services/api';
+import { useAsyncJob } from '../hooks/useAsyncJob';
 
 const { Title, Text } = Typography;
 
@@ -55,6 +56,8 @@ export default function MasterRegistry() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [createOpen, setCreateOpen] = useState(false);
   const [pending, setPending] = useState<{ row: MasterRow; op: 'approve' | 'reject' | 'toggle' } | null>(null);
+  const [swapRow, setSwapRow] = useState<MasterRow | null>(null);
+  const [swapForm, setSwapForm] = useState({ new_table_name: '', reason: '' });
   const [reason, setReason] = useState('');
   const [form, setForm] = useState({
     master_name: '',
@@ -156,6 +159,11 @@ export default function MasterRegistry() {
     },
   });
 
+  const { dispatch: dispatchSwap, state: swapState, isPending: isSwapPending, reset: resetSwap } = useAsyncJob({
+    endpoint: '', // Dynamic via endpoint override
+    invalidateKeys: [['master-registry']],
+  });
+
   const submitCreate = () => {
     if (reason.trim().length < 10) {
       message.warning('Lý do ≥ 10 ký tự cho audit');
@@ -173,6 +181,34 @@ export default function MasterRegistry() {
     }
     opMut.mutate({ name: pending.row.master_name, op: pending.op, reason: reason.trim() });
   };
+
+  const submitSwap = () => {
+    if (!swapRow) return;
+    if (swapForm.reason.trim().length < 10) {
+      message.warning('Lý do ≥ 10 ký tự cho audit');
+      return;
+    }
+    dispatchSwap({
+      endpoint: `/api/v1/masters/${encodeURIComponent(swapRow.master_name)}/swap`,
+      payload: {
+        new_table_name: swapForm.new_table_name,
+        reason: swapForm.reason.trim(),
+      },
+    });
+  };
+
+  // Listen to swap success
+  useEffect(() => {
+    if (swapState.status === 'success') {
+      message.success(`Swap succeeded for master table`);
+      setSwapRow(null);
+      setSwapForm({ new_table_name: '', reason: '' });
+      resetSwap();
+    } else if (swapState.status === 'failed' || swapState.status === 'timeout') {
+      message.error(`Swap failed: ${swapState.error}`);
+      resetSwap();
+    }
+  }, [swapState.status, swapState.error, resetSwap]);
 
   const columns = [
     {
@@ -252,6 +288,15 @@ export default function MasterRegistry() {
             onClick={() => setPending({ row: r, op: 'reject' })}
           >
             Reject
+          </Button>
+          <Button
+            size="small"
+            onClick={() => {
+              setSwapRow(r);
+              setSwapForm({ new_table_name: r.master_name, reason: '' });
+            }}
+          >
+            Swap
           </Button>
         </Space>
       ),
@@ -415,6 +460,55 @@ export default function MasterRegistry() {
           value={reason}
           onChange={(e) => setReason(e.target.value)}
         />
+      </Modal>
+
+      {/* Swap Modal */}
+      <Modal
+        open={!!swapRow}
+        title={`Swap Master Table: ${swapRow?.master_name}`}
+        onOk={submitSwap}
+        confirmLoading={isSwapPending}
+        onCancel={() => {
+          if (!isSwapPending) {
+            setSwapRow(null);
+            setSwapForm({ new_table_name: '', reason: '' });
+          }
+        }}
+        okText="Swap"
+        cancelText="Cancel"
+        maskClosable={!isSwapPending}
+        closable={!isSwapPending}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="Atomic Swap"
+          description="Việc swap sẽ đổi tên bảng thực tế trong DB. Chú ý: Worker sẽ nhận job thông qua NATS và thực thi async (202 Accepted). Đừng đóng ứng dụng cho đến khi xong."
+          style={{ marginBottom: 16 }}
+        />
+        {isSwapPending && (
+          <Alert
+            type="info"
+            message={`Trạng thái Job: ${swapState.status}`}
+            description="Đang xử lý, vui lòng đợi..."
+            style={{ marginBottom: 16 }}
+          />
+        )}
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Input
+            placeholder="New Table Name"
+            value={swapForm.new_table_name}
+            onChange={(e) => setSwapForm({ ...swapForm, new_table_name: e.target.value })}
+            disabled={isSwapPending}
+          />
+          <Input.TextArea
+            rows={3}
+            placeholder="Reason ≥ 10 ký tự"
+            value={swapForm.reason}
+            onChange={(e) => setSwapForm({ ...swapForm, reason: e.target.value })}
+            disabled={isSwapPending}
+          />
+        </Space>
       </Modal>
     </Card>
   );

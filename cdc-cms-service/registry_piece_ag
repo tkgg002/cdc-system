@@ -1,0 +1,84 @@
+// timestamp_field_source=auto, timestamp_field_confidence).
+//
+// Flow: CMS publishes → worker consumes cdc.cmd.detect-timestamp-field →
+// worker updates registry row → next recon tick uses the new field.
+//
+// The public CMS route now lives under
+// /api/v1/source-objects/registry/:id/detect-timestamp-field.
+func (h *RegistryHandler) DetectTimestampField(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid id"})
+	}
+	entry, err := h.repo.GetByID(c.Context(), uint(id))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "not found"})
+	}
+
+	user := middleware.GetUsername(c)
+	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
+	cmd := commands.DetectTimestampFieldCommand{
+		RegistryID:  entry.ID,
+		TargetTable: entry.TargetTable,
+		SourceTable: entry.SourceTable,
+		SourceDB:    entry.SourceDB,
+		SourceType:  entry.SourceType,
+	}
+	if _, derr := h.bus.Dispatch(ctx, cmd); derr != nil {
+		h.activityLogger.LogAsync(persistence.ActivityEntry{
+			Operation: "detect-timestamp-field", TargetTable: entry.TargetTable, Status: "error", ErrorMsg: derr.Error(),
+		})
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + derr.Error()})
+	}
+
+	h.activityLogger.LogAsync(persistence.ActivityEntry{
+		Operation: "detect-timestamp-field", TargetTable: entry.TargetTable, Status: "accepted",
+		Details: map[string]any{"user": user, "source_table": entry.SourceTable},
+	})
+
+	return c.Status(202).JSON(fiber.Map{
+		"message":      "timestamp field detection dispatched",
+		"target_table": entry.TargetTable,
+	})
+}
+
+// normalizeShadowIdent converts an arbitrary source_db value into a
+// Postgres-safe identifier suffix used to derive shadow_<src> schema
+// names. Lowercases letters; non-alphanumeric/underscore → underscore.
+// No length cap here — caller's validateIdent enforces 63-byte limit
+// at the schema layer.
+func normalizeShadowIdent(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			out = append(out, c+32)
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	return string(out)
+}
+
+// isValidTimestampField returns true when the name is a safe Mongo field
+// identifier: ^[A-Za-z_][A-Za-z0-9_]{0,63}$. Matches resolveTimestampField
+// in centralized-data-service/internal/service/recon_source_agent.go so CMS
+// and Worker agree on what is storable. Rejects dotted paths ($where, etc).
+func isValidTimestampField(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for i, r := range s {
+		if r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			continue
+		}
+		if i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}

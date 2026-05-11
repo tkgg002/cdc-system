@@ -1,1 +1,0 @@
-stat /Users/trainguyen/Documents/work/cdc-auth-service/verify_hash.go: no such file or directory

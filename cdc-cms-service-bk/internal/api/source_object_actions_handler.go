@@ -1,0 +1,693 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"cdc-cms-service/internal/middleware"
+	"github.com/gofiber/fiber/v2"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
+)
+
+// SourceObjectActionsHandler provides V2-aware aliases for operator actions
+// that still require the legacy registry bridge internally.
+type SourceObjectActionsHandler struct {
+	registry *RegistryHandler
+	db       *gorm.DB
+	logger   *zap.Logger
+}
+
+func NewSourceObjectActionsHandler(registry *RegistryHandler, db *gorm.DB, logger *zap.Logger) *SourceObjectActionsHandler {
+	return &SourceObjectActionsHandler{registry: registry, db: db, logger: logger}
+}
+
+type sourceObjectDispatchScope struct {
+	SourceObjectID  int64  `gorm:"column:source_object_id"`
+	TargetTable     string `gorm:"column:target_table"`
+	ShadowSchema    string `gorm:"column:shadow_schema"`
+	SourceDatabase  string `gorm:"column:source_database"`
+	SourceTable     string `gorm:"column:source_table"`
+	SourceType      string `gorm:"column:source_type"`
+	PrimaryKeyField string `gorm:"column:primary_key_field"`
+	PrimaryKeyType  string `gorm:"column:primary_key_type"`
+}
+
+func (h *SourceObjectActionsHandler) resolveDispatchScopeBySourceObjectID(id int64) (*sourceObjectDispatchScope, error) {
+	var rows []sourceObjectDispatchScope
+	err := h.db.Raw(`
+		SELECT
+			so.id AS source_object_id,
+			sb.shadow_table AS target_table,
+			COALESCE(sb.shadow_schema, 'public') AS shadow_schema,
+			COALESCE(so.source_database, '') AS source_database,
+			so.source_object_name AS source_table,
+			so.source_engine_type AS source_type,
+			so.primary_key_field AS primary_key_field,
+			COALESCE(so.primary_key_type, '') AS primary_key_type
+		FROM cdc_system.source_object_registry so
+		LEFT JOIN cdc_system.shadow_binding sb
+		  ON sb.source_object_id = so.id
+		 AND sb.is_active = TRUE
+		WHERE so.id = ?
+		  AND so.is_active = TRUE
+		ORDER BY sb.updated_at DESC NULLS LAST, sb.id DESC NULLS LAST
+		LIMIT 2
+	`, id).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if len(rows) > 1 {
+		return nil, fiber.NewError(fiber.StatusConflict, "ambiguous_source_object_scope")
+	}
+	if strings.TrimSpace(rows[0].TargetTable) == "" {
+		return nil, fiber.NewError(fiber.StatusConflict, "source_object_has_no_active_shadow_binding")
+	}
+	return &rows[0], nil
+}
+
+// Register godoc
+// @Summary      Register a source object through the V2 namespace
+// @Description  Delegates to the current registry-backed write model while exposing the create action under the V2 source-objects namespace.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        body body model.TableRegistry true "Source object registration payload"
+// @Success      202 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/register [post]
+func (h *SourceObjectActionsHandler) Register(c *fiber.Ctx) error {
+	return h.registry.Register(c)
+}
+
+// UpdateBridge godoc
+// @Summary      Update a bridged source object through the V2 namespace
+// @Description  Delegates to the current registry-backed write model while exposing the update action under the V2 source-objects namespace.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Legacy registry bridge ID"
+// @Param        body body object true "Fields to update"
+// @Success      202 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/registry/{id} [patch]
+func (h *SourceObjectActionsHandler) UpdateBridge(c *fiber.Ctx) error {
+	return h.registry.Update(c)
+}
+
+// UpdateV2 godoc
+// @Summary      Update a V2 source object directly
+// @Description  Updates source-object metadata directly in cdc_system for rows that no longer rely on the legacy registry bridge. Supported fields: is_active, timestamp_field, notes.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Source object ID"
+// @Param        body body object true "Fields to update"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/{id} [patch]
+func (h *SourceObjectActionsHandler) UpdateV2(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
+	}
+
+	var req struct {
+		IsActive       *bool   `json:"is_active"`
+		Notes          *string `json:"notes"`
+		TimestampField *string `json:"timestamp_field"`
+		Priority       *string `json:"priority"`
+		SyncInterval   *string `json:"sync_interval"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if req.Priority != nil || req.SyncInterval != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "priority/sync_interval still require legacy registry bridge"})
+	}
+
+	updates := map[string]interface{}{}
+	if req.IsActive != nil {
+		updates["is_active"] = *req.IsActive
+		if *req.IsActive {
+			updates["profile_status"] = "active"
+		} else {
+			updates["profile_status"] = "paused"
+		}
+	}
+	if req.Notes != nil {
+		updates["notes"] = *req.Notes
+	}
+	if req.TimestampField != nil {
+		if !isValidTimestampField(*req.TimestampField) {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid timestamp_field: must match [A-Za-z_][A-Za-z0-9_]{0,63}"})
+		}
+		updates["timestamp_field"] = *req.TimestampField
+	}
+	if len(updates) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "no_supported_fields_to_update"})
+	}
+	updates["updated_at"] = gorm.Expr("NOW()")
+
+	result := h.db.WithContext(c.Context()).Table("cdc_system.source_object_registry").Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		h.logger.Error("update v2 source object failed", zap.Int64("source_object_id", id), zap.Error(result.Error))
+		return c.Status(500).JSON(fiber.Map{"error": "update_v2_source_object_failed"})
+	}
+	if result.RowsAffected == 0 {
+		return c.Status(404).JSON(fiber.Map{"error": "source_object_not_found"})
+	}
+
+	if req.IsActive != nil {
+		shadowUpdates := map[string]interface{}{
+			"is_active":  *req.IsActive,
+			"updated_at": gorm.Expr("NOW()"),
+		}
+		if !*req.IsActive {
+			shadowUpdates["ddl_status"] = gorm.Expr("ddl_status")
+		}
+		if err := h.db.WithContext(c.Context()).
+			Table("cdc_system.shadow_binding").
+			Where("source_object_id = ?", id).
+			Updates(shadowUpdates).Error; err != nil {
+			h.logger.Error("update v2 shadow binding active flag failed", zap.Int64("source_object_id", id), zap.Error(err))
+			return c.Status(500).JSON(fiber.Map{"error": "update_v2_shadow_binding_failed"})
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"message":          "source object updated in v2 metadata",
+		"source_object_id": id,
+		"updated_fields":   updates,
+	})
+}
+
+// BulkRegister godoc
+// @Summary      Bulk register source objects through the V2 namespace
+// @Description  Delegates to the current registry-backed bulk write model while exposing the import action under the V2 source-objects namespace.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        body body []model.TableRegistry true "Array of source object registrations"
+// @Success      202 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/register-batch [post]
+func (h *SourceObjectActionsHandler) BulkRegister(c *fiber.Ctx) error {
+	return h.registry.BulkRegister(c)
+}
+
+// CreateDefaultColumns godoc
+// @Summary      Create default columns for a bridged source object
+// @Description  Dispatches create-default-columns through the current registry bridge while exposing the action under the V2 source-objects namespace.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Legacy registry bridge ID"
+// @Success      202 {object} map[string]interface{}
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/registry/{id}/create-default-columns [post]
+func (h *SourceObjectActionsHandler) CreateDefaultColumns(c *fiber.Ctx) error {
+	return h.registry.CreateDefaultColumns(c)
+}
+
+// CreateDefaultColumnsV2 godoc
+// @Summary      Create default columns for a V2 source object
+// @Description  Dispatches create-default-columns using source_object_id and the active shadow binding. The worker receives schema-aware payload so post-create state can be reflected back into V2 metadata.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Source object ID"
+// @Success      202 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/{id}/create-default-columns [post]
+func (h *SourceObjectActionsHandler) CreateDefaultColumnsV2(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
+	}
+
+	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	if err != nil {
+		if ferr, ok := err.(*fiber.Error); ok {
+			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
+		}
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(404).JSON(fiber.Map{"error": "source_object_not_found"})
+		}
+		h.logger.Error("resolve source object create-default scope failed", zap.Int64("source_object_id", id), zap.Error(err))
+		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"source_object_id":  id,
+		"target_table":      scope.TargetTable,
+		"shadow_schema":     scope.ShadowSchema,
+		"source_table":      scope.SourceTable,
+		"primary_key_field": scope.PrimaryKeyField,
+		"primary_key_type":  scope.PrimaryKeyType,
+	})
+
+	if err := h.registry.natsClient.Conn.Publish("cdc.cmd.create-default-columns", payload); err != nil {
+		h.registry.logAction("create-default-columns", scope.TargetTable, "error", nil, err.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch: " + err.Error()})
+	}
+
+	h.registry.logAction("create-default-columns", scope.TargetTable, "success", map[string]interface{}{
+		"user":             middleware.GetUsername(c),
+		"source_object_id": id,
+		"pk_field":         scope.PrimaryKeyField,
+		"pk_type":          scope.PrimaryKeyType,
+		"path":             "v2_direct",
+	}, "")
+
+	return c.Status(202).JSON(fiber.Map{
+		"message":          "create-default-columns command accepted",
+		"source_object_id": id,
+		"target_table":     scope.TargetTable,
+		"shadow_schema":    scope.ShadowSchema,
+	})
+}
+
+// Standardize godoc
+// @Summary      Standardize a bridged source object
+// @Description  Dispatches standardize through the current registry bridge while exposing the action under the V2 source-objects namespace.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Legacy registry bridge ID"
+// @Success      202 {object} map[string]interface{}
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/registry/{id}/standardize [post]
+func (h *SourceObjectActionsHandler) Standardize(c *fiber.Ctx) error {
+	return h.registry.Standardize(c)
+}
+
+// StandardizeV2 godoc
+// @Summary      Standardize a V2 source object
+// @Description  Dispatches standardize using source_object_id and the active shadow binding instead of the legacy registry bridge. Worker payload remains compatible because standardize only requires the resolved target table.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Source object ID"
+// @Success      202 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/{id}/standardize [post]
+func (h *SourceObjectActionsHandler) StandardizeV2(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
+	}
+
+	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	if err != nil {
+		if ferr, ok := err.(*fiber.Error); ok {
+			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
+		}
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(404).JSON(fiber.Map{"error": "source_object_not_found"})
+		}
+		h.logger.Error("resolve source object standardize scope failed", zap.Int64("source_object_id", id), zap.Error(err))
+		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"source_object_id": id,
+		"target_table":     scope.TargetTable,
+		"shadow_schema":    scope.ShadowSchema,
+	})
+	if err := h.registry.natsClient.Conn.Publish("cdc.cmd.standardize", payload); err != nil {
+		h.registry.logAction("standardize", scope.TargetTable, "error", nil, err.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "failed to dispatch standardize command: " + err.Error()})
+	}
+
+	h.registry.logAction("standardize", scope.TargetTable, "success", map[string]interface{}{
+		"user":             middleware.GetUsername(c),
+		"source_object_id": id,
+		"path":             "v2_direct",
+	}, "")
+	return c.Status(202).JSON(fiber.Map{
+		"message":          "standardize command accepted",
+		"source_object_id": id,
+		"target_table":     scope.TargetTable,
+	})
+}
+
+// ScanFields godoc
+// @Summary      Scan fields for a bridged source object
+// @Description  Dispatches scan-fields through the current registry bridge while exposing the action under the V2 source-objects namespace.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Legacy registry bridge ID"
+// @Success      202 {object} map[string]interface{}
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/registry/{id}/scan-fields [post]
+func (h *SourceObjectActionsHandler) ScanFields(c *fiber.Ctx) error {
+	return h.registry.ScanFields(c)
+}
+
+// ScanFieldsV2 godoc
+// @Summary      Scan fields for a V2 source object
+// @Description  Dispatches scan-fields using source_object_id and the active shadow binding instead of the legacy registry bridge. Worker payload stays compatible with the current Debezium-only scan path.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Source object ID"
+// @Success      202 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/{id}/scan-fields [post]
+func (h *SourceObjectActionsHandler) ScanFieldsV2(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
+	}
+
+	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	if err != nil {
+		if ferr, ok := err.(*fiber.Error); ok {
+			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
+		}
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(404).JSON(fiber.Map{"error": "source_object_not_found"})
+		}
+		h.logger.Error("resolve source object scan scope failed", zap.Int64("source_object_id", id), zap.Error(err))
+		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"source_object_id": id,
+		"target_table":     scope.TargetTable,
+		"source_table":     scope.SourceTable,
+		"sync_engine":      "debezium",
+		"source_type":      scope.SourceType,
+	})
+	if err := h.registry.natsClient.Conn.Publish("cdc.cmd.scan-fields", payload); err != nil {
+		h.registry.logAction("scan-fields", scope.TargetTable, "error", nil, err.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
+	}
+
+	h.registry.logAction("scan-fields", scope.TargetTable, "accepted", map[string]interface{}{
+		"user":             middleware.GetUsername(c),
+		"source_object_id": id,
+		"sync_engine":      "debezium",
+		"path":             "v2_direct",
+	}, "")
+
+	return c.Status(202).JSON(fiber.Map{
+		"message":          "scan-fields command accepted",
+		"source_object_id": id,
+		"target_table":     scope.TargetTable,
+		"sync_engine":      "debezium",
+	})
+}
+
+// Transform godoc
+// @Summary      Trigger transform for a bridged source object
+// @Description  Dispatches batch-transform through the current registry bridge while exposing the action under the V2 source-objects namespace.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Legacy registry bridge ID"
+// @Success      202 {object} map[string]interface{}
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/registry/{id}/transform [post]
+func (h *SourceObjectActionsHandler) Transform(c *fiber.Ctx) error {
+	return h.registry.Transform(c)
+}
+
+// DispatchStatus godoc
+// @Summary      Get dispatch status for a bridged source-object action
+// @Description  Reads activity-log based dispatch status for V2 source-object actions that are still backed by the registry bridge.
+// @Tags         Source Objects
+// @Produce      json
+// @Param        id path int true "Legacy registry bridge ID"
+// @Param        subject query string false "Operation filter, e.g. scan-fields or detect-timestamp-field"
+// @Param        since query string false "RFC3339 timestamp lower bound"
+// @Success      200 {object} map[string]interface{}
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/registry/{id}/dispatch-status [get]
+func (h *SourceObjectActionsHandler) DispatchStatus(c *fiber.Ctx) error {
+	return h.registry.DispatchStatus(c)
+}
+
+// DispatchStatusV2 godoc
+// @Summary      Get dispatch status for a V2 source-object action
+// @Description  Reads activity-log based dispatch status for direct V2 source-object actions such as timestamp re-detection, using source_object_id to resolve the current shadow target.
+// @Tags         Source Objects
+// @Produce      json
+// @Param        id path int true "Source object ID"
+// @Param        subject query string false "Operation filter, e.g. detect-timestamp-field"
+// @Param        since query string false "RFC3339 timestamp lower bound"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/{id}/dispatch-status [get]
+func (h *SourceObjectActionsHandler) DispatchStatusV2(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
+	}
+
+	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	if err != nil {
+		if ferr, ok := err.(*fiber.Error); ok {
+			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
+		}
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(404).JSON(fiber.Map{"error": "source_object_not_found"})
+		}
+		h.logger.Error("resolve source object dispatch scope failed", zap.Int64("source_object_id", id), zap.Error(err))
+		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
+	}
+
+	subject := strings.TrimSpace(strings.TrimPrefix(c.Query("subject"), "cdc.cmd."))
+	sinceStr := strings.TrimSpace(c.Query("since"))
+
+	q := h.db.Table("cdc_system.cdc_activity_log").Where("target_table = ?", scope.TargetTable)
+	if subject != "" {
+		q = q.Where("operation = ?", subject)
+	}
+	if sinceStr != "" {
+		if ts, parseErr := time.Parse(time.RFC3339, sinceStr); parseErr == nil {
+			q = q.Where("started_at >= ?", ts)
+		}
+	}
+
+	var entries []map[string]interface{}
+	if err := q.Order("started_at DESC").Limit(50).Find(&entries).Error; err != nil {
+		h.logger.Error("query source object dispatch status failed", zap.Int64("source_object_id", id), zap.Error(err))
+		return c.Status(500).JSON(fiber.Map{"error": "query_dispatch_status_failed"})
+	}
+
+	return c.JSON(fiber.Map{
+		"source_object_id": id,
+		"target_table":     scope.TargetTable,
+		"operation":        subject,
+		"since":            sinceStr,
+		"entries":          entries,
+		"count":            len(entries),
+	})
+}
+
+// DetectTimestampField godoc
+// @Summary      Re-detect timestamp field for a bridged source object
+// @Description  Dispatches timestamp-field auto-detection through the current registry bridge while exposing the action under the V2 source-objects namespace.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Legacy registry bridge ID"
+// @Success      202 {object} map[string]interface{}
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/registry/{id}/detect-timestamp-field [post]
+func (h *SourceObjectActionsHandler) DetectTimestampField(c *fiber.Ctx) error {
+	return h.registry.DetectTimestampField(c)
+}
+
+// DetectTimestampFieldV2 godoc
+// @Summary      Re-detect timestamp field for a V2 source object
+// @Description  Dispatches timestamp-field auto-detection using source_object_id and the active shadow binding instead of the legacy registry bridge. The worker still consumes the existing NATS subject and resolves by target_table fallback.
+// @Tags         Source Objects
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "Source object ID"
+// @Success      202 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/{id}/detect-timestamp-field [post]
+func (h *SourceObjectActionsHandler) DetectTimestampFieldV2(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
+	}
+
+	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	if err != nil {
+		if ferr, ok := err.(*fiber.Error); ok {
+			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
+		}
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(404).JSON(fiber.Map{"error": "source_object_not_found"})
+		}
+		h.logger.Error("resolve source object detect scope failed", zap.Int64("source_object_id", id), zap.Error(err))
+		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"source_object_id": id,
+		"target_table":     scope.TargetTable,
+		"source_table":     scope.SourceTable,
+		"source_db":        scope.SourceDatabase,
+		"source_type":      scope.SourceType,
+	})
+	if err := h.registry.natsClient.Conn.Publish("cdc.cmd.detect-timestamp-field", payload); err != nil {
+		h.registry.logAction("detect-timestamp-field", scope.TargetTable, "error", nil, err.Error())
+		return c.Status(500).JSON(fiber.Map{"error": "dispatch failed: " + err.Error()})
+	}
+
+	h.registry.logAction("detect-timestamp-field", scope.TargetTable, "accepted", map[string]interface{}{
+		"user":             middleware.GetUsername(c),
+		"source_object_id": id,
+		"source_table":     scope.SourceTable,
+		"path":             "v2_direct",
+	}, "")
+
+	return c.Status(202).JSON(fiber.Map{
+		"message":          "timestamp field detection dispatched",
+		"source_object_id": id,
+		"target_table":     scope.TargetTable,
+	})
+}
+
+// TransformStatus godoc
+// @Summary      Get transform status for a bridged source object
+// @Description  Returns transform progress through the current registry bridge while exposing the read under the V2 source-objects namespace.
+// @Tags         Source Objects
+// @Produce      json
+// @Param        id path int true "Legacy registry bridge ID"
+// @Success      200 {object} map[string]interface{}
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/registry/{id}/transform-status [get]
+func (h *SourceObjectActionsHandler) TransformStatus(c *fiber.Ctx) error {
+	return h.registry.TransformStatus(c)
+}
+
+// TransformStatusV2 godoc
+// @Summary      Get transform progress for a V2 source object
+// @Description  Resolves the active shadow target for a source object and returns transform progress without requiring the legacy registry bridge.
+// @Tags         Source Objects
+// @Produce      json
+// @Param        id path int true "Source object ID"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Security     BearerAuth
+// @Router       /api/v1/source-objects/{id}/transform-status [get]
+func (h *SourceObjectActionsHandler) TransformStatusV2(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_source_object_id"})
+	}
+
+	scope, err := h.resolveDispatchScopeBySourceObjectID(id)
+	if err != nil {
+		if ferr, ok := err.(*fiber.Error); ok {
+			return c.Status(ferr.Code).JSON(fiber.Map{"error": ferr.Message})
+		}
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(404).JSON(fiber.Map{"error": "source_object_not_found"})
+		}
+		h.logger.Error("resolve source object transform scope failed", zap.Int64("source_object_id", id), zap.Error(err))
+		return c.Status(500).JSON(fiber.Map{"error": "resolve_source_object_scope_failed"})
+	}
+
+	var tableExists bool
+	h.db.Raw(
+		"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = ?)",
+		scope.TargetTable,
+		scope.ShadowSchema,
+	).Scan(&tableExists)
+	if !tableExists {
+		return c.JSON(fiber.Map{
+			"source_object_id": id,
+			"shadow_schema":    scope.ShadowSchema,
+			"target_table":     scope.TargetTable,
+			"total_rows":       0,
+			"bridged_rows":     0,
+			"pending_bridge":   0,
+			"status":           "table_not_created",
+		})
+	}
+
+	var totalRows, rawDataRows int64
+	h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"."%s"`, scope.ShadowSchema, scope.TargetTable)).Scan(&totalRows)
+
+	var hasRawData bool
+	h.db.Raw(
+		"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = '_raw_data')",
+		scope.ShadowSchema,
+		scope.TargetTable,
+	).Scan(&hasRawData)
+	if hasRawData {
+		h.db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"."%s" WHERE _raw_data IS NOT NULL AND _raw_data != '{}'::jsonb`, scope.ShadowSchema, scope.TargetTable)).Scan(&rawDataRows)
+	}
+
+	return c.JSON(fiber.Map{
+		"source_object_id": id,
+		"shadow_schema":    scope.ShadowSchema,
+		"target_table":     scope.TargetTable,
+		"total_rows":       totalRows,
+		"bridged_rows":     rawDataRows,
+		"pending_bridge":   totalRows - rawDataRows,
+	})
+}

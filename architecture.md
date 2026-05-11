@@ -60,8 +60,7 @@ flowchart TB
     end
 
     subgraph CDC["CDC Capture Layer"]
-        DBZ["Debezium Connectors<br/>MongoDB CDC"]
-        AIR["Airbyte Connectors<br/>(legacy / hybrid path)"]
+        DBZ["Debezium Connectors<br/>MongoDB / PostgreSQL / MariaDB CDC"]
     end
 
     subgraph BUS["Messaging Backbone"]
@@ -89,10 +88,8 @@ flowchart TB
 
     APPS --> MDB
     MDB --> DBZ
-    MDB --> AIR
 
     DBZ --> KAFKA
-    AIR --> NATS
 
     KAFKA --> WORKER
     NATS --> WORKER

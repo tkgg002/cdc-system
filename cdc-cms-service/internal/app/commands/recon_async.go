@@ -83,10 +83,12 @@ func (c DebeziumSignalCommand) Validate() error {
 }
 
 // DebeziumSnapshotCommand publishes cdc.cmd.debezium-snapshot.
-// Wire (raw): {"table":"<>"}
+// Wire (raw): {"table":"<>","database":"<>","collection":"<>"}
 type DebeziumSnapshotCommand struct {
 	ports.AsyncCommandMixin
-	Table string `json:"table"`
+	Table      string `json:"table"`
+	Database   string `json:"database"`
+	Collection string `json:"collection"`
 }
 
 func (DebeziumSnapshotCommand) Type() string { return "debezium.snapshot" }

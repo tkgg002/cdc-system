@@ -1,0 +1,12 @@
+table: identitycounters
+sample_size: 0
+total_rows: 0
+generated_at: "2026-04-21T02:05:00Z"
+scan_status: "table_empty"
+note: |
+  Table has 0 rows. Schema contains ONLY 5 Airbyte meta columns (_airbyte_raw_id,
+  _airbyte_extracted_at, _airbyte_meta, _airbyte_generation_id, _source_ts).
+  No business data columns, no _raw_data JSONB.
+  Interpretation: Airbyte stream is configured but source MongoDB collection
+  never produced events, OR destreamer job has not run.
+fields: []

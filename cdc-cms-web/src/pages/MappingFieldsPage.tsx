@@ -104,9 +104,7 @@ export default function MappingFieldsPage() {
     if (!registry) return;
     setSyncFieldsLoading(true);
     try {
-      const endpoint = registry.registry_id
-        ? `/api/v1/source-objects/registry/${registry.registry_id}/create-default-columns`
-        : `/api/v1/source-objects/${registry.id}/create-default-columns`;
+      const endpoint = `/api/v1/source-objects/${registry.id}/create-default-columns`;
       await cmsApi.post(endpoint);
       message.success('Đang cập nhật field vào shadow table...');
     } catch (err: any) {
