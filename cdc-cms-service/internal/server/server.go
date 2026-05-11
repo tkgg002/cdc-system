@@ -14,6 +14,7 @@ import (
 	"cdc-cms-service/internal/infra/observability"
 	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
+	"cdc-cms-service/internal/migrate"
 	"cdc-cms-service/internal/router"
 	"cdc-cms-service/pkgs/database"
 	"cdc-cms-service/pkgs/natsconn"
@@ -53,6 +54,15 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	}
 	logger.Info("PostgreSQL (control plane) connected")
 
+	// Apply embedded SQL migrations on every boot — idempotent via
+	// cdc_system.schema_migrations tracker. This replaces the prior
+	// out-of-band `make migrate` step so a fresh `make run` (or a fresh
+	// production rollout) self-bootstraps the schema instead of crashing
+	// on missing cdc_system.* relations.
+	if err := migrate.Run(db, logger); err != nil {
+		return nil, fmt.Errorf("apply migrations: %w", err)
+	}
+
 	// G-8 A3 hybrid: shadow data plane lives on a separate cluster
 	// (gpay-postgres-shadow:5432/cdc_shadow) — worker writes shadow
 	// rows there via Kafka Connect, so cms must create the DDL on
@@ -74,19 +84,12 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 		logger.Warn("shadowDb not configured — ShadowAutomator falls back to control plane (Path A); shadow tables will be orphaned vs worker writes (Path B)")
 	}
 
-	// Schema managed via SQL migrations (centralized-data-service/migrations/001-014
-	// + cdc-cms-service/migrations/003-013) — NOT auto-migrated.
-	// Reason: GORM AutoMigrate conflicts with partitioned tables (e.g. cdc_activity_log
-	// has composite PRIMARY KEY (created_at, id) for RANGE partitioning — GORM tries
-	// to DROP NOT NULL on created_at which Postgres rejects with SQLSTATE 42P16).
-	// Tables & owning migrations:
-	//   - cdc_table_registry         -> 001_init_schema.sql, 013_table_registry_expected_fields.sql
-	//   - cdc_mapping_rules          -> 001_init_schema.sql, cms/003_add_mapping_rule_status.sql
-	//   - cdc_activity_log           -> 006_activity_log.sql, 010_partitioning.sql (PARTITIONED)
-	//   - cdc_worker_schedule        -> 007_worker_schedule.sql
-	//   - cdc_reconciliation_reports -> 008_reconciliation.sql
-	//   - cdc_failed_sync_logs       -> 008_reconciliation.sql, 012_dlq_state_machine.sql
-	//   - cdc_alerts / cdc_silences  -> cms/013_alerts.sql
+	// Schema managed via embedded raw-SQL migrations applied above in
+	// migrate.Run. GORM AutoMigrate is intentionally NOT used because it
+	// conflicts with partitioned tables — e.g. cdc_activity_log has
+	// composite PRIMARY KEY (created_at, id) for RANGE partitioning and
+	// AutoMigrate would try to DROP NOT NULL on created_at, which Postgres
+	// rejects with SQLSTATE 42P16.
 
 	natsClient, err := natsconn.NewNatsClient(cfg, logger)
 	if err != nil {

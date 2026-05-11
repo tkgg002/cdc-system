@@ -2,6 +2,8 @@ package database
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	"cdc-cms-service/config"
@@ -12,15 +14,33 @@ import (
 )
 
 func NewPostgresConnection(dbCfg config.DBConfig) (*gorm.DB, error) {
+	// search_path=cdc_system,public lets GORM models with bare TableName
+	// (e.g. "failed_sync_logs", "cdc_activity_log", "cdc_table_registry")
+	// resolve to the cdc_system schema where the migrations create them.
+	// Session-scoped via DSN — does NOT touch role search_path (role-level
+	// search_path breaks migrations that create cross-schema partitioned
+	// parents; see lessons.md "search_path role persistence trap").
 	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s search_path=cdc_system,public",
 		dbCfg.Host, dbCfg.Port, dbCfg.UserName, dbCfg.Password, dbCfg.Database, dbCfg.SSLMode,
 	)
 
-	logLevel := logger.Warn
+	// IgnoreRecordNotFoundError=true: ErrRecordNotFound là branch logic
+	// hợp lệ ở nhiều repo (alert dedup, upsert lookup, idempotent guards).
+	// Default GORM logger in nó dưới dạng error đỏ → noise. Caller vẫn
+	// nhận err qua Result.Error để switch — chỉ tắt LOG, không tắt err.
+	gormLogger := logger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  logger.Warn,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  true,
+		},
+	)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger:      logger.Default.LogMode(logLevel),
+		Logger:      gormLogger,
 		PrepareStmt: true,
 	})
 	if err != nil {

@@ -139,7 +139,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 	syncRuntimeRepo := repository.NewSyncRuntimeStateRepo(db)
 
 	// 5. Services
-	registrySvc := service.NewMetadataRegistryService(connectionRepo, sourceObjectRepo, shadowBindingRepo, mappingRepo, logger)
+	registrySvc := service.NewMetadataRegistryService(connectionRepo, sourceObjectRepo, shadowBindingRepo, mappingRuleV2Repo, logger)
 	maskingSvc := service.NewMaskingService(db, logger)
 	// Share the physical-instance Registry so ConnectionManager and
 	// any direct GetDB("cdc")/GetDB("dest") callers hit the same pools.

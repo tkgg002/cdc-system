@@ -262,6 +262,7 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 		}
 
 		pkField := payload.PKField
+		isMongoPK := pkField == "_id"
 		if strings.TrimSpace(pkField) == "" {
 			pkField = "id"
 		}
@@ -270,7 +271,11 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 		}
 		pkType := payload.PKType
 		if pkType == "" {
-			pkType = "BIGINT"
+			if isMongoPK {
+				pkType = "TEXT"
+			} else {
+				pkType = "BIGINT"
+			}
 		}
 		createSQL := fmt.Sprintf(
 			`CREATE TABLE IF NOT EXISTS %s.%s (

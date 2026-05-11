@@ -47,7 +47,7 @@ type MetadataRegistryService struct {
 	connectionRepo *repository.ConnectionRegistryRepo
 	sourceRepo     *repository.SourceObjectRegistryRepo
 	shadowRepo     *repository.ShadowBindingRepo
-	legacyMapping  *repository.MappingRuleRepo
+	mappingV2Repo  *repository.MappingRuleV2Repo
 	logger         *zap.Logger
 
 	mu             sync.RWMutex
@@ -67,14 +67,14 @@ func NewMetadataRegistryService(
 	connectionRepo *repository.ConnectionRegistryRepo,
 	sourceRepo *repository.SourceObjectRegistryRepo,
 	shadowRepo *repository.ShadowBindingRepo,
-	legacyMapping *repository.MappingRuleRepo,
+	mappingV2Repo *repository.MappingRuleV2Repo,
 	logger *zap.Logger,
 ) *MetadataRegistryService {
 	rs := &MetadataRegistryService{
 		connectionRepo: connectionRepo,
 		sourceRepo:     sourceRepo,
 		shadowRepo:     shadowRepo,
-		legacyMapping:  legacyMapping,
+		mappingV2Repo:  mappingV2Repo,
 		logger:         logger,
 		idCache:        make(map[uint]*model.TableRegistry),
 		targetCache:    make(map[string]*model.TableRegistry),
@@ -113,9 +113,21 @@ func (rs *MetadataRegistryService) ReloadAll(ctx context.Context) error {
 		}
 	}
 
-	rules, err := rs.legacyMapping.GetAllActive(ctx)
-	if err != nil {
-		return err
+	// V2 mapping rules: per source, fetch active+approved rules and convert
+	// to the legacy MappingRule shape DynamicMapper still consumes. V1
+	// table `cdc_mapping_rules` is deprecated — keep ONE source of truth
+	// at `cdc_system.mapping_rule_v2`.
+	rulesBySource := make(map[int64][]model.MappingRuleV2, len(sources))
+	totalRules := 0
+	for _, src := range sources {
+		v2Rules, listErr := rs.mappingV2Repo.ListActiveBySourceObject(ctx, src.ID)
+		if listErr != nil {
+			return listErr
+		}
+		if len(v2Rules) > 0 {
+			rulesBySource[src.ID] = v2Rules
+			totalRules += len(v2Rules)
+		}
 	}
 
 	rs.mu.Lock()
@@ -201,24 +213,50 @@ func (rs *MetadataRegistryService) ReloadAll(ctx context.Context) error {
 		)
 	}
 
-	for _, rule := range rules {
-		targetTable := sourceNameToTarget[strings.TrimSpace(rule.SourceTable)]
-		if targetTable == "" {
-			rs.logger.Warn("legacy mapping rule has no V2 shadow route",
-				zap.String("source_table", rule.SourceTable),
+	for sourceID, v2Rules := range rulesBySource {
+		src := sourceByID[sourceID]
+		if src == nil {
+			continue
+		}
+		route := routeBySourceID[sourceID]
+		if route == nil {
+			rs.logger.Warn("V2 mapping rules have no shadow route",
+				zap.Int64("source_object_id", sourceID),
+				zap.String("source_object_name", src.SourceObjectName),
 			)
 			continue
 		}
-		rs.mappingCache[targetTable] = append(rs.mappingCache[targetTable], rule)
+		targetTable := route.TableConfig.TargetTable
+		for _, v2 := range v2Rules {
+			rs.mappingCache[targetTable] = append(rs.mappingCache[targetTable], convertV2ToLegacyRule(v2, src.SourceObjectName))
+		}
 	}
 
 	rs.logger.Info("V2 metadata registry reloaded",
 		zap.Int("sources", len(sources)),
 		zap.Int("connections", len(connections)),
 		zap.Int("shadow_bindings", len(allBindings)),
-		zap.Int("legacy_mapping_rules", len(rules)),
+		zap.Int("v2_mapping_rules", totalRules),
 	)
 	return nil
+}
+
+// convertV2ToLegacyRule reshapes mapping_rule_v2 into the legacy MappingRule
+// struct DynamicMapper still consumes. ListActiveBySourceObject already
+// filters by is_active=true AND status='approved', so flags are preserved
+// as-is for downstream Type/Active gates.
+func convertV2ToLegacyRule(v2 model.MappingRuleV2, sourceObjectName string) model.MappingRule {
+	return model.MappingRule{
+		ID:           uint(v2.ID),
+		SourceTable:  sourceObjectName,
+		SourceField:  v2.SourceField,
+		TargetColumn: v2.TargetColumn,
+		DataType:     v2.DataType,
+		IsActive:     v2.IsActive,
+		Status:       v2.Status,
+		IsNullable:   v2.IsNullable,
+		DefaultValue: v2.DefaultValue,
+	}
 }
 
 func (rs *MetadataRegistryService) GetTableConfigByID(id uint) *model.TableRegistry {

@@ -1,85 +1,155 @@
 basePath: /
 definitions:
-  cdc-cms-service_internal_model.MappingRule:
+  cdc-cms-service_internal_api_dto.MappingRuleCreateRequest:
     properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
       data_type:
         type: string
-      default_value:
-        type: string
-      enrichment_function:
-        type: string
-      id:
-        type: integer
       is_active:
-        type: boolean
-      is_enriched:
         type: boolean
       is_nullable:
         type: boolean
+      master_binding_id:
+        type: integer
       notes:
         type: string
-      rule_type:
-        description: 'Phase 1.10: rule_type — system | discovered | mapping'
+      shadow_schema:
+        type: string
+      shadow_table:
+        type: string
+      source_database:
         type: string
       source_field:
+        type: string
+      source_format:
+        type: string
+      source_namespace:
+        type: string
+      source_object_id:
+        type: integer
+      source_path:
+        type: string
+      source_schema:
         type: string
       source_table:
         type: string
       status:
-        description: 'Phase 1.10: Status workflow — pending | approved | rejected'
         type: string
       target_column:
         type: string
-      updated_at:
-        type: string
-      updated_by:
+      transform_fn:
         type: string
     type: object
-  cdc-cms-service_internal_model.TableRegistry:
+  cdc-cms-service_internal_infra_persistence.ApproveRequest:
     properties:
-      airbyte_connection_id:
+      approval_notes:
+        example: Approved for phase 1
         type: string
-      airbyte_cursor_field:
+      final_type:
+        example: INTEGER
         type: string
-      airbyte_destination_id:
+      target_column_name:
+        example: loyalty_points
         type: string
-      airbyte_destination_name:
+    type: object
+  cdc-cms-service_internal_infra_persistence.RejectRequest:
+    properties:
+      rejection_reason:
+        example: Not needed for MVP
         type: string
-      airbyte_destination_sync_mode:
+    type: object
+  cdc-cms-service_internal_infra_persistence.SourceProvisioningSnapshot:
+    properties:
+      last_step_error:
         type: string
-      airbyte_namespace:
+      provisioning_mode:
         type: string
-      airbyte_raw_table:
+      provisioning_state:
         type: string
-      airbyte_source_id:
+      provisioning_step_log:
+        items:
+          type: integer
+        type: array
+      source_id:
+        type: integer
+      updated_at:
         type: string
-      airbyte_sync_mode:
+    type: object
+  internal_api.ShadowBindingRow:
+    properties:
+      binding_code:
         type: string
       created_at:
+        type: string
+      ddl_status:
         type: string
       id:
         type: integer
       is_active:
         type: boolean
-      is_partitioned:
+      last_recon_at:
+        type: string
+      object_code:
+        type: string
+      physical_table_fqn:
+        type: string
+      recon_drift:
+        type: integer
+      registry_id:
+        type: integer
+      shadow_schema:
+        type: string
+      shadow_table:
+        type: string
+      source_db:
+        type: string
+      source_object_id:
+        type: integer
+      source_table:
+        type: string
+      source_type:
+        type: string
+      updated_at:
+        type: string
+      write_mode:
+        type: string
+    type: object
+  internal_api.SourceObjectMappingContext:
+    properties:
+      bridge_status:
+        type: string
+      created_at:
+        type: string
+      ddl_status:
+        type: string
+      id:
+        type: integer
+      is_active:
         type: boolean
       is_table_created:
         type: boolean
-      last_bridge_at:
+      metadata_status:
         type: string
       notes:
         type: string
-      partition_key:
+      object_code:
+        type: string
+      physical_table_fqn:
         type: string
       primary_key_field:
         type: string
       primary_key_type:
         type: string
       priority:
+        type: string
+      profile_status:
+        type: string
+      recon_drift:
+        type: integer
+      registry_id:
+        type: integer
+      shadow_binding_id:
+        type: integer
+      shadow_schema:
         type: string
       source_db:
         type: string
@@ -91,12 +161,79 @@ definitions:
         type: string
       sync_interval:
         type: string
+      sync_status:
+        type: string
       target_table:
+        type: string
+      timestamp_field:
         type: string
       updated_at:
         type: string
     type: object
-  cdc-cms-service_internal_repository.RegistryStats:
+  internal_api.SourceObjectRow:
+    properties:
+      bridge_status:
+        type: string
+      created_at:
+        type: string
+      ddl_status:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      is_table_created:
+        type: boolean
+      metadata_status:
+        type: string
+      notes:
+        type: string
+      object_code:
+        type: string
+      physical_table_fqn:
+        type: string
+      primary_key_field:
+        type: string
+      primary_key_type:
+        type: string
+      priority:
+        type: string
+      profile_status:
+        type: string
+      provisioning_mode:
+        type: string
+      provisioning_state:
+        type: string
+      recon_drift:
+        type: integer
+      registry_id:
+        type: integer
+      shadow_binding_id:
+        type: integer
+      shadow_schema:
+        type: string
+      source_db:
+        type: string
+      source_engine_type:
+        type: string
+      source_table:
+        type: string
+      source_type:
+        type: string
+      sync_engine:
+        type: string
+      sync_interval:
+        type: string
+      sync_status:
+        type: string
+      target_table:
+        type: string
+      timestamp_field:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  internal_api.SourceObjectStats:
     properties:
       by_priority:
         additionalProperties:
@@ -115,155 +252,129 @@ definitions:
       total:
         type: integer
     type: object
-  cdc-cms-service_internal_service.ApproveRequest:
+  internal_api.SwapRequest:
     properties:
-      approval_notes:
-        example: Approved for phase 1
+      new_table_name:
         type: string
-      final_type:
-        example: INTEGER
-        type: string
-      target_column_name:
-        example: loyalty_points
+      reason:
         type: string
     type: object
-  cdc-cms-service_internal_service.RejectRequest:
+  internal_api.WorkerScheduleCreateRequest:
     properties:
-      rejection_reason:
-        example: Not needed for MVP
-        type: string
-    type: object
-  cdc-cms-service_pkgs_airbyte.JobStatus:
-    properties:
-      createdAt:
-        type: string
-      jobId:
+      interval_minutes:
         type: integer
-      status:
-        description: E.g., "running", "succeeded", "failed"
-        type: string
-      updatedAt:
-        type: string
-    type: object
-  cdc-cms-service_pkgs_airbyte.MismatchType:
-    enum:
-    - status_mismatch
-    - missing_stream
-    - orphan_stream
-    type: string
-    x-enum-comments:
-      MismatchMissing: e.g. Table in CMS but NOT in Airbyte connection
-      MismatchOrphan: e.g. Stream selected in Airbyte but NOT in CMS Registry
-      MismatchStatus: e.g. CMS active, Airbyte selected = false
-    x-enum-descriptions:
-    - e.g. CMS active, Airbyte selected = false
-    - e.g. Table in CMS but NOT in Airbyte connection
-    - e.g. Stream selected in Airbyte but NOT in CMS Registry
-    x-enum-varnames:
-    - MismatchStatus
-    - MismatchMissing
-    - MismatchOrphan
-  cdc-cms-service_pkgs_airbyte.Source:
-    properties:
-      connectionId:
-        type: string
-      database:
-        type: string
-      name:
-        type: string
-      sourceId:
-        type: string
-      sourceName:
-        type: string
-      workspaceId:
-        type: string
-    type: object
-  cdc-cms-service_pkgs_airbyte.StreamAudit:
-    properties:
-      airbyte_selected:
+      is_enabled:
         type: boolean
-      mismatch_type:
-        $ref: '#/definitions/cdc-cms-service_pkgs_airbyte.MismatchType'
-      stream_name:
+      notes:
         type: string
-      system_active:
-        type: boolean
-      table_name:
+      operation:
+        type: string
+      shadow_schema:
+        type: string
+      shadow_table:
+        type: string
+      source_database:
+        type: string
+      source_namespace:
+        type: string
+      source_schema:
+        type: string
+      source_table:
+        type: string
+      target_table:
         type: string
     type: object
-  internal_api.ImportStream:
+  internal_api.WorkerScheduleUpdateRequest:
     properties:
-      connection_id:
+      interval_minutes:
+        type: integer
+      is_enabled:
+        type: boolean
+      notes:
         type: string
-      stream_names:
+    type: object
+  internal_api.shadowBindingsListResponse:
+    properties:
+      data:
         items:
-          type: string
+          $ref: '#/definitions/internal_api.ShadowBindingRow'
         type: array
+      page:
+        type: integer
+      total:
+        type: integer
     type: object
-host: localhost:8080
+  internal_api.sourceObjectsListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/internal_api.SourceObjectRow'
+        type: array
+      page:
+        type: integer
+      total:
+        type: integer
+    type: object
 info:
   contact: {}
-  description: CMS Service for CDC Integration - Schema change approval, table registry,
-    mapping rules management.
+  description: CMS Service for CDC Integration.
   title: CDC CMS Service API
   version: "1.0"
 paths:
-  /api/airbyte/import/execute:
-    post:
-      consumes:
-      - application/json
-      description: Imports selected streams from Airbyte into CMS Registry and creates
-        default mapping rules
+  /api/activity-log:
+    get:
+      description: Returns paginated activity logs enriched with source/shadow scope
+        from V2 metadata. Supports source/shadow filters while keeping target_table
+        as compatibility fallback.
       parameters:
-      - description: Import configuration
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/internal_api.ImportStream'
+      - description: Operation filter
+        in: query
+        name: operation
+        type: string
+      - description: Status filter
+        in: query
+        name: status
+        type: string
+      - description: Triggered by filter
+        in: query
+        name: triggered_by
+        type: string
+      - description: Legacy target_table filter
+        in: query
+        name: target_table
+        type: string
+      - description: Source database filter
+        in: query
+        name: source_database
+        type: string
+      - description: Source table filter
+        in: query
+        name: source_table
+        type: string
+      - description: Shadow schema filter
+        in: query
+        name: shadow_schema
+        type: string
+      - description: Shadow table filter
+        in: query
+        name: shadow_table
+        type: string
+      - description: Page number
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
       produces:
       - application/json
       responses:
-        "201":
-          description: Created
+        "200":
+          description: OK
           schema:
             additionalProperties: true
             type: object
-      security:
-      - BearerAuth: []
-      summary: Execute smart import
-      tags:
-      - Airbyte
-  /api/airbyte/import/list:
-    get:
-      description: Shows streams from Airbyte that are not yet in the CMS Registry
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              additionalProperties: true
-              type: object
-            type: array
-      security:
-      - BearerAuth: []
-      summary: List importable streams
-      tags:
-      - Airbyte
-  /api/airbyte/jobs:
-    get:
-      description: Fetches the 20 most recent sync jobs from Airbyte
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/cdc-cms-service_pkgs_airbyte.JobStatus'
-            type: array
         "500":
           description: Internal Server Error
           schema:
@@ -272,21 +383,21 @@ paths:
             type: object
       security:
       - BearerAuth: []
-      summary: List Airbyte Jobs
+      summary: List activity logs
       tags:
-      - Airbyte
-  /api/airbyte/sources:
+      - Activity Log
+  /api/activity-log/stats:
     get:
-      description: Fetches all configured source connectors from Airbyte
+      description: Returns 24h aggregated activity stats and recent errors enriched
+        with V2 source/shadow scope.
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            items:
-              $ref: '#/definitions/cdc-cms-service_pkgs_airbyte.Source'
-            type: array
+            additionalProperties: true
+            type: object
         "500":
           description: Internal Server Error
           schema:
@@ -295,40 +406,17 @@ paths:
             type: object
       security:
       - BearerAuth: []
-      summary: List Airbyte Sources
+      summary: Get activity log stats
       tags:
-      - Airbyte
-  /api/airbyte/sync-audit:
+      - Activity Log
+  /api/jobs/{id}:
     get:
-      description: Compares Airbyte connection state with CMS Registry to find inconsistencies
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/cdc-cms-service_pkgs_airbyte.StreamAudit'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Audit Sync State
-      tags:
-      - Airbyte
-  /api/introspection/scan-raw/{table}:
-    get:
-      description: Directly scans the _raw_data column in the DW table to find fields
-        not yet mapped. Works without Airbyte API.
+      description: Returns the cdc_system.cdc_jobs row written by the CommandBus on
+        Dispatch and updated by the worker JobMonitor on cdc.evt.X.completed.
       parameters:
-      - description: Target table name (e.g. cdc_merchants)
+      - description: Job UUID
         in: path
-        name: table
+        name: id
         required: true
         type: string
       produces:
@@ -339,34 +427,11 @@ paths:
           schema:
             additionalProperties: true
             type: object
-        "500":
-          description: Internal Server Error
+        "400":
+          description: Bad Request
           schema:
             additionalProperties:
               type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Scan _raw_data JSONB for unmapped fields
-      tags:
-      - Introspection
-  /api/introspection/scan/{table}:
-    get:
-      description: Scans the _raw_data column of a target table to find fields that
-        are not yet mapped
-      parameters:
-      - description: Target table name
-        in: path
-        name: table
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
             type: object
         "404":
           description: Not Found
@@ -382,16 +447,38 @@ paths:
             type: object
       security:
       - BearerAuth: []
-      summary: Scan raw data for new fields
+      summary: Get async job
       tags:
-      - Introspection
+      - Jobs
   /api/mapping-rules:
     get:
-      description: Returns all mapping rules, optionally filtered by table
+      description: Returns V2 mapping rules, optionally filtered by source object
+        or source/shadow scope. Legacy table/source_table params are still accepted
+        as fallback.
       parameters:
-      - description: Filter by source table
+      - description: Filter by source object ID
         in: query
-        name: table
+        name: source_object_id
+        type: integer
+      - description: Filter by source database
+        in: query
+        name: source_database
+        type: string
+      - description: Filter by source object name
+        in: query
+        name: source_table
+        type: string
+      - description: Filter by shadow schema
+        in: query
+        name: shadow_schema
+        type: string
+      - description: Filter by shadow table
+        in: query
+        name: shadow_table
+        type: string
+      - description: Filter by status
+        in: query
+        name: status
         type: string
       produces:
       - application/json
@@ -415,14 +502,16 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates a new field mapping rule and publishes config reload
+      description: Creates a V2 mapping rule in cdc_system.mapping_rule_v2. Supports
+        source_object_id or source/shadow scope resolution; legacy source_table is
+        accepted as fallback.
       parameters:
       - description: Mapping rule details
         in: body
         name: body
         required: true
         schema:
-          $ref: '#/definitions/cdc-cms-service_internal_model.MappingRule'
+          $ref: '#/definitions/cdc-cms-service_internal_api_dto.MappingRuleCreateRequest'
       produces:
       - application/json
       responses:
@@ -433,6 +522,18 @@ paths:
             type: object
         "400":
           description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
           schema:
             additionalProperties:
               type: string
@@ -450,634 +551,21 @@ paths:
       - Mapping Rules
   /api/mapping-rules/{id}:
     patch:
-      consumes:
-      - application/json
-      description: Updates the status of a mapping rule (approve/reject)
-      parameters:
-      - description: Mapping Rule ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      - description: Status update
-        in: body
-        name: body
-        required: true
-        schema:
-          type: object
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
+      description: Updates the status of a V2 mapping rule.
+      responses: {}
       summary: Update mapping rule status
-      tags:
-      - Mapping Rules
-  /api/mapping-rules/{id}/backfill:
-    post:
-      description: Populates the target column with values from _raw_data for existing
-        rows where target column is NULL
-      parameters:
-      - description: Mapping Rule ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Backfill data for a mapping rule
       tags:
       - Mapping Rules
   /api/mapping-rules/reload:
     post:
       description: Publishes a NATS message to trigger workers to reload mapping rules
-        from DB
-      parameters:
-      - description: Specific table to reload
-        in: query
-        name: table
-        type: string
+        from DB.
       produces:
       - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
+      responses: {}
       summary: Reload mapping rules for workers
       tags:
       - Mapping Rules
-  /api/registry:
-    get:
-      description: Returns all registered CDC tables with pagination and filters
-      parameters:
-      - description: Filter by source database
-        in: query
-        name: source_db
-        type: string
-      - description: Filter by sync engine
-        enum:
-        - airbyte
-        - debezium
-        - both
-        in: query
-        name: sync_engine
-        type: string
-      - description: Filter by priority
-        enum:
-        - critical
-        - high
-        - normal
-        - low
-        in: query
-        name: priority
-        type: string
-      - description: Filter by active status
-        enum:
-        - "true"
-        - "false"
-        in: query
-        name: is_active
-        type: string
-      - default: 1
-        description: Page number
-        in: query
-        name: page
-        type: integer
-      - default: 20
-        description: Page size
-        in: query
-        name: page_size
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: List table registry
-      tags:
-      - Table Registry
-    post:
-      consumes:
-      - application/json
-      description: Registers a new table in the registry and auto-creates the CDC
-        table in PostgreSQL
-      parameters:
-      - description: Table registration details
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/cdc-cms-service_internal_model.TableRegistry'
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Register a new CDC table
-      tags:
-      - Table Registry
-  /api/registry/{id}:
-    patch:
-      consumes:
-      - application/json
-      description: Updates sync_engine, sync_interval, priority, or is_active for
-        a registered table
-      parameters:
-      - description: Registry entry ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      - description: Fields to update
-        in: body
-        name: body
-        required: true
-        schema:
-          type: object
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Update table registry entry
-      tags:
-      - Table Registry
-  /api/registry/{id}/discover:
-    post:
-      description: Scans database columns and populates cdc_mapping_rules for the
-        table
-      parameters:
-      - description: Registry entry ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Discover field mappings from database
-      tags:
-      - Table Registry
-  /api/registry/{id}/jobs:
-    get:
-      description: Returns the 10 most recent sync jobs for the connection associated
-        with this table
-      parameters:
-      - description: Registry entry ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/cdc-cms-service_pkgs_airbyte.JobStatus'
-            type: array
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Get recent Airbyte sync jobs
-      tags:
-      - Table Registry
-  /api/registry/{id}/refresh-catalog:
-    post:
-      description: Triggers Airbyte schema discovery to re-add missing streams back
-        to the connection catalog.
-      parameters:
-      - description: Registry entry ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "202":
-          description: Accepted
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Refresh Airbyte source schema catalog
-      tags:
-      - Table Registry
-  /api/registry/{id}/scan-fields:
-    post:
-      description: Uses Airbyte Discovery API to find new fields and register them
-        as 'pending' in mapping rules
-      parameters:
-      - description: Registry entry ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Scan source fields for a registered table
-      tags:
-      - Table Registry
-  /api/registry/{id}/standardize:
-    post:
-      description: Adds missing metadata columns (_raw_data, _source, etc.) to an
-        existing table
-      parameters:
-      - description: Registry entry ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Standardize table metadata columns
-      tags:
-      - Table Registry
-  /api/registry/{id}/status:
-    get:
-      description: Returns the current sync status from Airbyte for a registered table
-      parameters:
-      - description: Registry entry ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Get Airbyte sync status
-      tags:
-      - Table Registry
-  /api/registry/{id}/sync:
-    post:
-      description: Triggers a manual sync job in Airbyte for the connection associated
-        with this table
-      parameters:
-      - description: Registry entry ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Force Airbyte sync
-      tags:
-      - Table Registry
-  /api/registry/batch:
-    post:
-      consumes:
-      - application/json
-      description: Registers multiple tables at once and creates their CDC tables
-      parameters:
-      - description: Array of table registrations
-        in: body
-        name: body
-        required: true
-        schema:
-          items:
-            $ref: '#/definitions/cdc-cms-service_internal_model.TableRegistry'
-          type: array
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Bulk register tables
-      tags:
-      - Table Registry
-  /api/registry/scan-source:
-    post:
-      description: Discovers all streams in an Airbyte source and registers them in
-        CDC registry if not exists (with is_active=false)
-      parameters:
-      - description: Airbyte Source ID
-        in: query
-        name: source_id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Scan Airbyte source for new tables
-      tags:
-      - Table Registry
-  /api/registry/stats:
-    get:
-      description: 'Returns summary stats: total tables, by source_db, by sync_engine,
-        by priority'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/cdc-cms-service_internal_repository.RegistryStats'
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Get registry statistics
-      tags:
-      - Table Registry
   /api/schema-changes/{id}/approve:
     post:
       consumes:
@@ -1095,7 +583,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/cdc-cms-service_internal_service.ApproveRequest'
+          $ref: '#/definitions/cdc-cms-service_internal_infra_persistence.ApproveRequest'
       produces:
       - application/json
       responses:
@@ -1137,7 +625,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/cdc-cms-service_internal_service.RejectRequest'
+          $ref: '#/definitions/cdc-cms-service_internal_infra_persistence.RejectRequest'
       produces:
       - application/json
       responses:
@@ -1247,6 +735,730 @@ paths:
       summary: List pending schema changes
       tags:
       - Schema Changes
+  /api/v1/cms/sources/{id}/provisioning:
+    get:
+      parameters:
+      - description: source_object_registry.id
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cdc-cms-service_internal_infra_persistence.SourceProvisioningSnapshot'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Snapshot of provisioning state for one source
+      tags:
+      - Provisioning
+  /api/v1/masters:
+    get:
+      description: Returns V2 master bindings enriched with source and shadow metadata
+        from cdc_system.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List master bindings
+      tags:
+      - Masters
+  /api/v1/masters/{name}/swap:
+    post:
+      consumes:
+      - application/json
+      description: Kicks off an atomic master-table swap as a background job. Returns
+        202 + JobID; poll GET /api/jobs/:id for terminal status. Refuses with 409
+        if another swap for the same master is still in flight.
+      parameters:
+      - description: Master table name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Swap payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.SwapRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Swap physical master tables (async)
+      tags:
+      - Masters
+  /api/v1/shadow-bindings:
+    get:
+      description: Returns active and inactive shadow bindings from cdc_system.shadow_binding
+        enriched with source-object metadata and latest reconciliation context.
+      parameters:
+      - description: Filter by source database
+        in: query
+        name: source_db
+        type: string
+      - description: Filter by active status
+        enum:
+        - "true"
+        - "false"
+        in: query
+        name: is_active
+        type: string
+      - default: 1
+        description: Page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.shadowBindingsListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List V2 shadow bindings
+      tags:
+      - Source Objects
+  /api/v1/source-objects:
+    get:
+      description: Returns source objects from cdc_system.source_object_registry enriched
+        with active shadow binding, reconciliation status, and transitional registry
+        bridge metadata.
+      parameters:
+      - description: Filter by source database
+        in: query
+        name: source_db
+        type: string
+      - description: Filter by active status
+        enum:
+        - "true"
+        - "false"
+        in: query
+        name: is_active
+        type: string
+      - default: 1
+        description: Page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.sourceObjectsListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List V2 source objects
+      tags:
+      - Source Objects
+  /api/v1/source-objects/{id}:
+    patch:
+      consumes:
+      - application/json
+      description: 'Updates source-object metadata directly in cdc_system for rows
+        that no longer rely on the legacy registry bridge. Supported fields: is_active,
+        timestamp_field, notes.'
+      parameters:
+      - description: Source object ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a V2 source object directly
+      tags:
+      - Source Objects
+  /api/v1/source-objects/{id}/create-default-columns:
+    post:
+      consumes:
+      - application/json
+      description: Dispatches create-default-columns using source_object_id and the
+        active shadow binding. The worker receives schema-aware payload so post-create
+        state can be reflected back into V2 metadata.
+      parameters:
+      - description: Source object ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create default columns for a V2 source object
+      tags:
+      - Source Objects
+  /api/v1/source-objects/{id}/detect-timestamp-field:
+    post:
+      consumes:
+      - application/json
+      description: Dispatches timestamp-field auto-detection using source_object_id
+        and the active shadow binding instead of the legacy registry bridge. The worker
+        still consumes the existing NATS subject and resolves by target_table fallback.
+      parameters:
+      - description: Source object ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Re-detect timestamp field for a V2 source object
+      tags:
+      - Source Objects
+  /api/v1/source-objects/{id}/dispatch-status:
+    get:
+      description: Reads activity-log based dispatch status for direct V2 source-object
+        actions such as timestamp re-detection, using source_object_id to resolve
+        the current shadow target.
+      parameters:
+      - description: Source object ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Operation filter, e.g. detect-timestamp-field
+        in: query
+        name: subject
+        type: string
+      - description: RFC3339 timestamp lower bound
+        in: query
+        name: since
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get dispatch status for a V2 source-object action
+      tags:
+      - Source Objects
+  /api/v1/source-objects/{id}/scan-fields:
+    post:
+      consumes:
+      - application/json
+      description: Dispatches scan-fields using source_object_id and the active shadow
+        binding instead of the legacy registry bridge. Worker payload stays compatible
+        with the current Debezium-only scan path.
+      parameters:
+      - description: Source object ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Scan fields for a V2 source object
+      tags:
+      - Source Objects
+  /api/v1/source-objects/{id}/standardize:
+    post:
+      consumes:
+      - application/json
+      description: Dispatches standardize using source_object_id and the active shadow
+        binding instead of the legacy registry bridge. Worker payload remains compatible
+        because standardize only requires the resolved target table.
+      parameters:
+      - description: Source object ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Standardize a V2 source object
+      tags:
+      - Source Objects
+  /api/v1/source-objects/{id}/transform-status:
+    get:
+      description: Resolves the active shadow target for a source object and returns
+        transform progress without requiring the legacy registry bridge.
+      parameters:
+      - description: Source object ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get transform progress for a V2 source object
+      tags:
+      - Source Objects
+  /api/v1/source-objects/registry/{registry_id}:
+    get:
+      description: Returns a single source-object mapping context resolved from the
+        current registry bridge, enriched with V2 source/shadow metadata for the mapping
+        page.
+      parameters:
+      - description: Legacy registry bridge ID
+        in: path
+        name: registry_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.SourceObjectMappingContext'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get mapping context by legacy registry bridge
+      tags:
+      - Source Objects
+  /api/v1/source-objects/stats:
+    get:
+      description: Returns summary stats from cdc_system source objects enriched with
+        transitional priority and shadow-DDL creation state.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.SourceObjectStats'
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get V2 source-object statistics
+      tags:
+      - Source Objects
+  /api/worker-schedule:
+    get:
+      description: Returns operator-flow schedules with enriched source/shadow scope
+        from V2 metadata when available.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List worker schedules
+      tags:
+      - Operations
+    post:
+      consumes:
+      - application/json
+      description: Creates an operator-flow schedule override. Accepts legacy target_table
+        and can also resolve richer source/shadow scope against V2 metadata.
+      parameters:
+      - description: Schedule create payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.WorkerScheduleCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create worker schedule
+      tags:
+      - Operations
+  /api/worker-schedule/{id}:
+    patch:
+      consumes:
+      - application/json
+      description: Updates interval, enabled state, or notes for an existing operator-flow
+        schedule.
+      parameters:
+      - description: Schedule ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Schedule update payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.WorkerScheduleUpdateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update worker schedule
+      tags:
+      - Operations
   /health:
     get:
       description: Returns service health status

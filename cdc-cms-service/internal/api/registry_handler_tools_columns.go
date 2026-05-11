@@ -23,7 +23,6 @@ func (h *RegistryHandler) CreateDefaultColumns(c *fiber.Ctx) error {
 	cmd := commands.CreateDefaultColumnsCommand{
 		RegistryID:      entry.ID,
 		TargetTable:     entry.TargetTable,
-		ShadowSchema:    entry.ShadowSchema,
 		SourceTable:     entry.SourceTable,
 		PrimaryKeyField: entry.PrimaryKeyField,
 		PrimaryKeyType:  entry.PrimaryKeyType,

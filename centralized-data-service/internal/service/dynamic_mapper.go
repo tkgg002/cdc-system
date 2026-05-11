@@ -180,7 +180,11 @@ func convertType(val interface{}, dataType string) (interface{}, error) {
 	case strings.Contains(dt, "TIMESTAMP") || strings.Contains(dt, "DATE"):
 		return toTimestamp(val)
 	case strings.Contains(dt, "JSONB") || strings.Contains(dt, "JSON"):
-		return toJSON(val)
+		// Pass-through: SchemaAdapter.CoerceValue handles JSONB marshalling
+		// (map/slice → JSON, string → base64-decode + Mongo extended JSON
+		// normalisation). Returning []byte here would trigger Go's default
+		// `json.Marshal([]byte)` behaviour which base64-encodes the bytes.
+		return val, nil
 	default: // TEXT, VARCHAR, etc.
 		return fmt.Sprintf("%v", val), nil
 	}
@@ -274,10 +278,6 @@ func toTimestamp(val interface{}) (interface{}, error) {
 	default:
 		return val, nil
 	}
-}
-
-func toJSON(val interface{}) ([]byte, error) {
-	return json.Marshal(val)
 }
 
 // unwrapMongoTypes converts MongoDB extended JSON types to Go native types

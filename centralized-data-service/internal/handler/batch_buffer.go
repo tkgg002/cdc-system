@@ -154,9 +154,22 @@ func (bb *BatchBuffer) batchUpsert(records []*model.UpsertRecord) error {
 		return fmt.Errorf("schema not found for %s.%s", schemaName, tableName)
 	}
 
+	// Path B Hardened remap: shadow tables emitted by ShadowAutomator carry
+	// both `id BIGINT` (sonyflake-generated, internal stable) and
+	// `source_id VARCHAR(200) UNIQUE` (external anchor for source PK).
+	// event_handler converts Mongo `_id` → `id`; when shadow exposes the
+	// `source_id` anchor, route the source PK there instead so the BIGINT
+	// `id` slot stays free for the BEFORE INSERT sonyflake trigger.
+	effectivePK := first.PrimaryKeyField
+	if effectivePK == "id" {
+		if _, hasSourceID := schema.Columns["source_id"]; hasSourceID {
+			effectivePK = "source_id"
+		}
+	}
+
 	for _, r := range records {
 		query, values := schemaAdapter.BuildUpsertSQLInSchema(
-			schema, bb.recordSchema(r), r.TableName, r.PrimaryKeyField,
+			schema, bb.recordSchema(r), r.TableName, effectivePK,
 			r.PrimaryKeyValue, r.MappedData,
 			r.RawData, r.Source, r.Hash, r.SourceTsMs,
 		)
