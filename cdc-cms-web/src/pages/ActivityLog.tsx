@@ -171,11 +171,6 @@ export default function ActivityLog() {
   return (
     <div>
       <Title level={4} style={{ marginBottom: 16 }}>CDC Worker Activity Log</Title>
-      <Card size="small" style={{ marginBottom: 16 }}>
-        <Text type="secondary">
-          Surface này đã được rút về Debezium-only. Những operation legacy kiểu bridge hoặc Airbyte không còn được đưa vào filter chính của UI nữa.
-        </Text>
-      </Card>
 
       {/* Stats Cards */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>

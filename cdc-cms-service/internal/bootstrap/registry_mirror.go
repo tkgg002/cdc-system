@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"cdc-cms-service/internal/model"
+	"cdc-cms-service/internal/naming"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -131,7 +132,7 @@ func SyncLegacyToV2Bootstrap(ctx context.Context, db *gorm.DB, logger *zap.Logge
 
 		// 2.4 Upsert Shadow Binding
 		bindingCode := "sb_" + slugify(engine) + "_" + slugify(reg.SourceDB) + "_" + slugify(reg.TargetTable)
-		shadowSchema := "shadow_" + slugify(reg.SourceDB)
+		shadowSchema := naming.ShadowSchemaName(slugify(reg.SourceDB))
 		fqn := shadowSchema + "." + reg.TargetTable
 		ddlStatus := "pending"
 		if reg.IsTableCreated {

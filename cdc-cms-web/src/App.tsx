@@ -78,11 +78,11 @@ function AppLayout() {
       icon: <CompassOutlined />,
       label: 'Setup',
       children: [
-        {
-          key: '/source-to-master',
-          icon: <CompassOutlined />,
-          label: <Link to="/source-to-master">Source → Master Wizard</Link>,
-        },
+        // {
+        //   key: '/source-to-master',
+        //   icon: <CompassOutlined />,
+        //   label: <Link to="/source-to-master">Source → Master Wizard</Link>,
+        // },
         {
           key: '/sources',
           icon: <SettingOutlined />,

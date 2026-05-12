@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"cdc-cms-service/internal/model"
+	"cdc-cms-service/internal/naming"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -326,7 +327,7 @@ func normalizeSourceEngine(sourceType string) string {
 }
 
 func normalizeShadowSchema(sourceDB string) string {
-	return "shadow_" + slugifyIdentifier(sourceDB)
+	return naming.ShadowSchemaName(slugifyIdentifier(sourceDB))
 }
 
 func buildSourceObjectCode(engine, sourceDB, sourceTable string) string {

@@ -8,6 +8,7 @@ import (
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
+	"cdc-cms-service/internal/naming"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
@@ -47,8 +48,13 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 		dispatchIdem += ":cdc"
 	}
 	dispatchCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), dispatchIdem)
+	// Pass ShadowSchema so worker writes ALTER COLUMN to the same
+	// shadow_<sourceDB>.<table> that ShadowAutomator just created.
+	// Without this, worker falls back to "public" and creates a duplicate
+	// public.<table> in cdc_shadow that nothing actually uses.
 	createCmd := commands.CreateDefaultColumnsCommand{
 		RegistryID:      created.ID,
+		ShadowSchema:    naming.ShadowSchemaName(normalizeShadowIdent(created.SourceDB)),
 		TargetTable:     created.TargetTable,
 		SourceTable:     created.SourceTable,
 		PrimaryKeyField: created.PrimaryKeyField,

@@ -109,9 +109,13 @@ func (d *DebeziumSignalClient) TriggerIncrementalSnapshot(
 		}
 	}
 
-	doc := bson.M{
-		"type": "execute-snapshot",
-		"data": data,
+	// Use bson.D (ordered) instead of bson.M (Go map → random field order).
+	// Debezium MongoDB SignalProcessor mis-parses signals when `data` is
+	// serialized before `type` in the BSON wire payload, dropping them with
+	// `WARN Signal '<id>' has been received but the type '<json>' is not recognized`.
+	doc := bson.D{
+		{Key: "type", Value: "execute-snapshot"},
+		{Key: "data", Value: data},
 	}
 
 	signalDB := database

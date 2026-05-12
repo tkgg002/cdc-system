@@ -7,6 +7,7 @@ import (
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/infra/persistence"
 	"cdc-cms-service/internal/middleware"
+	"cdc-cms-service/internal/naming"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -22,6 +23,7 @@ func (h *RegistryHandler) CreateDefaultColumns(c *fiber.Ctx) error {
 	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))
 	cmd := commands.CreateDefaultColumnsCommand{
 		RegistryID:      entry.ID,
+		ShadowSchema:    naming.ShadowSchemaName(normalizeShadowIdent(entry.SourceDB)),
 		TargetTable:     entry.TargetTable,
 		SourceTable:     entry.SourceTable,
 		PrimaryKeyField: entry.PrimaryKeyField,

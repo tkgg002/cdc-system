@@ -50,6 +50,12 @@ export interface UseAsyncDispatchOptions {
 
 // ---------- Helpers ----------
 
+// Module-level constant so the default array keeps a stable identity across
+// renders. Inline default values would be re-allocated each call and become
+// an unstable useEffect dependency below, causing an infinite render loop
+// once the dispatch reaches a terminal state.
+const DEFAULT_INVALIDATE_KEYS: readonly string[][] = [['registry'], ['mapping-rules']];
+
 function newIdempotencyKey(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
@@ -67,7 +73,7 @@ export function useAsyncDispatch(opts: UseAsyncDispatchOptions) {
     statusParams,
     pollInterval = 3_000,
     maxPollDuration = 5 * 60_000,
-    invalidateKeys = [['registry'], ['mapping-rules']],
+    invalidateKeys = DEFAULT_INVALIDATE_KEYS,
   } = opts;
 
   const [state, setState] = useState<DispatchState>({ status: 'idle' });
@@ -151,28 +157,39 @@ export function useAsyncDispatch(opts: UseAsyncDispatchOptions) {
     retry: 1,
   });
 
-  // Drive state machine off polled entries.
+  // Drive state machine off polled entries. Bail out idempotently when the
+  // dispatch has already reached the same terminal state so a re-render of
+  // this effect (eg. an unstable dep upstream) cannot recurse infinitely.
   useEffect(() => {
     const entries = statusQuery.data?.entries ?? [];
     if (!entries.length) return;
     const latest = entries[0];
     if (latest.status === 'success') {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      setState((s) => ({ ...s, status: 'success', details: latest.details }));
-      for (const key of invalidateKeys) {
-        queryClient.invalidateQueries({ queryKey: key });
-      }
+      setState((s) =>
+        s.status === 'success' ? s : { ...s, status: 'success', details: latest.details },
+      );
     } else if (latest.status === 'error') {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      setState((s) => ({
-        ...s,
-        status: 'error',
-        error: latest.error_message ?? 'Remote handler reported error',
-      }));
+      setState((s) =>
+        s.status === 'error'
+          ? s
+          : { ...s, status: 'error', error: latest.error_message ?? 'Remote handler reported error' },
+      );
     } else if (latest.status === 'running') {
       setState((s) => (s.status === 'running' ? s : { ...s, status: 'running' }));
     }
-  }, [statusQuery.data, queryClient, invalidateKeys]);
+  }, [statusQuery.data]);
+
+  // Run side effects once per terminal-state transition.
+  useEffect(() => {
+    if (state.status === 'success' || state.status === 'error' || state.status === 'timeout') {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    }
+    if (state.status === 'success') {
+      for (const key of invalidateKeys) {
+        queryClient.invalidateQueries({ queryKey: key });
+      }
+    }
+  }, [state.status, queryClient, invalidateKeys]);
 
   // Clean up timer on unmount.
   useEffect(() => {

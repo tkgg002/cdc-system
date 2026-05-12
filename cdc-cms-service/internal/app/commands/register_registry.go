@@ -12,6 +12,7 @@ import (
 
 	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/model"
+	"cdc-cms-service/internal/naming"
 	"cdc-cms-service/pkgs/natsconn"
 )
 
@@ -101,7 +102,7 @@ func (h *RegisterRegistryHandler) Handle(ctx context.Context, c ports.Command) (
 	}
 
 	if h.automator != nil {
-		shadowSchema := "shadow_" + normalizeShadowIdent(entry.SourceDB)
+		shadowSchema := naming.ShadowSchemaName(normalizeShadowIdent(entry.SourceDB))
 		if err := h.automator.EnsureShadowTable(ctx, &entry, shadowSchema); err != nil {
 			if delErr := h.db.WithContext(ctx).Delete(&model.TableRegistry{}, entry.ID).Error; delErr != nil {
 				h.logger.Error("registry rollback failed after shadow err",

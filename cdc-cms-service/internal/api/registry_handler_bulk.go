@@ -8,6 +8,7 @@ import (
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/middleware"
 	"cdc-cms-service/internal/model"
+	"cdc-cms-service/internal/naming"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
@@ -48,6 +49,7 @@ func (h *RegistryHandler) BulkRegister(c *fiber.Ctx) error {
 		dispatchCtx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), entryIdem)
 		cmd := commands.CreateDefaultColumnsCommand{
 			RegistryID:      e.ID,
+			ShadowSchema:    naming.ShadowSchemaName(normalizeShadowIdent(e.SourceDB)),
 			TargetTable:     e.TargetTable,
 			SourceTable:     e.SourceTable,
 			PrimaryKeyField: e.PrimaryKeyField,
