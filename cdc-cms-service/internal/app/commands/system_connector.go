@@ -31,6 +31,7 @@ type KafkaConnectorWriter interface {
 type SourceFingerprintRepo interface {
 	Upsert(ctx context.Context, src *model.Source) error
 	MarkDeleted(ctx context.Context, name string) error
+	FullCleanup(ctx context.Context, name string) error
 }
 
 // ── Create ─────────────────────────────────────────────────────────────
@@ -126,8 +127,8 @@ func (h *DeleteSystemConnectorHandler) Handle(ctx context.Context, c ports.Comma
 		return nil, err
 	}
 	if h.sourceRepo != nil {
-		if derr := h.sourceRepo.MarkDeleted(ctx, cmd.Name); derr != nil && h.logger != nil {
-			h.logger.Warn("source soft-delete failed",
+		if derr := h.sourceRepo.FullCleanup(ctx, cmd.Name); derr != nil && h.logger != nil {
+			h.logger.Warn("source full cleanup failed",
 				zap.String("connector", cmd.Name), zap.Error(derr))
 		}
 	}

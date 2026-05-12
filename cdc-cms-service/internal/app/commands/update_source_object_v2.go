@@ -21,6 +21,8 @@ type UpdateSourceObjectV2Command struct {
 	IsActive       *bool   `json:"is_active,omitempty"`
 	Notes          *string `json:"notes,omitempty"`
 	TimestampField *string `json:"timestamp_field,omitempty"`
+	PrimaryKeyField *string `json:"primary_key_field,omitempty"`
+	PrimaryKeyType  *string `json:"primary_key_type,omitempty"`
 	UpdatedBy      string  `json:"updated_by,omitempty"`
 }
 
@@ -36,7 +38,7 @@ func (c UpdateSourceObjectV2Command) Validate() error {
 	if c.ID <= 0 {
 		return errors.New("invalid_source_object_id")
 	}
-	if c.IsActive == nil && c.Notes == nil && c.TimestampField == nil {
+	if c.IsActive == nil && c.Notes == nil && c.TimestampField == nil && c.PrimaryKeyField == nil && c.PrimaryKeyType == nil {
 		return ErrSourceObjectNoFields
 	}
 	if c.TimestampField != nil && !validTimestampField(*c.TimestampField) {
@@ -95,6 +97,12 @@ func (h *UpdateSourceObjectV2Handler) Handle(ctx context.Context, c ports.Comman
 	}
 	if cmd.TimestampField != nil {
 		updates["timestamp_field"] = *cmd.TimestampField
+	}
+	if cmd.PrimaryKeyField != nil {
+		updates["primary_key_field"] = *cmd.PrimaryKeyField
+	}
+	if cmd.PrimaryKeyType != nil {
+		updates["primary_key_type"] = *cmd.PrimaryKeyType
 	}
 	updates["updated_at"] = gorm.Expr("NOW()")
 

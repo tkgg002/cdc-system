@@ -86,6 +86,8 @@ func (h *SourceObjectActionsHandler) UpdateV2(c *fiber.Ctx) error {
 		IsActive       *bool   `json:"is_active"`
 		Notes          *string `json:"notes"`
 		TimestampField *string `json:"timestamp_field"`
+		PrimaryKeyField *string `json:"primary_key_field"`
+		PrimaryKeyType  *string `json:"primary_key_type"`
 		Priority       *string `json:"priority"`
 		SyncInterval   *string `json:"sync_interval"`
 	}
@@ -98,6 +100,9 @@ func (h *SourceObjectActionsHandler) UpdateV2(c *fiber.Ctx) error {
 	if h.bus == nil {
 		return c.Status(503).JSON(fiber.Map{"error": "command bus not ready"})
 	}
+	if req.PrimaryKeyField != nil && *req.PrimaryKeyField == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "primary_key_field cannot be empty"})
+	}
 
 	user := middleware.GetUsername(c)
 	cmd := commands.UpdateSourceObjectV2Command{
@@ -105,6 +110,8 @@ func (h *SourceObjectActionsHandler) UpdateV2(c *fiber.Ctx) error {
 		IsActive:       req.IsActive,
 		Notes:          req.Notes,
 		TimestampField: req.TimestampField,
+		PrimaryKeyField: req.PrimaryKeyField,
+		PrimaryKeyType:  req.PrimaryKeyType,
 		UpdatedBy:      user,
 	}
 	ctx := messaging.WithMetadata(c.UserContext(), user, c.Get("X-Correlation-Id"), c.Get("Idempotency-Key"))

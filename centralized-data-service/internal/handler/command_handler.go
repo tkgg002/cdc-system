@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -314,6 +315,7 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 			// GetActiveRulesBySourceTable already filters for IsActive=true and Status="approved"
 			alterSQL := fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`,
 				quoteCommandIdent(schemaName), quoteCommandIdent(payload.TargetTable), quoteCommandIdent(rule.TargetColumn), rule.DataType)
+			h.logger.Info("executing column sync", zap.String("sql", alterSQL))
 			if err := h.shadowDB.Exec(alterSQL).Error; err != nil {
 				h.logger.Warn("failed to add column", zap.String("column", rule.TargetColumn), zap.Error(err))
 				continue
@@ -1258,19 +1260,38 @@ func inferSQLTypeFromLegacyCatalogProp(prop interface{}) string {
 
 // scanFieldsDebezium samples _raw_data JSONB (last 100 rows) to infer
 // new fields for Debezium-backed tables.
-func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, targetTable, sourceTable string) (int, int, error) {
+func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, registryID uint, targetTable, sourceTable string) (int, int, error) {
+	v2ObjectID := int64(registryID)
+	// Heuristic: If registryID > 0 but no V2 object found, try to resolve via legacy locator
+	if h.mappingV2Repo != nil && v2ObjectID > 0 {
+		_, err := h.mappingV2Repo.ListBySourceObject(ctx, v2ObjectID)
+		if err != nil {
+			// Try lookup via legacy locator
+			var soID int64
+			err := h.db.Raw(`SELECT id FROM cdc_system.source_object_registry WHERE source_locator_json->>'legacy_registry_id' = ?`, strconv.FormatUint(uint64(registryID), 10)).Scan(&soID).Error
+			if err == nil && soID > 0 {
+				v2ObjectID = soID
+			}
+		}
+	}
+
 	schemaName := h.resolveTargetSchema(targetTable)
 	if !h.tableExists(targetTable) || !h.hasColumn(targetTable, "_raw_data") {
-		return 0, 0, fmt.Errorf("table %s has no _raw_data column", targetTable)
+		return 0, 0, fmt.Errorf("table %s has no _raw_data column in shadow db", targetTable)
 	}
 	type sampleRow struct {
 		Raw json.RawMessage `gorm:"column:_raw_data"`
 	}
 	var rows []sampleRow
 	sql := fmt.Sprintf(`SELECT _raw_data FROM %s WHERE _raw_data IS NOT NULL AND _raw_data != '{}'::jsonb ORDER BY _synced_at DESC LIMIT 100`, quoteCommandQualifiedTable(schemaName, targetTable))
-	if err := h.db.WithContext(ctx).Raw(sql).Scan(&rows).Error; err != nil {
+	if err := h.shadowDB.WithContext(ctx).Raw(sql).Scan(&rows).Error; err != nil {
 		return 0, 0, fmt.Errorf("sample raw_data: %w", err)
 	}
+
+	if len(rows) == 0 {
+		return 0, 0, fmt.Errorf("shadow table %s is empty; wait for Debezium to sync some data before scanning fields", targetTable)
+	}
+
 	// Merge first-seen types so we get one vote per field.
 	typeByField := make(map[string]string)
 	for _, r := range rows {
@@ -1289,6 +1310,14 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, targetTable, so
 	seen := make(map[string]bool, len(existing))
 	for _, r := range existing {
 		seen[r.SourceField] = true
+	}
+
+	// Phase 2 v2 — also check mapping_rule_v2
+	if h.mappingV2Repo != nil && v2ObjectID > 0 {
+		existingV2, _ := h.mappingV2Repo.ListBySourceObject(ctx, v2ObjectID)
+		for _, r := range existingV2 {
+			seen[r.SourceField] = true
+		}
 	}
 	sysFields := systemFieldSet()
 	added, total := 0, len(typeByField)
@@ -1315,6 +1344,23 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, targetTable, so
 			h.logger.Warn("scan-fields debezium: create rule failed", zap.String("field", field), zap.Error(err))
 			continue
 		}
+
+		// Phase 2 v2 — also write to mapping_rule_v2
+		if h.mappingV2Repo != nil && v2ObjectID > 0 {
+			v2Rule := &model.MappingRuleV2{
+				SourceObjectID: v2ObjectID,
+				SourceField:    field,
+				TargetColumn:   field,
+				DataType:       dtype,
+				SourceFormat:   "raw",
+				Status:         status,
+				IsActive:       true,
+			}
+			if err := h.mappingV2Repo.Create(ctx, v2Rule); err != nil {
+				h.logger.Warn("scan-fields debezium: create v2 rule failed", zap.String("field", field), zap.Error(err))
+			}
+		}
+
 		added++
 	}
 	return added, total, nil
@@ -1349,7 +1395,7 @@ func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 	var sourceUsed string = "debezium"
 	var err error
 	_ = engine
-	added, total, err = h.scanFieldsDebezium(ctx, payload.TargetTable, payload.SourceTable)
+	added, total, err = h.scanFieldsDebezium(ctx, payload.RegistryID, payload.TargetTable, payload.SourceTable)
 
 	if err != nil {
 		h.publishResultWithSubject(msg, "cdc.result.scan-fields", CommandResult{
@@ -1912,7 +1958,8 @@ func normalizeMappingRuleDataType(dt string) string {
 }
 
 func (h *CommandHandler) resolveTargetSchema(targetTable string) string {
-	if route := h.resolveTargetRoute(targetTable); route != nil && route.ShadowBinding != nil {
+	route := h.resolveTargetRoute(targetTable)
+	if route != nil && route.ShadowBinding != nil {
 		if v := strings.TrimSpace(route.ShadowBinding.ShadowSchema); v != "" {
 			return v
 		}

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Table, Tag, Select, Switch, Button, Space, Modal, Form, Input, message, Upload, Badge, Collapse, Typography, Progress, Tooltip, Tabs } from 'antd';
-import { PlusOutlined, UploadOutlined, SyncOutlined, DatabaseOutlined, SearchOutlined, ToolOutlined, ThunderboltOutlined, RocketOutlined } from '@ant-design/icons';
+import { PlusOutlined, UploadOutlined, SyncOutlined, DatabaseOutlined, SearchOutlined, ToolOutlined, ThunderboltOutlined, RocketOutlined, EditOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { cmsApi } from '../services/api';
@@ -275,9 +275,12 @@ export default function TableRegistry() {
   const [modeLoadingId, setModeLoadingId] = useState<number | null>(null);
   const setModeMutation = useProvisioningMode();
   const [registerVisible, setRegisterVisible] = useState(false);
+  const [editVisible, setEditVisible] = useState(false);
+  const [editingRecord, setEditingRecord] = useState<TRegistry | null>(null);
   const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
   const [activeLoadingId, setActiveLoadingId] = useState<number | null>(null);
   const [form] = Form.useForm();
+  const [editForm] = Form.useForm();
 
   const [sources, setSources] = useState<SourceRow[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
@@ -445,6 +448,30 @@ export default function TableRegistry() {
     } catch (err) {
       const e = err as { response?: { data?: { error?: string } } };
       message.error(e.response?.data?.error || 'Register failed');
+    }
+  };
+
+  const openEdit = (e: React.MouseEvent, record: TRegistry) => {
+    e.stopPropagation();
+    setEditingRecord(record);
+    editForm.setFieldsValue({
+      is_active: record.is_active,
+      notes: record.notes,
+      timestamp_field: record.timestamp_field,
+      primary_key_field: record.primary_key_field,
+      primary_key_type: record.primary_key_type,
+    });
+    setEditVisible(true);
+  };
+
+  const handleEdit = async (values: Record<string, unknown>) => {
+    if (!editingRecord) return;
+    try {
+      await updateEntry(editingRecord, values);
+      setEditVisible(false);
+      setEditingRecord(null);
+    } catch {
+      // updateEntry already handles message.error
     }
   };
 
@@ -678,6 +705,7 @@ export default function TableRegistry() {
                 loading={actionLoadingId === record.id}
                 onClick={(e) => handleSnapshot(e, record)}>Snapshot Now</Button>
             </Tooltip>
+            <Button size="small" icon={<EditOutlined />} onClick={(e) => openEdit(e, record)}>Sửa</Button>
             <Tooltip title="Đi tới Master Registry để tạo / chạy Transmute">
                       <Button size="small" icon={<RocketOutlined />}
                         onClick={(e) => {
@@ -883,6 +911,41 @@ export default function TableRegistry() {
             initialValue="updated_at"
           >
             <Input placeholder="updated_at" />
+          </Form.Item>
+        </Form>
+      </Modal>
+      
+      {/* Edit Modal */}
+      <Modal 
+        title={`Chỉnh sửa Source Object: ${editingRecord?.source_table || ''}`} 
+        open={editVisible} 
+        onOk={() => editForm.submit()}
+        onCancel={() => { setEditVisible(false); setEditingRecord(null); }} 
+        width={500}
+      >
+        <Form form={editForm} layout="vertical" onFinish={handleEdit}>
+          <Form.Item name="is_active" label="Trạng thái" valuePropName="checked">
+            <Switch checkedChildren="Active" unCheckedChildren="Inactive" />
+          </Form.Item>
+          <Form.Item 
+            name="primary_key_field" 
+            label="Primary Key Field" 
+            rules={[{ required: true, message: 'PK field không được để trống' }]}
+          >
+            <Input />
+          </Form.Item>
+          <Form.Item name="primary_key_type" label="Primary Key Type">
+            <Input placeholder="e.g. VARCHAR(24), BIGINT" />
+          </Form.Item>
+          <Form.Item 
+            name="timestamp_field" 
+            label="Timestamp Field (Recon)" 
+            tooltip="Field dùng để filter window khi reconciliation (mặc định updated_at)"
+          >
+            <Input placeholder="updated_at" />
+          </Form.Item>
+          <Form.Item name="notes" label="Ghi chú">
+            <Input.TextArea rows={3} placeholder="Ghi chú về table này..." />
           </Form.Item>
         </Form>
       </Modal>

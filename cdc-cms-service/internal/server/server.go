@@ -9,6 +9,7 @@ import (
 	"cdc-cms-service/internal/api"
 	"cdc-cms-service/internal/app/commands"
 	"cdc-cms-service/internal/app/queries"
+	"cdc-cms-service/internal/bootstrap"
 	infrahttp "cdc-cms-service/internal/infra/http"
 	"cdc-cms-service/internal/infra/messaging"
 	"cdc-cms-service/internal/infra/observability"
@@ -82,6 +83,22 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 			zap.String("database", cfg.ShadowDB.Database))
 	} else {
 		logger.Warn("shadowDb not configured — ShadowAutomator falls back to control plane (Path A); shadow tables will be orphaned vs worker writes (Path B)")
+	}
+
+	// V2 control plane needs an active shadow connection row so the
+	// post-Register sync can resolve shadow_connection_id. Migration 035
+	// used to seed this for dev but was disabled 2026-05-11 for prod
+	// safety — fill the gap at runtime from the same config that drives
+	// the shadowDB pool above, so a green migrate.Run leaves the V2
+	// registry usable end-to-end.
+	if err := bootstrap.EnsureDefaultShadowConnection(context.Background(), db, cfg.ShadowDB, logger); err != nil {
+		return nil, fmt.Errorf("seed shadow connection: %w", err)
+	}
+
+	// Mirror existing legacy metadata (sources, table registries, mapping rules)
+	// to the V2 registry tables to enable V2 listing and actions.
+	if err := bootstrap.SyncLegacyToV2Bootstrap(context.Background(), db, logger); err != nil {
+		logger.Warn("bootstrap legacy sync failed", zap.Error(err))
 	}
 
 	// Schema managed via embedded raw-SQL migrations applied above in
@@ -234,7 +251,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	sourceObjectsHandler := api.NewSourceObjectsHandler(db, logger, listSourceObjectsH, getSourceMappingContextH)
 	sourceObjectActionsHandler := api.NewSourceObjectActionsHandler(bridgeStatusReader, cmdBus, activityLogger, logger)
 	systemConnectorsHandler := api.NewSystemConnectorsHandler(kafkaConnectClient, sourceRepo, cmdBus, logger, listConnectorsH, getConnectorH, listConnectorPluginsH)
-	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH, db)
+	sourcesHandler := api.NewSourcesHandler(logger, listSourcesH, getSourceH, sourceRepo)
 	wizardHandler := api.NewWizardHandler(wizardRepo, logger, getWizardSessionH, getWizardProgressH, cmdBus)
 	masterRegistryHandler := api.NewMasterRegistryHandler(db, natsClient, logger, listMastersH, cmdBus)
 	schemaProposalHandler := api.NewSchemaProposalHandler(db, cmdBus, logger)
@@ -303,7 +320,7 @@ func New(cfg *config.AppConfig, logger *zap.Logger) (*Server, error) {
 	cmdBus.RegisterSync("registry.update", commands.NewUpdateRegistryHandler(db, natsClient, logger))
 	cmdBus.RegisterSync("schedule.create", commands.NewCreateTransmuteScheduleHandler(db))
 	cmdBus.RegisterSync("schedule.toggle", commands.NewToggleTransmuteScheduleHandler(db))
-	cmdBus.RegisterSync("registry.register", commands.NewRegisterRegistryHandler(db, shadowAutomator, natsClient, logger))
+	cmdBus.RegisterSync("registry.register", commands.NewRegisterRegistryHandler(db, shadowAutomator, sourceObjectV2Sync, natsClient, logger))
 	cmdBus.RegisterSync("registry.bulk-register", commands.NewBulkRegisterRegistryHandler(db, natsClient, logger))
 	cmdBus.RegisterSync("source.v2-sync", commands.NewV2SyncHandler(sourceObjectV2Sync))
 	cmdBus.RegisterSync("master.toggle-active", commands.NewToggleMasterActiveHandler(db))

@@ -1,0 +1,122 @@
+2026/05/12 01:54:37 config path: ./config/config-local.yml
+{"level":"info","ts":1778525677.8316212,"caller":"server/main.go:30","msg":"starting Auth Service","service":"cdc-auth-service","port":":8081"}
+{"level":"info","ts":1778525677.844339,"caller":"server/server.go:32","msg":"PostgreSQL connected"}
+{"level":"info","ts":1778525677.8460102,"caller":"server/server.go:61","msg":"Auth Service started","port":":8081"}
+01:56:35 | 409 |   20.308916ms | 127.0.0.1 | POST | /api/auth/register | -
+06:34:32 | 204 |         988µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+
+2026/05/12 06:34:32 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-auth-service/internal/repository/user_repo.go:21 [35;1mrecord not found
+[0m[33m[50.654ms] [34;1m[rows:0][0m SELECT * FROM "cdc_auth_service"."auth_users" WHERE username = 'adminpassword' AND is_active = true ORDER BY "auth_users"."id" LIMIT 1
+&{0      false 0001-01-01 00:00:00 +0000 UTC 0001-01-01 00:00:00 +0000 UTC}
+06:34:32 | 401 |    58.11925ms | 127.0.0.1 | POST | /api/auth/login | -
+06:34:42 | 204 |      40.709µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+
+2026/05/12 06:34:42 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-auth-service/internal/repository/user_repo.go:21 [35;1mrecord not found
+[0m[33m[3.711ms] [34;1m[rows:0][0m SELECT * FROM "cdc_auth_service"."auth_users" WHERE username = 'adminadminpassword' AND is_active = true ORDER BY "auth_users"."id" LIMIT 1
+&{0      false 0001-01-01 00:00:00 +0000 UTC 0001-01-01 00:00:00 +0000 UTC}
+06:34:42 | 401 |    4.087125ms | 127.0.0.1 | POST | /api/auth/login | -
+06:34:50 | 204 |        49.5µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:34:50 | 401 |   78.590916ms | 127.0.0.1 | POST | /api/auth/login | -
+06:35:10 | 204 |      36.875µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:35:10 | 401 |   71.629833ms | 127.0.0.1 | POST | /api/auth/login | -
+06:35:23 | 204 |      20.959µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:35:23 | 401 |   70.352375ms | 127.0.0.1 | POST | /api/auth/login | -
+06:35:53 | 204 |      32.417µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+
+2026/05/12 06:35:53 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-auth-service/internal/repository/user_repo.go:21 [35;1mrecord not found
+[0m[33m[19.034ms] [34;1m[rows:0][0m SELECT * FROM "cdc_auth_service"."auth_users" WHERE username = 'adminadmin' AND is_active = true ORDER BY "auth_users"."id" LIMIT 1
+&{0      false 0001-01-01 00:00:00 +0000 UTC 0001-01-01 00:00:00 +0000 UTC}
+06:35:53 | 401 |   19.314167ms | 127.0.0.1 | POST | /api/auth/login | -
+06:36:15 | 204 |      48.458µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:36:15 | 401 |   67.033709ms | 127.0.0.1 | POST | /api/auth/login | -
+06:36:28 | 204 |      19.792µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:36:28 | 401 |   65.977208ms | 127.0.0.1 | POST | /api/auth/login | -
+06:36:41 | 204 |      44.334µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+
+2026/05/12 06:36:41 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-auth-service/internal/repository/user_repo.go:21 [35;1mrecord not found
+[0m[33m[9.309ms] [34;1m[rows:0][0m SELECT * FROM "cdc_auth_service"."auth_users" WHERE username = 'admin@example.comadmin' AND is_active = true ORDER BY "auth_users"."id" LIMIT 1
+&{0      false 0001-01-01 00:00:00 +0000 UTC 0001-01-01 00:00:00 +0000 UTC}
+06:36:41 | 401 |    9.672458ms | 127.0.0.1 | POST | /api/auth/login | -
+06:36:50 | 204 |      24.125µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:36:50 | 401 |   64.452667ms | 127.0.0.1 | POST | /api/auth/login | -
+06:37:06 | 204 |      81.291µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:37:06 | 401 |   69.990292ms | 127.0.0.1 | POST | /api/auth/login | -
+06:37:18 | 204 |      80.916µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:37:18 | 401 |    80.01425ms | 127.0.0.1 | POST | /api/auth/login | -
+06:37:52 | 204 |       36.25µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:37:52 | 401 |   65.998542ms | 127.0.0.1 | POST | /api/auth/login | -
+06:38:31 | 204 |      41.791µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:38:31 | 401 |   70.849125ms | 127.0.0.1 | POST | /api/auth/login | -
+06:38:49 | 204 |      28.834µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:38:49 | 401 |   69.441958ms | 127.0.0.1 | POST | /api/auth/login | -
+06:39:00 | 204 |        63.5µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:39:00 | 401 |   68.713417ms | 127.0.0.1 | POST | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:39:02 | 401 |   64.201791ms | 127.0.0.1 | POST | /api/auth/login | -
+06:39:19 | 204 |      34.041µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:39:19 | 401 |  190.097709ms | 127.0.0.1 | POST | /api/auth/login | -
+06:40:33 | 204 |       6.167µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:40:33 | 401 |   99.966834ms | 127.0.0.1 | POST | /api/auth/login | -
+06:40:43 | 204 |      35.041µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+
+2026/05/12 06:40:44 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-auth-service/internal/repository/user_repo.go:21 [35;1mrecord not found
+[0m[33m[146.455ms] [34;1m[rows:0][0m SELECT * FROM "cdc_auth_service"."auth_users" WHERE username = 'admin@example.com' AND is_active = true ORDER BY "auth_users"."id" LIMIT 1
+&{0      false 0001-01-01 00:00:00 +0000 UTC 0001-01-01 00:00:00 +0000 UTC}
+06:40:43 | 401 |   175.33625ms | 127.0.0.1 | POST | /api/auth/login | -
+06:40:59 | 204 |      24.417µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:40:59 | 401 |   74.278125ms | 127.0.0.1 | POST | /api/auth/login | -
+06:41:18 | 204 |      17.583µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+
+2026/05/12 06:41:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-auth-service/internal/repository/user_repo.go:21 [35;1mrecord not found
+[0m[33m[3.845ms] [34;1m[rows:0][0m SELECT * FROM "cdc_auth_service"."auth_users" WHERE username = 'root' AND is_active = true ORDER BY "auth_users"."id" LIMIT 1
+&{0      false 0001-01-01 00:00:00 +0000 UTC 0001-01-01 00:00:00 +0000 UTC}
+06:41:18 | 401 |    4.142292ms | 127.0.0.1 | POST | /api/auth/login | -
+06:41:28 | 204 |      28.167µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:41:28 | 401 |    90.85025ms | 127.0.0.1 | POST | /api/auth/login | -
+06:43:51 | 204 |      25.833µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+
+2026/05/12 06:43:51 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-auth-service/internal/repository/user_repo.go:21 [35;1mrecord not found
+[0m[33m[3.891ms] [34;1m[rows:0][0m SELECT * FROM "cdc_auth_service"."auth_users" WHERE username = 'adminadmin' AND is_active = true ORDER BY "auth_users"."id" LIMIT 1
+&{0      false 0001-01-01 00:00:00 +0000 UTC 0001-01-01 00:00:00 +0000 UTC}
+06:43:51 | 401 |    4.142334ms | 127.0.0.1 | POST | /api/auth/login | -
+06:44:06 | 204 |      77.833µs | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+06:44:06 | 200 |   64.754667ms | 127.0.0.1 | POST | /api/auth/login | -
+08:39:30 | 204 |       3.688ms | 127.0.0.1 | OPTIONS | /api/auth/login | -
+&{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
+$2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
+08:39:30 | 200 |  160.233041ms | 127.0.0.1 | POST | /api/auth/login | -

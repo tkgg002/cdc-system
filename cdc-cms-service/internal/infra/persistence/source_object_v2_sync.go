@@ -212,7 +212,59 @@ func (s *SourceObjectV2SyncService) SyncFromLegacyTx(ctx context.Context, tx *go
 		return err
 	}
 
+	if err := s.SyncRulesFromLegacyTx(ctx, tx, sourceObject.ID, sourceTable, targetTable); err != nil {
+		s.logger.Error("sync v2 mapping rules failed", zap.Error(err), zap.String("target_table", targetTable))
+		return err
+	}
+
 	return nil
+}
+
+// SyncRulesFromLegacyTx migrates mapping rules from the legacy cdc_mapping_rules
+// table to the V2 mapping_rule_v2 table for a specific source object. It
+// matches by source_table and performs an UPSERT to avoid duplicates on
+// subsequent sync runs.
+func (s *SourceObjectV2SyncService) SyncRulesFromLegacyTx(ctx context.Context, tx *gorm.DB, sourceObjectID int64, legacySourceTable, legacyTargetTable string) error {
+	return tx.WithContext(ctx).Exec(`
+		INSERT INTO cdc_system.mapping_rule_v2 (
+			source_object_id,
+			source_field,
+			target_column,
+			data_type,
+			is_active,
+			is_nullable,
+			default_value,
+			transform_fn,
+			status,
+			notes,
+			created_at,
+			updated_at
+		)
+		SELECT
+			?,
+			source_field,
+			target_column,
+			data_type,
+			is_active,
+			is_nullable,
+			default_value,
+			enrichment_function,
+			status,
+			notes,
+			created_at,
+			NOW()
+		FROM cdc_system.cdc_mapping_rules
+		WHERE source_table = ?
+		ON CONFLICT (source_object_id, COALESCE(master_binding_id, 0), target_column) DO UPDATE SET
+			data_type = EXCLUDED.data_type,
+			is_active = EXCLUDED.is_active,
+			is_nullable = EXCLUDED.is_nullable,
+			default_value = EXCLUDED.default_value,
+			transform_fn = EXCLUDED.transform_fn,
+			status = EXCLUDED.status,
+			notes = EXCLUDED.notes,
+			updated_at = NOW()
+	`, sourceObjectID, legacySourceTable).Error
 }
 
 func (s *SourceObjectV2SyncService) resolveSourceConnectionID(ctx context.Context, db *gorm.DB, engine, sourceDB string) (int64, error) {

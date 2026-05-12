@@ -114,6 +114,7 @@ type SystemConnectorRepo interface {
 	List(ctx context.Context) ([]model.Source, error)
 	GetByID(ctx context.Context, id int64) (*model.Source, error)
 	MarkDeleted(ctx context.Context, connectorName string) error
+	FullCleanup(ctx context.Context, connectorName string) error
 }
 
 // RegistryFilter is the query filter for `TableRegistry` listings.

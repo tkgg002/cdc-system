@@ -28,7 +28,7 @@ INSERT INTO cdc_worker_schedule (operation, target_table, interval_minutes, is_e
     ('field-scan', NULL, 60, true, 'Quét tìm field mới trong _raw_data'),
     ('partition-check', NULL, 1440, true, 'Kiểm tra + tạo partition cho tháng tiếp theo'),
     ('airbyte-sync', NULL, 5, true, 'Quét stream từ Airbyte + đồng bộ registry')
-ON CONFLICT DO NOTHING;
+ON CONFLICT (operation, target_table) DO NOTHING;
 
 CREATE INDEX idx_worker_schedule_operation ON cdc_worker_schedule(operation);
 CREATE INDEX idx_worker_schedule_enabled ON cdc_worker_schedule(is_enabled);

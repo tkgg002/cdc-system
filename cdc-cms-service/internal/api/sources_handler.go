@@ -5,11 +5,11 @@ import (
 	"strconv"
 	"time"
 
+	"cdc-cms-service/internal/app/ports"
 	"cdc-cms-service/internal/app/queries"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 // SourcesHandler serves the Connection Fingerprint registry
@@ -17,16 +17,16 @@ type SourcesHandler struct {
 	logger *zap.Logger
 	listQ  *queries.ListSourcesHandler
 	getQ   *queries.GetSourceHandler
-	db     *gorm.DB
+	repo   ports.SystemConnectorRepo
 }
 
 func NewSourcesHandler(
 	logger *zap.Logger,
 	listQ *queries.ListSourcesHandler,
 	getQ *queries.GetSourceHandler,
-	db *gorm.DB,
+	repo ports.SystemConnectorRepo,
 ) *SourcesHandler {
-	return &SourcesHandler{logger: logger, listQ: listQ, getQ: getQ, db: db}
+	return &SourcesHandler{logger: logger, listQ: listQ, getQ: getQ, repo: repo}
 }
 
 // List returns every non-deleted source.
@@ -61,12 +61,15 @@ func (h *SourcesHandler) Create(c *fiber.Ctx) error {
 		UpdatedAt:           time.Now(),
 	}
 
-	if err := h.db.Create(&source).Error; err != nil {
+	// Use repository which now handles both cdc_sources and connection_registry
+	if err := h.repo.Upsert(c.UserContext(), &source); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to create source: " + err.Error()})
 	}
 
 	return c.Status(201).JSON(source)
 }
+
+
 
 // Get returns a single source by numeric id.
 func (h *SourcesHandler) Get(c *fiber.Ctx) error {

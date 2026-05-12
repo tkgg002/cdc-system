@@ -22,6 +22,11 @@ type ShadowTableEnsurer interface {
 	EnsureShadowTable(ctx context.Context, reg *model.TableRegistry, shadowSchema string) error
 }
 
+// SourceObjectSyncer abstracts the V2 synchronization logic.
+type SourceObjectSyncer interface {
+	SyncFromLegacyTx(ctx context.Context, tx *gorm.DB, entry *model.TableRegistry) error
+}
+
 // RegisterRegistryCommand wraps the atomic part of the legacy Register
 // flow: INSERT registry row → ensure shadow table → rollback row on
 // shadow DDL failure → emit reload + activity log. Cascading async
@@ -50,6 +55,7 @@ func (c RegisterRegistryCommand) Validate() error {
 type RegisterRegistryHandler struct {
 	db        *gorm.DB
 	automator ShadowTableEnsurer
+	syncer    SourceObjectSyncer
 	nats      *natsconn.NatsClient
 	logger    *zap.Logger
 }
@@ -57,10 +63,11 @@ type RegisterRegistryHandler struct {
 func NewRegisterRegistryHandler(
 	db *gorm.DB,
 	automator ShadowTableEnsurer,
+	syncer SourceObjectSyncer,
 	nats *natsconn.NatsClient,
 	logger *zap.Logger,
 ) *RegisterRegistryHandler {
-	return &RegisterRegistryHandler{db: db, automator: automator, nats: nats, logger: logger}
+	return &RegisterRegistryHandler{db: db, automator: automator, syncer: syncer, nats: nats, logger: logger}
 }
 
 func (h *RegisterRegistryHandler) Handle(ctx context.Context, c ports.Command) (json.RawMessage, error) {
@@ -74,7 +81,22 @@ func (h *RegisterRegistryHandler) Handle(ctx context.Context, c ports.Command) (
 
 	entry := cmd.Entry
 	entry.PrimaryKeyType = normalizePKType(entry.PrimaryKeyType)
-	if err := h.db.WithContext(ctx).Create(&entry).Error; err != nil {
+
+	// Perform registration in a transaction to ensure V1 and V2 consistency
+	err := h.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&entry).Error; err != nil {
+			return err
+		}
+
+		if h.syncer != nil {
+			if err := h.syncer.SyncFromLegacyTx(ctx, tx, &entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
 		return nil, err
 	}
 

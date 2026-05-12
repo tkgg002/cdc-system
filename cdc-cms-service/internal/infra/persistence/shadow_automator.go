@@ -103,14 +103,63 @@ func (s *ShadowAutomator) createShadowDDL(
 	return nil
 }
 
-// attachSonyflakeTrigger invokes the schema-aware SQL helper. Helper
-// itself is idempotent (DROP IF EXISTS + CREATE TRIGGER inside the fn).
+// attachSonyflakeTrigger ensures a BEFORE INSERT fallback trigger lives on
+// <schema>.<table>. Under A3 hybrid the shadow cluster is independent of
+// the control plane and must not host cdc_system.* — so the trigger body
+// + sequence are placed inside the shadow schema itself. One function per
+// shadow schema is reused by every table inside that schema.
+//
+// Schema/table validated upstream via validateIdent → safe to interpolate.
+// Statements run individually because the pool uses PrepareStmt=true
+// which rejects multi-statement queries (SQLSTATE 42601).
 func (s *ShadowAutomator) attachSonyflakeTrigger(
 	ctx context.Context, schema, table string,
 ) error {
-	return s.shadowDB.WithContext(ctx).Exec(
-		"SELECT cdc_system.ensure_shadow_sonyflake_trigger(?, ?)", schema, table,
-	).Error
+	triggerName := "trg_" + table + "_sonyflake_fallback"
+	stmts := []string{
+		fmt.Sprintf(`CREATE SEQUENCE IF NOT EXISTS %[1]q.fencing_token_seq`, schema),
+
+		fmt.Sprintf(`CREATE OR REPLACE FUNCTION %[1]q.gen_sonyflake_id()
+RETURNS BIGINT AS $fn$
+DECLARE
+  v_ts_ms   BIGINT;
+  v_machine INTEGER;
+  v_seq     BIGINT;
+BEGIN
+  v_ts_ms := (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT - 1767225600000;
+  BEGIN
+    v_machine := COALESCE(NULLIF(current_setting('cdc.machine_id', true), '')::INTEGER, 0) & 65535;
+  EXCEPTION WHEN OTHERS THEN
+    v_machine := 0;
+  END;
+  v_seq := nextval('%[1]s.fencing_token_seq') & 65535;
+  RETURN ((v_ts_ms & 4398046511103) << 22) | ((v_machine::BIGINT & 65535) << 6) | (v_seq & 63);
+END;
+$fn$ LANGUAGE plpgsql VOLATILE`, schema),
+
+		fmt.Sprintf(`CREATE OR REPLACE FUNCTION %[1]q.tg_sonyflake_fallback()
+RETURNS TRIGGER AS $fn$
+BEGIN
+  IF NEW.id IS NULL OR NEW.id = 0 THEN
+    NEW.id := %[1]q.gen_sonyflake_id();
+  END IF;
+  RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql`, schema),
+
+		fmt.Sprintf(`DROP TRIGGER IF EXISTS %[1]q ON %[2]q.%[3]q`,
+			triggerName, schema, table),
+
+		fmt.Sprintf(`CREATE TRIGGER %[1]q BEFORE INSERT ON %[2]q.%[3]q
+FOR EACH ROW EXECUTE FUNCTION %[2]q.tg_sonyflake_fallback()`,
+			triggerName, schema, table),
+	}
+	for _, stmt := range stmts {
+		if err := s.shadowDB.WithContext(ctx).Exec(stmt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // markCreated flips cdc_system.cdc_table_registry.is_table_created so

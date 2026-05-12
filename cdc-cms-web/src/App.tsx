@@ -34,8 +34,9 @@ const { Text } = Typography;
 
 function LoadingSpinner() {
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 50, minHeight: 200 }}>
-      <Spin size="large" tip="Đang tải..." />
+    <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 12, padding: 50, minHeight: 200 }}>
+      <Spin size="large" />
+      <Text type="secondary">Đang tải...</Text>
     </div>
   );
 }

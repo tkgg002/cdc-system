@@ -1,17 +1,22 @@
 -- Migration 035: Seed V2 metadata from legacy registry tables
 -- Goal: bootstrap V2 without changing runtime behavior yet.
 --
--- DISABLED 2026-05-11: Toàn bộ migration là demo backfill.
---   - 3 connection_registry rows (legacy_system_db / shadow_default / master_default) hardcode cho dev.
---   - 4 INSERT...SELECT fan-out đọc từ cdc_table_registry (đã disable 10 pilot rows ở 001)
---     → registry_v2 / shadow_binding / master_binding / mapping_rule_v2.
---   Trong production cdc_table_registry rỗng nên fan-out cũng rỗng — nhưng dev nào còn xài
---   pilot data sẽ chui hết lên control plane.
--- Để restore cho dev: uncomment block /* ... */ bên dưới.
+-- PARTIALLY DISABLED 2026-05-12 (revised from 2026-05-11):
+--   LIVE: 3 connection_registry rows (legacy_system_db / legacy_shadow_default /
+--         legacy_master_default). Đây là INFRASTRUCTURE, không phải demo —
+--         register flow (V2SyncCommand.resolveSourceConnectionID +
+--         resolveShadowConnectionID) bắt buộc phải có ít nhất 1 row
+--         role_type='source' và 1 row role_type='shadow' active, nếu không
+--         INSERT vào source_object_registry / shadow_binding sẽ fail.
+--   DISABLED (block /* ... */ bên dưới): 4 INSERT...SELECT fan-out đọc từ
+--         cdc_table_registry (đã disable 10 pilot rows ở 001) →
+--         source_object_registry / shadow_binding / master_binding /
+--         mapping_rule_v2. Đó mới là demo phụ thuộc pilot data.
+--   Lesson: tách rạch ròi infrastructure seed vs demo seed trong cùng migration.
 -- Ref: agent/memory/workspaces/feature-cdc-system-recreate-2026-05-11/10_gap_analysis_demo_seed_2026-05-11.md
 
 BEGIN;
-/*
+
 INSERT INTO cdc_system.connection_registry (
   connection_code,
   display_name,
@@ -99,6 +104,10 @@ WHERE NOT EXISTS (
   SELECT 1 FROM cdc_system.connection_registry WHERE connection_code = 'legacy_master_default'
 );
 
+-- Demo fan-out disabled: cdc_table_registry pilot seed (migration 001 §7) đang OFF,
+-- nên các INSERT...SELECT bên dưới sẽ rỗng anyway, nhưng giữ /* */ để rõ ý đồ:
+-- "fan-out này thuộc demo path, đừng tự ý bật cho tới khi có chiến lược seed source data".
+/*
 WITH source_conn AS (
   SELECT id FROM cdc_system.connection_registry WHERE connection_code = 'legacy_system_db'
 ),

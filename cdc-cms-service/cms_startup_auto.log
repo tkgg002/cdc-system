@@ -1,0 +1,1490 @@
+2026/05/12 07:41:22 config path: ./config/config-local.yml
+{"level":"info","ts":1778546482.7063282,"caller":"server/main.go:36","msg":"starting CMS Service","service":"cdc-cms-service","port":":8083"}
+{"level":"info","ts":1778546482.7075279,"caller":"observability/otel.go:85","msg":"OpenTelemetry initialized","service":"cdc-cms","endpoint":"http://localhost:14318","sample_ratio":1}
+{"level":"info","ts":1778546482.7075698,"msg":"OTel zap bridge active — logs forwarding to SigNoz"}
+{"level":"info","ts":1778546482.729436,"msg":"PostgreSQL (control plane) connected"}
+{"level":"info","ts":1778546482.73489,"msg":"migrations done","total_files":52,"applied_now":0,"already_applied":52}
+{"level":"info","ts":1778546482.7467148,"msg":"PostgreSQL (shadow data plane) connected","host":"localhost","port":5436,"database":"cdc_shadow"}
+{"level":"info","ts":1778546482.750429,"msg":"shadow connection seeded","connection_code":"default_shadow","host":"localhost","port":5436,"database":"cdc_shadow"}
+{"level":"info","ts":1778546482.753421,"msg":"NATS JetStream connected","url":"nats://cdc_worker:worker_secret_2026@localhost:14222"}
+{"level":"info","ts":1778546482.756244,"msg":"Redis connected","addr":"localhost:16379"}
+{"level":"info","ts":1778546482.7567391,"msg":"CMS Service started","port":":8083"}
+{"level":"info","ts":1778546482.756791,"msg":"system health collector started"}
+{"level":"info","ts":1778546482.756799,"msg":"audit logger started"}
+{"level":"info","ts":1778546482.756804,"msg":"alert background resolver started"}
+{"level":"info","ts":1778546482.7576902,"msg":"stuck job reaper started","interval":30,"type_count":16,"default_timeout":30}
+07:41:42 | 204 |      68.042µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+07:41:42 | 204 |      60.459µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+07:41:42 | 204 |      33.292µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+07:41:42 | 204 |      77.916µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+07:41:42 | 200 |    21.80025ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+07:41:42 | 200 |    22.32475ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+07:41:43 | 200 |    2.861542ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+07:41:43 | 200 |    2.647417ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+07:41:54 | 204 |          16µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+07:41:54 | 200 |    5.373458ms | 127.0.0.1 | GET | /api/v1/sources | -
+07:44:01 | 204 |     488.375µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+
+2026/05/12 07:44:01 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/app/commands/register_registry.go:77 [35;1mERROR: duplicate key value violates unique constraint "cdc_table_registry_source_db_source_table_key" (SQLSTATE 23505)
+[0m[33m[9.951ms] [34;1m[rows:0][0m INSERT INTO "cdc_table_registry" ("source_db","source_type","source_table","source_url","target_table","sync_engine","sync_interval","priority","primary_key_field","primary_key_type","is_active","is_table_created","sync_status","last_recon_at","recon_drift","last_bridge_at","is_partitioned","partition_key","timestamp_field","created_at","updated_at","notes") VALUES ('centralized-export-service','mongodb','export-jobs','','test_mongo','debezium','1h','normal','_id','VARCHAR(24)',false,false,'unknown',NULL,0,NULL,false,'_synced_at','updated_at','2026-05-12 07:44:01.102','2026-05-12 07:44:01.102',NULL) RETURNING "id"
+07:44:01 | 500 |   32.596083ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+07:44:26 | 204 |        13.5µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+
+2026/05/12 07:44:26 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/app/commands/register_registry.go:77 [35;1mERROR: duplicate key value violates unique constraint "cdc_table_registry_source_db_source_table_key" (SQLSTATE 23505)
+[0m[33m[2.832ms] [34;1m[rows:0][0m INSERT INTO "cdc_table_registry" ("source_db","source_type","source_table","source_url","target_table","sync_engine","sync_interval","priority","primary_key_field","primary_key_type","is_active","is_table_created","sync_status","last_recon_at","recon_drift","last_bridge_at","is_partitioned","partition_key","timestamp_field","created_at","updated_at","notes") VALUES ('centralized-export-service','mongodb','export-jobs','','test_mongo','debezium','1h','normal','_id','VARCHAR(24)',false,false,'unknown',NULL,0,NULL,false,'_synced_at','updated_at','2026-05-12 07:44:26.145','2026-05-12 07:44:26.145',NULL) RETURNING "id"
+07:44:26 | 500 |   11.505583ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+07:45:31 | 204 |       9.708µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+07:45:31 | 204 |       3.875µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 07:45:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:45:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 12.566625ms, err=<nil>
+2026/05/12 07:45:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:45:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.817333ms, err=<nil>
+2026/05/12 07:45:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:45:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 2.330917ms, err=<nil>
+07:45:31 | 200 |   17.320833ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:45:31 | 200 |     17.7275ms | 127.0.0.1 | GET | /api/v1/sources | -
+07:45:41 | 204 |     453.459µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+07:45:41 | 204 |      95.875µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 07:45:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:45:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 13.388167ms, err=<nil>
+2026/05/12 07:45:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:45:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 9.233292ms, err=<nil>
+2026/05/12 07:45:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:45:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 8.592167ms, err=<nil>
+07:45:41 | 200 |   33.036375ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:45:41 | 200 |    55.16525ms | 127.0.0.1 | GET | /api/v1/sources | -
+07:45:56 | 204 |        9.75µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:45:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:45:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 891.5µs, err=<nil>
+2026/05/12 07:45:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:45:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 614.791µs, err=<nil>
+2026/05/12 07:45:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:45:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 3.1075ms, err=<nil>
+07:45:56 | 200 |    4.907958ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:46:11 | 204 |       6.458µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:46:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:46:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 6.065959ms, err=<nil>
+2026/05/12 07:46:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:46:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.824166ms, err=<nil>
+2026/05/12 07:46:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:46:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.492167ms, err=<nil>
+07:46:11 | 200 |   10.234166ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:46:11 | 204 |       7.792µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+07:46:11 | 200 |    5.298167ms | 127.0.0.1 | GET | /api/v1/sources | -
+07:46:26 | 204 |       26.25µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:46:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:46:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.847042ms, err=<nil>
+2026/05/12 07:46:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:46:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.13575ms, err=<nil>
+2026/05/12 07:46:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:46:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.9615ms, err=<nil>
+07:46:26 | 200 |    5.392334ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:46:41 | 204 |      56.833µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+07:46:41 | 200 |    12.32025ms | 127.0.0.1 | GET | /api/v1/sources | -
+07:46:41 | 204 |       7.708µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:46:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:46:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 14.845ms, err=<nil>
+2026/05/12 07:46:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:46:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.134042ms, err=<nil>
+2026/05/12 07:46:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:46:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 3.750875ms, err=<nil>
+07:46:41 | 200 |   20.167625ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:46:56 | 204 |       5.417µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:46:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:46:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.060083ms, err=<nil>
+2026/05/12 07:46:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:46:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.124375ms, err=<nil>
+2026/05/12 07:46:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:46:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.685375ms, err=<nil>
+07:46:56 | 200 |    5.204792ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:47:11 | 204 |      10.792µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+07:47:11 | 200 |    9.084208ms | 127.0.0.1 | GET | /api/v1/sources | -
+07:47:11 | 204 |      40.125µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:47:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:47:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.958666ms, err=<nil>
+2026/05/12 07:47:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:47:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.235417ms, err=<nil>
+2026/05/12 07:47:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:47:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.420125ms, err=<nil>
+07:47:11 | 200 |    5.936292ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:47:26 | 204 |       32.75µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:47:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:47:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 5.44825ms, err=<nil>
+2026/05/12 07:47:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:47:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.850417ms, err=<nil>
+2026/05/12 07:47:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:47:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.885375ms, err=<nil>
+07:47:26 | 200 |   10.260416ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:47:41 | 204 |      17.834µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+07:47:41 | 200 |    8.490958ms | 127.0.0.1 | GET | /api/v1/sources | -
+07:47:41 | 204 |           6µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:47:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:47:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.144959ms, err=<nil>
+2026/05/12 07:47:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:47:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.391916ms, err=<nil>
+2026/05/12 07:47:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:47:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.712792ms, err=<nil>
+07:47:41 | 200 |    5.627167ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:47:56 | 204 |       7.042µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:47:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:47:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.6345ms, err=<nil>
+2026/05/12 07:47:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:47:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.104625ms, err=<nil>
+2026/05/12 07:47:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:47:57 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 2.058875ms, err=<nil>
+07:47:56 | 200 |    6.131542ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:48:12 | 204 |       7.667µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+07:48:12 | 200 |    5.144166ms | 127.0.0.1 | GET | /api/v1/sources | -
+07:48:12 | 204 |       4.667µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:48:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:48:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 3.451417ms, err=<nil>
+2026/05/12 07:48:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:48:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.228792ms, err=<nil>
+2026/05/12 07:48:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:48:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.453875ms, err=<nil>
+07:48:12 | 200 |    6.336833ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:48:27 | 204 |      20.584µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:48:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:48:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.179083ms, err=<nil>
+2026/05/12 07:48:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:48:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 652.542µs, err=<nil>
+2026/05/12 07:48:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:48:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.690083ms, err=<nil>
+07:48:27 | 200 |    3.969542ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:48:40 | 204 |      47.292µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:48:40 [KafkaConnect] POST http://127.0.0.1:18083/connectors
+2026/05/12 07:48:40 [KafkaConnect] POST http://127.0.0.1:18083/connectors finished in 67.101042ms, err=<nil>
+{"level":"info","ts":1778546920.729502,"msg":"connector created","connector":"default_mongo"}
+07:48:40 | 201 |  100.555666ms | 127.0.0.1 | POST | /api/v1/system/connectors | -
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+07:48:40 | 204 |       5.875µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+07:48:40 | 200 |    4.481292ms | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 5.475125ms, err=<nil>
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 7.29025ms, err=<nil>
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 37.887583ms, err=<nil>
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 104.09525ms, err=<nil>
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 07:48:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 9.768875ms, err=<nil>
+07:48:40 | 200 |    173.1125ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:48:55 | 204 |      14.084µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.103084ms, err=<nil>
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 728.208µs, err=<nil>
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.264875ms, err=<nil>
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 723µs, err=<nil>
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 07:48:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 1.162709ms, err=<nil>
+07:48:55 | 200 |    5.656125ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+07:49:03 | 204 |          98µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+07:49:03 | 204 |      72.083µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+07:49:03 | 204 |       3.291µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+07:49:03 | 204 |       15.75µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+07:49:03 | 200 |   18.178917ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+07:49:03 | 200 |   20.017792ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+07:49:03 | 200 |    2.369375ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+07:49:03 | 200 |    3.811541ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+07:49:16 | 204 |      72.875µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+07:49:16 | 200 |      13.749ms | 127.0.0.1 | GET | /api/v1/sources | -
+07:52:27 | 204 |      60.833µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+07:52:27 | 204 |       5.333µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+07:52:27 | 204 |      76.083µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+07:52:27 | 204 |          76µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+07:52:27 | 200 |   23.695833ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+07:52:27 | 200 |   24.342583ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+07:52:27 | 200 |    4.611791ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+07:52:27 | 200 |    4.926833ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+07:52:28 | 204 |       4.125µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+07:52:28 | 204 |      43.083µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+07:52:28 | 204 |     119.167µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+07:52:28 | 204 |    1.625709ms | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+07:52:28 | 200 |      14.038ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+07:52:28 | 200 |   15.656875ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+07:52:28 | 200 |    5.281125ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+07:52:28 | 200 |    4.557583ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+
+2026/05/12 08:38:33 [32m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:380 [33mSLOW SQL >= 200ms
+[0m[31;1m[269.798ms] [33m[rows:0][35m UPDATE "cdc_system"."cdc_alerts" SET "last_fired_at"='2026-05-12 01:38:33.141',"silenced_until"=NULL,"status"='firing' WHERE status = 'silenced' AND silenced_until IS NOT NULL AND silenced_until <= '2026-05-12 01:38:33.141'[0m
+
+2026/05/12 08:38:33 [32m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/messaging/stuck_job_reaper.go:127 [33mSLOW SQL >= 200ms
+[0m[31;1m[248.605ms] [33m[rows:0][35m 
+        UPDATE cdc_system.cdc_jobs
+           SET status = 'failed',
+               error_message = COALESCE(NULLIF(error_message, ''), 'reaper: timeout exceeded'),
+               finished_at = NOW()
+         WHERE status = 'running'
+           AND started_at IS NOT NULL
+           AND started_at + (interval '1 second' * (CASE type WHEN 'debezium.restart' THEN 120::int WHEN 'debezium.signal' THEN 60::int WHEN 'debezium.snapshot' THEN 600::int WHEN 'mapping.alter-column' THEN 120::int WHEN 'mapping.backfill' THEN 1800::int WHEN 'master.create' THEN 120::int WHEN 'master.swap' THEN 60::int WHEN 'recon.backfill-source-ts' THEN 900::int WHEN 'recon.check' THEN 600::int WHEN 'recon.heal' THEN 300::int WHEN 'recon.retry-failed' THEN 120::int WHEN 'source.create-default-columns' THEN 120::int WHEN 'source.detect-timestamp-field' THEN 300::int WHEN 'source.scan-fields' THEN 300::int WHEN 'source.standardize' THEN 300::int WHEN 'transmute' THEN 900::int ELSE 30::int END)::int) < NOW()
+    [0m
+
+2026/05/12 08:38:33 [32m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:30 [33mSLOW SQL >= 200ms
+[0m[31;1m[280.581ms] [33m[rows:0][35m SELECT DISTINCT ON (target_table) * FROM cdc_reconciliation_report ORDER BY target_table, checked_at DESC[0m
+
+2026/05/12 08:38:33 [32m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:81 [33mSLOW SQL >= 200ms
+[0m[31;1m[313.578ms] [33m[rows:6][35m SELECT * FROM "cdc_activity_log" WHERE created_at > NOW() - INTERVAL '1 day' AND created_at <= NOW() ORDER BY started_at DESC LIMIT 10[0m
+08:38:39 | 204 |    5.499375ms | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:38:39 | 204 |      6.2725ms | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:38:39 | 204 |    6.320625ms | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:38:39 | 204 |    6.310875ms | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+
+2026/05/12 08:38:40 [32m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/api/source_objects_handler.go:303 [33mSLOW SQL >= 200ms
+[0m[31;1m[277.679ms] [33m[rows:1][35m SELECT COUNT(*) AS total 
+		FROM cdc_system.shadow_binding sb
+		JOIN cdc_system.source_object_registry so
+		  ON so.id = sb.source_object_id
+		LEFT JOIN cdc_system.cdc_table_registry tr
+		  ON tr.source_db = so.source_database
+		 AND tr.source_table = so.source_object_name
+		 AND tr.target_table = sb.shadow_table
+		LEFT JOIN LATERAL (
+			SELECT
+				rr.diff,
+				rr.checked_at
+			FROM cdc_system.cdc_reconciliation_report rr
+			WHERE rr.target_table = sb.shadow_table
+			ORDER BY rr.checked_at DESC
+			LIMIT 1
+		) rr ON TRUE
+		WHERE so.sync_engine = 'debezium'
+	[0m
+
+2026/05/12 08:38:40 [32m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/source_object_read_repo_gorm.go:103 [33mSLOW SQL >= 200ms
+[0m[31;1m[273.061ms] [33m[rows:1][35m SELECT COUNT(*) AS total 
+	FROM cdc_system.source_object_registry so
+	LEFT JOIN LATERAL (
+		SELECT
+			sb.id,
+			sb.shadow_schema,
+			sb.shadow_table,
+			sb.physical_table_fqn,
+			sb.ddl_status,
+			sb.updated_at
+		FROM cdc_system.shadow_binding sb
+		WHERE sb.source_object_id = so.id
+		ORDER BY sb.is_active DESC, sb.updated_at DESC, sb.id DESC
+		LIMIT 1
+	) sb ON TRUE
+	LEFT JOIN cdc_system.cdc_table_registry tr
+	  ON tr.source_db = so.source_database
+	 AND tr.source_table = so.source_object_name
+	 AND (
+	       (sb.shadow_table IS NOT NULL AND tr.target_table = sb.shadow_table)
+	    OR (sb.shadow_table IS NULL AND tr.target_table = so.source_object_name)
+	 )
+	LEFT JOIN LATERAL (
+		SELECT
+			rr.target_table,
+			rr.diff,
+			rr.status,
+			rr.checked_at
+		FROM cdc_system.cdc_reconciliation_report rr
+		WHERE rr.target_table = COALESCE(sb.shadow_table, tr.target_table)
+		ORDER BY rr.checked_at DESC
+		LIMIT 1
+	) rr ON TRUE
+	WHERE so.sync_engine = 'debezium'
+[0m
+08:38:39 | 200 |  311.417666ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:38:39 | 200 |   11.782292ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:38:39 | 200 |  319.177125ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:38:39 | 200 |   14.670875ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:38:44 | 204 |      68.959µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:38:44 | 204 |     130.292µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:38:44 | 204 |      36.125µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:38:44 | 204 |      61.417µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:38:44 | 401 |    2.013166ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:38:44 | 401 |    1.971792ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:38:44 | 401 |      86.834µs | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:38:44 | 401 |      64.417µs | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:39:31 | 204 |     151.875µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/stats | -
+08:39:31 | 204 |      55.708µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/stats | -
+08:39:31 | 204 |          28µs | 127.0.0.1 | OPTIONS | /api/sync/health | -
+08:39:31 | 204 |      27.083µs | 127.0.0.1 | OPTIONS | /api/schema-changes/pending | -
+08:39:31 | 204 |      25.375µs | 127.0.0.1 | OPTIONS | /api/sync/health | -
+08:39:31 | 204 |      37.833µs | 127.0.0.1 | OPTIONS | /api/schema-changes/pending | -
+08:39:31 | 200 |   45.394625ms | 127.0.0.1 | GET | /api/sync/health | -
+08:39:31 | 200 |   45.635375ms | 127.0.0.1 | GET | /api/schema-changes/pending | -
+08:39:31 | 200 |    2.631042ms | 127.0.0.1 | GET | /api/schema-changes/pending | -
+08:39:31 | 200 |    4.717291ms | 127.0.0.1 | GET | /api/sync/health | -
+08:39:31 | 200 |   63.084958ms | 127.0.0.1 | GET | /api/v1/source-objects/stats | -
+08:39:31 | 200 |     8.21775ms | 127.0.0.1 | GET | /api/v1/source-objects/stats | -
+08:39:34 | 204 |      55.708µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+08:39:34 | 204 |       2.792µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.919542ms, err=<nil>
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 4.794125ms, err=<nil>
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 8.482667ms, err=<nil>
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 1.969041ms, err=<nil>
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+08:39:34 | 200 |   20.630375ms | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 08:39:34 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 3.244125ms, err=<nil>
+08:39:34 | 200 |   22.272209ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+08:39:49 | 204 |       5.416µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.295417ms, err=<nil>
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 330.625µs, err=<nil>
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 638.209µs, err=<nil>
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 578.417µs, err=<nil>
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 08:39:49 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 339.583µs, err=<nil>
+08:39:49 | 200 |    3.522125ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+08:40:04 | 204 |      12.042µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+08:40:04 | 200 |    8.625375ms | 127.0.0.1 | GET | /api/v1/sources | -
+08:40:04 | 204 |       4.959µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.80675ms, err=<nil>
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.784833ms, err=<nil>
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.972667ms, err=<nil>
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 845.25µs, err=<nil>
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 08:40:04 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 961.333µs, err=<nil>
+08:40:04 | 200 |    7.635459ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+08:40:19 | 204 |      13.708µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 3.861584ms, err=<nil>
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 2.005583ms, err=<nil>
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 5.187708ms, err=<nil>
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 1.344958ms, err=<nil>
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 08:40:19 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 1.609375ms, err=<nil>
+08:40:19 | 200 |   15.009125ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+08:53:35 | 204 |   32.526333ms | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+08:53:35 | 204 |   33.050875ms | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 08:53:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 08:53:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 452.505334ms, err=<nil>
+2026/05/12 08:53:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 08:53:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 72.430083ms, err=<nil>
+2026/05/12 08:53:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 08:53:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 18.050833ms, err=<nil>
+2026/05/12 08:53:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+2026/05/12 08:53:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 3.322667ms, err=<nil>
+2026/05/12 08:53:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 08:53:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 6.328584ms, err=<nil>
+08:53:35 | 200 |    607.6075ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+
+2026/05/12 08:53:36 [32m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/system_connector_repo_gorm.go:47 [33mSLOW SQL >= 200ms
+[0m[31;1m[563.151ms] [33m[rows:2][35m SELECT * FROM "cdc_system"."sources" WHERE status != 'deleted' ORDER BY created_at DESC[0m
+08:53:35 | 200 |    627.4555ms | 127.0.0.1 | GET | /api/v1/sources | -
+08:53:51 | 204 |      17.708µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:53:51 | 204 |       3.334µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:53:51 | 204 |       4.458µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:53:51 | 204 |         5.5µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:53:51 | 200 |   24.770542ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:53:51 | 200 |      26.425ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:53:51 | 200 |    2.580167ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:53:51 | 200 |    9.037125ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:53:54 | 200 |    4.158583ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:53:54 | 200 |    5.802625ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:53:54 | 200 |       1.717ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:53:54 | 200 |     1.38325ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:53:55 | 204 |      43.917µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+08:53:55 | 200 |    4.868375ms | 127.0.0.1 | GET | /api/v1/sources | -
+08:54:04 | 204 |      11.666µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+
+2026/05/12 08:54:04 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/app/commands/register_registry.go:77 [35;1mERROR: duplicate key value violates unique constraint "cdc_table_registry_source_db_source_table_key" (SQLSTATE 23505)
+[0m[33m[7.839ms] [34;1m[rows:0][0m INSERT INTO "cdc_table_registry" ("source_db","source_type","source_table","source_url","target_table","sync_engine","sync_interval","priority","primary_key_field","primary_key_type","is_active","is_table_created","sync_status","last_recon_at","recon_drift","last_bridge_at","is_partitioned","partition_key","timestamp_field","created_at","updated_at","notes") VALUES ('centralized-export-service','mongodb','export-jobs','','sd_export_jobs','debezium','1h','normal','_id','VARCHAR(24)',false,false,'unknown',NULL,0,NULL,false,'_synced_at','updated_at','2026-05-12 08:54:04.349','2026-05-12 08:54:04.349',NULL) RETURNING "id"
+08:54:04 | 500 |   49.438583ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+08:55:26 | 204 |       9.959µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+08:55:26 | 204 |       9.917µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 3.516375ms, err=<nil>
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 4.746125ms, err=<nil>
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 4.895041ms, err=<nil>
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 2.215209ms, err=<nil>
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 08:55:27 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 2.430958ms, err=<nil>
+08:55:26 | 200 |    19.14125ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+08:55:26 | 200 |     37.7395ms | 127.0.0.1 | GET | /api/v1/sources | -
+08:55:41 | 204 |       7.084µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.887875ms, err=<nil>
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.735458ms, err=<nil>
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.862209ms, err=<nil>
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 1.311875ms, err=<nil>
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 08:55:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 1.734625ms, err=<nil>
+08:55:41 | 200 |    9.173541ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+08:55:54 | 204 |        11.5µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:55:54 | 204 |       5.167µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:55:54 | 204 |        5.75µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:55:54 | 204 |      26.083µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:55:54 | 200 |   10.659084ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:55:54 | 200 |     3.58025ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:55:54 | 200 |    20.20975ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:55:54 | 200 |    2.584292ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:56:31 | 204 |      10.833µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+08:56:31 | 204 |       8.375µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.638667ms, err=<nil>
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 2.193458ms, err=<nil>
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 30.451292ms, err=<nil>
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+08:56:31 | 200 |    40.35625ms | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 4.895125ms, err=<nil>
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 08:56:31 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 1.848ms, err=<nil>
+08:56:31 | 200 |   44.101792ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+08:56:32 | 204 |      15.458µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:56:32 | 204 |       4.041µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:56:32 | 204 |      11.833µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:56:32 | 204 |       4.792µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:56:32 | 200 |   13.016959ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:56:32 | 200 |   14.899416ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:56:32 | 200 |    7.841333ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:56:32 | 200 |    8.979792ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:56:33 | 204 |      38.125µs | 127.0.0.1 | OPTIONS | /api/v1/masters | -
+08:56:33 | 200 |    75.27675ms | 127.0.0.1 | GET | /api/v1/masters | -
+08:56:48 | 204 |       4.667µs | 127.0.0.1 | OPTIONS | /api/v1/masters | -
+08:56:48 | 200 |     10.2605ms | 127.0.0.1 | GET | /api/v1/masters | -
+08:57:03 | 204 |         5.5µs | 127.0.0.1 | OPTIONS | /api/v1/masters | -
+08:57:03 | 200 |    1.224291ms | 127.0.0.1 | GET | /api/v1/masters | -
+08:57:10 | 204 |       65.75µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+08:57:10 | 204 |      58.083µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 3.04375ms, err=<nil>
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 5.515125ms, err=<nil>
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 4.32475ms, err=<nil>
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+08:57:10 | 200 |   14.308917ms | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 905.458µs, err=<nil>
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 08:57:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 1.013583ms, err=<nil>
+08:57:10 | 200 |   15.794209ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+08:57:12 | 204 |      17.208µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:57:12 | 204 |       4.458µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:57:12 | 204 |       3.834µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+08:57:12 | 204 |      19.792µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+08:57:12 | 200 |    8.294125ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:57:12 | 200 |    3.290833ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+08:57:12 | 200 |   16.075458ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+08:57:12 | 200 |    2.128208ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:01:01 | 204 |     158.542µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:01:01 | 204 |      13.833µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 11.234458ms, err=<nil>
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 2.963333ms, err=<nil>
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 3.068417ms, err=<nil>
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status
+09:01:01 | 200 |      17.272ms | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/status finished in 1.633042ms, err=<nil>
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config
+2026/05/12 09:01:01 [KafkaConnect] GET http://127.0.0.1:18083/connectors/default_mongo/config finished in 1.243792ms, err=<nil>
+09:01:01 | 200 |   23.394084ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:01:08 | 204 |       10.75µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors/default_mongo | -
+2026/05/12 09:01:08 [KafkaConnect] DELETE http://127.0.0.1:18083/connectors/default_mongo
+2026/05/12 09:01:09 [KafkaConnect] DELETE http://127.0.0.1:18083/connectors/default_mongo finished in 200.093ms, err=<nil>
+{"level":"info","ts":1778551269.056278,"msg":"connector deleted","connector":"default_mongo"}
+09:01:08 | 202 |  246.599959ms | 127.0.0.1 | DELETE | /api/v1/system/connectors/default_mongo | -
+09:01:08 | 204 |         7.5µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:01:08 | 204 |       3.709µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 09:01:09 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:01:09 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.327834ms, err=<nil>
+2026/05/12 09:01:09 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:01:09 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 2.858542ms, err=<nil>
+2026/05/12 09:01:09 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+09:01:08 | 200 |    4.674625ms | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 09:01:10 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.032089958s, err=<nil>
+09:01:08 | 200 |  1.036780167s | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:01:16 | 204 |      19.583µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:01:16 | 204 |       7.625µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:01:16 | 204 |       6.459µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:01:16 | 204 |       6.166µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:01:16 | 200 |   13.990416ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:01:16 | 200 |   15.164709ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:01:16 | 200 |    1.888084ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:01:16 | 200 |    2.071125ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:01:17 | 204 |      11.791µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+09:01:17 | 200 |    8.349333ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:01:23 | 204 |       5.792µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+
+2026/05/12 09:01:23 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/app/commands/register_registry.go:77 [35;1mERROR: duplicate key value violates unique constraint "cdc_table_registry_source_db_source_table_key" (SQLSTATE 23505)
+[0m[33m[7.346ms] [34;1m[rows:0][0m INSERT INTO "cdc_table_registry" ("source_db","source_type","source_table","source_url","target_table","sync_engine","sync_interval","priority","primary_key_field","primary_key_type","is_active","is_table_created","sync_status","last_recon_at","recon_drift","last_bridge_at","is_partitioned","partition_key","timestamp_field","created_at","updated_at","notes") VALUES ('centralized-export-service','mongodb','export-jobs','','sd_export_jobs','debezium','1h','normal','_id','VARCHAR(24)',false,false,'unknown',NULL,0,NULL,false,'_synced_at','updated_at','2026-05-12 09:01:23.825','2026-05-12 09:01:23.825',NULL) RETURNING "id"
+09:01:23 | 500 |   31.773625ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+09:01:30 | 204 |      49.125µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+
+2026/05/12 09:01:30 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/app/commands/register_registry.go:77 [35;1mERROR: duplicate key value violates unique constraint "cdc_table_registry_source_db_source_table_key" (SQLSTATE 23505)
+[0m[33m[1.565ms] [34;1m[rows:0][0m INSERT INTO "cdc_table_registry" ("source_db","source_type","source_table","source_url","target_table","sync_engine","sync_interval","priority","primary_key_field","primary_key_type","is_active","is_table_created","sync_status","last_recon_at","recon_drift","last_bridge_at","is_partitioned","partition_key","timestamp_field","created_at","updated_at","notes") VALUES ('centralized-export-service','mongodb','export-jobs','','sd_export_jobs1','debezium','1h','normal','_id','VARCHAR(24)',false,false,'unknown',NULL,0,NULL,false,'_synced_at','updated_at','2026-05-12 09:01:30.556','2026-05-12 09:01:30.556',NULL) RETURNING "id"
+09:01:30 | 500 |    8.627084ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+09:01:57 | 204 |      12.917µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:01:57 | 204 |       6.667µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:01:57 | 204 |       8.542µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:01:57 | 204 |       5.791µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:01:57 | 200 |    5.833042ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:01:57 | 200 |    1.907917ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:01:57 | 200 |   12.663416ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:01:57 | 200 |    1.893458ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:03:18 | 204 |       10.25µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+09:03:18 | 200 |   13.509291ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:03:24 | 204 |      23.417µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+{"level":"info","ts":1778551404.6221728,"msg":"shadow table ensured","schema":"shadow_centralized_export_service","target":"sd_export_jobs","registry_id":7}
+{"level":"error","ts":1778551404.638816,"msg":"post-register v2 sync failed","registry_id":7,"error":"no active source connection for engine=mongodb source_db=centralized-export-service"}
+09:03:24 | 202 |   128.03725ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+09:03:24 | 204 |       7.917µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:03:24 | 200 |   11.605917ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:03:27 | 204 |       7.625µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:03:27 | 204 |       8.209µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:03:27 | 200 |    4.616875ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:03:27 | 200 |    4.918666ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:03:27 | 200 |   29.419834ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:03:27 | 200 |    2.414417ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:03:28 | 200 |    5.134833ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:03:28 | 200 |    6.642958ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:03:28 | 200 |    1.868208ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:03:28 | 200 |    1.725167ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:04:21 | 204 |      54.584µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:04:21 | 204 |       7.417µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:04:21 | 204 |      17.291µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:04:21 | 204 |       3.875µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:04:21 | 200 |     62.1095ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:04:21 | 200 |   64.221334ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:04:21 | 200 |    12.49625ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:04:21 | 200 |   19.371958ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:04:34 | 204 |      15.083µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+09:04:34 | 200 |    5.963042ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:06:15 | 204 |       8.084µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+
+2026/05/12 09:06:15 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/app/commands/register_registry.go:77 [35;1mERROR: duplicate key value violates unique constraint "cdc_table_registry_source_db_source_table_key" (SQLSTATE 23505)
+[0m[33m[10.366ms] [34;1m[rows:0][0m INSERT INTO "cdc_table_registry" ("source_db","source_type","source_table","source_url","target_table","sync_engine","sync_interval","priority","primary_key_field","primary_key_type","is_active","is_table_created","sync_status","last_recon_at","recon_drift","last_bridge_at","is_partitioned","partition_key","timestamp_field","created_at","updated_at","notes") VALUES ('centralized-export-service','mongodb','export-jobs','','export_jobs_shadow','debezium','1h','normal','_id','VARCHAR(24)',false,false,'unknown',NULL,0,NULL,false,'_synced_at','updated_at','2026-05-12 09:06:15.515','2026-05-12 09:06:15.515',NULL) RETURNING "id"
+09:06:15 | 500 |   70.497417ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+09:06:53 | 204 |      27.417µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:06:53 | 204 |      21.292µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:06:53 | 204 |      29.084µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:06:53 | 204 |      27.834µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:06:53 | 200 |    17.60325ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:06:53 | 200 |   19.079166ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:06:53 | 200 |    5.369333ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:06:53 | 200 |     8.06875ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:07:07 | 204 |        69.5µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+{"level":"info","ts":1778551627.405073,"msg":"shadow table ensured","schema":"shadow_centralized_export_service","target":"export_jobs_shadow","registry_id":9}
+{"level":"error","ts":1778551627.45553,"msg":"post-register v2 sync failed","registry_id":9,"error":"no active source connection for engine=mongodb source_db=centralized-export-service"}
+09:07:07 | 202 |  198.899292ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+09:07:07 | 204 |       5.291µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:07:07 | 200 |       9.523ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:07:22 | 204 |      53.959µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:07:22 | 200 |    37.84075ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:11:14 | 204 |      26.084µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:11:14 | 204 |       4.958µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:11:14 | 204 |      14.459µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:11:14 | 204 |       8.125µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:11:14 | 200 |   20.767167ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:11:14 | 200 |   21.772542ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:11:14 | 200 |    1.382125ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:11:14 | 200 |    1.386125ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:11:15 | 204 |      18.417µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+09:11:15 | 200 |    5.981125ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:11:20 | 204 |      11.958µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+
+2026/05/12 09:11:20 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/app/commands/register_registry.go:77 [35;1mERROR: duplicate key value violates unique constraint "cdc_table_registry_source_db_source_table_key" (SQLSTATE 23505)
+[0m[33m[4.309ms] [34;1m[rows:0][0m INSERT INTO "cdc_table_registry" ("source_db","source_type","source_table","source_url","target_table","sync_engine","sync_interval","priority","primary_key_field","primary_key_type","is_active","is_table_created","sync_status","last_recon_at","recon_drift","last_bridge_at","is_partitioned","partition_key","timestamp_field","created_at","updated_at","notes") VALUES ('centralized-export-service','mongodb','export-jobs','','sd_export_jobs','debezium','1h','normal','_id','VARCHAR(24)',false,false,'unknown',NULL,0,NULL,false,'_synced_at','updated_at','2026-05-12 09:11:20.509','2026-05-12 09:11:20.509',NULL) RETURNING "id"
+09:11:20 | 500 |   22.272333ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+09:11:33 | 204 |      23.125µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+{"level":"info","ts":1778551893.909044,"msg":"shadow table ensured","schema":"shadow_centralized_export_service","target":"sd_export_jobs","registry_id":11}
+09:11:33 | 202 |   83.616542ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+09:11:33 | 204 |      12.375µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:11:33 | 200 |    4.570333ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:11:35 | 204 |      18.542µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:11:35 | 204 |       4.417µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:11:35 | 204 |      40.333µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:11:35 | 204 |       7.042µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 3.796458ms, err=<nil>
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 925.542µs, err=<nil>
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+09:11:35 | 404 |      4.1815ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.596958ms, err=<nil>
+09:11:35 | 200 |      6.7195ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+09:11:35 | 404 |    1.097834ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 571µs, err=<nil>
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 548.334µs, err=<nil>
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:11:36 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 947.416µs, err=<nil>
+09:11:35 | 200 |    2.344041ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:11:40 | 204 |      84.958µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:11:40 | 202 |  232.523167ms | 127.0.0.1 | PATCH | /api/v1/source-objects/registry/11 | -
+09:11:40 | 204 |         4.5µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:11:40 | 200 |   14.669583ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:11:42 | 200 |    6.622375ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:11:42 | 200 |    1.701291ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:11:43 | 204 |      14.333µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:11:43 | 200 |   10.154583ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:11:43 | 200 |    2.518042ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:11:44 | 204 |      16.542µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/create-default-columns | -
+09:11:44 | 202 |   34.649958ms | 127.0.0.1 | POST | /api/v1/source-objects/1/create-default-columns | -
+09:11:45 | 204 |      14.917µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:11:45 | 200 |   14.081208ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:11:54 | 204 |      43.209µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:11:54 | 204 |       10.75µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:11:54 | 204 |          16µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:11:54 | 204 |       4.208µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.237375ms, err=<nil>
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.54975ms, err=<nil>
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 11.474667ms, err=<nil>
+09:11:54 | 200 |   16.289541ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 3.812417ms, err=<nil>
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 2.864084ms, err=<nil>
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:11:54 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.162292ms, err=<nil>
+09:11:54 | 200 |    8.405875ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:11:54 | 200 |     45.5275ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:11:54 | 200 |    1.604709ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:12:03 | 204 |      11.875µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:03 | 204 |       7.791µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:03 | 200 |    3.457541ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:03 | 200 |    3.316208ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:03 | 204 |      12.459µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:12:03 | 200 |    6.410167ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:03 | 200 |    3.558625ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:09 | 204 |      34.375µs | 127.0.0.1 | OPTIONS | /api/introspection/scan-raw/sd_export_jobs | -
+09:12:09 | 200 |   79.331459ms | 127.0.0.1 | GET | /api/introspection/scan-raw/sd_export_jobs | -
+09:12:13 | 204 |      70.708µs | 127.0.0.1 | OPTIONS | /api/mapping-rules/reload | -
+09:12:13 | 200 |    7.201416ms | 127.0.0.1 | POST | /api/mapping-rules/reload | -
+09:12:17 | 204 |     117.625µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:17 | 204 |       26.25µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:17 | 200 |    9.543208ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:17 | 200 |   44.141958ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:18 | 204 |         7.5µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:12:18 | 200 |    9.726041ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:18 | 200 |    2.310208ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:19 | 204 |           8µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/create-default-columns | -
+09:12:19 | 202 |      11.847ms | 127.0.0.1 | POST | /api/v1/source-objects/1/create-default-columns | -
+09:12:23 | 204 |      17.416µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:23 | 204 |     115.209µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:23 | 200 |    37.31175ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:23 | 200 |    2.644875ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:23 | 204 |      34.791µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:12:23 | 200 |    5.719542ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:23 | 200 |    4.041708ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:27 | 204 |     118.583µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/create-default-columns | -
+09:12:27 | 202 |   44.773916ms | 127.0.0.1 | POST | /api/v1/source-objects/1/create-default-columns | -
+09:12:29 | 204 |      18.583µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:29 | 204 |     311.791µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:29 | 200 |   23.883041ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:29 | 200 |    8.626917ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:29 | 204 |      14.583µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:12:29 | 200 |     6.45375ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:29 | 200 |    2.779375ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:31 | 204 |      25.834µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:12:31 | 204 |          26µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:12:31 | 204 |      10.042µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:12:31 | 204 |          17µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:12:31 | 200 |   86.514416ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:12:31 | 200 |   93.182125ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:12:32 | 200 |    8.658333ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:12:32 | 200 |    2.980084ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:12:33 | 204 |       8.583µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:12:33 | 204 |       5.708µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:12:33 | 204 |       4.208µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:12:33 | 204 |        4.25µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 16.70675ms, err=<nil>
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 9.34975ms, err=<nil>
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 9.399292ms, err=<nil>
+09:12:33 | 200 |   35.792167ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.913125ms, err=<nil>
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.866042ms, err=<nil>
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:12:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 2.00025ms, err=<nil>
+09:12:33 | 200 |    7.115042ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:12:33 | 200 |   48.885459ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:12:33 | 200 |     3.79875ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:12:45 | 204 |      26.167µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:45 | 204 |      72.917µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:12:45 | 200 |   43.443667ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:45 | 200 |    1.173666ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:12:46 | 204 |       6.792µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:12:46 | 200 |    7.414041ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:46 | 200 |    1.573542ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:12:47 | 204 |      32.792µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:12:47 | 204 |      14.959µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:12:47 | 204 |       8.125µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:12:47 | 204 |     809.375µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:12:47 | 200 |    9.009125ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:12:47 | 200 |    1.983542ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:12:47 | 200 |   90.225125ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:12:47 | 200 |    1.913583ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:12:48 | 204 |      36.084µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:12:48 | 204 |        3.25µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:12:48 | 204 |       2.125µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:12:48 | 204 |      41.791µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.071ms, err=<nil>
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 926.333µs, err=<nil>
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.581875ms, err=<nil>
+09:12:48 | 200 |    5.114333ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.722667ms, err=<nil>
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 3.5845ms, err=<nil>
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:12:48 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.739375ms, err=<nil>
+09:12:48 | 200 |    7.608167ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:12:48 | 200 |   20.380833ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:12:48 | 200 |       3.048ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:13:03 | 204 |        10.5µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:13:03 | 204 |      18.459µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:13:03 | 204 |      17.875µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:13:03 | 204 |        51.5µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:13:03 | 200 |   12.100542ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:13:03 | 200 |   15.290791ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:13:03 | 200 |    7.392042ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:13:03 | 200 |    9.039584ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:13:05 | 204 |      15.875µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:13:05 | 204 |       7.584µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:13:05 | 204 |       8.375µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:13:05 | 204 |       3.625µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 21.056875ms, err=<nil>
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 17.053833ms, err=<nil>
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 7.112333ms, err=<nil>
+09:13:05 | 200 |   48.253833ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 7.358958ms, err=<nil>
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 4.672584ms, err=<nil>
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+09:13:05 | 200 |   57.042792ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:13:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 4.967083ms, err=<nil>
+09:13:05 | 200 |   17.417167ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:13:05 | 200 |    6.695625ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:13:11 | 204 |           9µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:13:11 | 200 |   32.207125ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:13:26 | 204 |       39.25µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:13:26 | 204 |    7.932334ms | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:13:27 | 200 |   37.347667ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:13:27 | 200 |    2.493334ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:13:27 | 204 |      24.833µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:13:27 | 200 |     4.95375ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:13:27 | 200 |    2.076416ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:13:32 | 204 |      48.125µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:13:32 | 204 |      14.667µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:13:32 | 204 |      13.625µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:13:32 | 204 |       33.75µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:13:32 | 200 |   15.441917ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:13:32 | 200 |   16.498333ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:13:32 | 200 |    4.379375ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:13:32 | 200 |    3.795875ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:14:30 | 204 |      26.625µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:14:30 | 204 |      18.708µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:14:30 | 200 |   13.252916ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:14:30 | 200 |    1.229458ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:14:30 | 204 |       8.458µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:14:30 | 200 |    4.267917ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:14:30 | 200 |    2.088417ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:15:04 | 204 |      42.917µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:15:04 | 204 |      23.625µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:15:04 | 204 |      19.584µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:15:04 | 204 |      41.584µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:15:04 | 200 |   17.263208ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:15:04 | 200 |    2.506959ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:15:04 | 200 |    20.34325ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:15:04 | 200 |    1.872875ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:15:05 | 204 |        7.25µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:15:05 | 204 |       2.833µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:15:05 | 204 |       3.375µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:15:05 | 204 |       7.209µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 12.985166ms, err=<nil>
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 2.328916ms, err=<nil>
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+09:15:05 | 200 |   17.464708ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 4.428417ms, err=<nil>
+09:15:05 | 200 |   20.240333ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.065583ms, err=<nil>
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+09:15:05 | 200 |       6.235ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 2.817417ms, err=<nil>
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:15:05 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 5.210708ms, err=<nil>
+09:15:05 | 200 |    9.433209ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:15:15 | 204 |       8.875µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:15:15 | 204 |           7µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 09:15:15 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:15:15 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 78.76975ms, err=<nil>
+2026/05/12 09:15:15 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:15:16 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 17.195125ms, err=<nil>
+2026/05/12 09:15:16 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+09:15:15 | 200 |  104.247416ms | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 09:15:16 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 9.958166ms, err=<nil>
+09:15:15 | 200 |  108.998209ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:15:17 | 204 |       8.959µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:15:17 | 204 |       2.833µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:15:17 | 204 |        1.75µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:15:17 | 200 |    6.590375ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:15:17 | 200 |     7.67375ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:15:17 | 200 |    1.197042ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:15:17 | 200 |    1.371459ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:16:41 | 204 |     353.125µs | 127.0.0.1 | OPTIONS | /api/activity-log | -
+09:16:41 | 204 |       6.625µs | 127.0.0.1 | OPTIONS | /api/activity-log/stats | -
+09:16:41 | 204 |      75.333µs | 127.0.0.1 | OPTIONS | /api/activity-log/stats | -
+09:16:41 | 204 |     377.208µs | 127.0.0.1 | OPTIONS | /api/activity-log | -
+09:16:41 | 200 |      18.792ms | 127.0.0.1 | GET | /api/activity-log/stats | -
+
+2026/05/12 09:16:41 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:139
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd5a06e040
+09:16:41 | 200 |    23.95125ms | 127.0.0.1 | GET | /api/activity-log | -
+09:16:41 | 200 |    3.618542ms | 127.0.0.1 | GET | /api/activity-log/stats | -
+
+2026/05/12 09:16:41 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:139
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd59c66c40
+09:16:41 | 200 |   51.282458ms | 127.0.0.1 | GET | /api/activity-log | -
+09:16:46 | 204 |       7.292µs | 127.0.0.1 | OPTIONS | /api/reconciliation/report | -
+09:16:46 | 204 |       6.042µs | 127.0.0.1 | OPTIONS | /api/failed-sync-logs | -
+09:16:46 | 204 |       3.333µs | 127.0.0.1 | OPTIONS | /api/recon/backfill-source-ts/status | -
+09:16:46 | 200 |   31.331125ms | 127.0.0.1 | GET | /api/reconciliation/report | -
+09:16:46 | 200 |   34.394417ms | 127.0.0.1 | GET | /api/recon/backfill-source-ts/status | -
+09:16:46 | 200 |   44.233542ms | 127.0.0.1 | GET | /api/failed-sync-logs | -
+09:16:47 | 204 |       9.333µs | 127.0.0.1 | OPTIONS | /api/system/health | -
+09:16:47 | 200 |    4.113542ms | 127.0.0.1 | GET | /api/system/health | -
+09:16:49 | 204 |          19µs | 127.0.0.1 | OPTIONS | /api/activity-log | -
+09:16:49 | 204 |        6.25µs | 127.0.0.1 | OPTIONS | /api/activity-log/stats | -
+09:16:49 | 204 |           7µs | 127.0.0.1 | OPTIONS | /api/activity-log | -
+09:16:49 | 204 |           8µs | 127.0.0.1 | OPTIONS | /api/activity-log/stats | -
+09:16:49 | 200 |    9.341084ms | 127.0.0.1 | GET | /api/activity-log/stats | -
+09:16:49 | 200 |    1.706041ms | 127.0.0.1 | GET | /api/activity-log/stats | -
+
+2026/05/12 09:16:50 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:139
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd5a06fed0
+09:16:49 | 200 |   12.587542ms | 127.0.0.1 | GET | /api/activity-log | -
+
+2026/05/12 09:16:50 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:139
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd59f66960
+09:16:49 | 200 |    3.733875ms | 127.0.0.1 | GET | /api/activity-log | -
+09:16:57 | 204 |      45.375µs | 127.0.0.1 | OPTIONS | /api/tools/restart-debezium | -
+09:16:57 | 202 |   18.667875ms | 127.0.0.1 | POST | /api/tools/restart-debezium | -
+09:16:57 | 204 |      10.292µs | 127.0.0.1 | OPTIONS | /api/system/health | -
+09:16:57 | 200 |    3.719084ms | 127.0.0.1 | GET | /api/system/health | -
+09:16:59 | 204 |        36.5µs | 127.0.0.1 | OPTIONS | /api/v1/schedules | -
+09:16:59 | 200 |   26.833709ms | 127.0.0.1 | GET | /api/v1/schedules | -
+09:17:01 | 204 |       8.125µs | 127.0.0.1 | OPTIONS | /api/v1/schema-proposals | -
+09:17:01 | 200 |   11.294625ms | 127.0.0.1 | GET | /api/v1/schema-proposals | -
+09:17:02 | 204 |      10.917µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:17:02 | 204 |       2.958µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:17:02 | 200 |    5.580833ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:17:02 | 200 |    1.972084ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:17:03 | 204 |       8.833µs | 127.0.0.1 | OPTIONS | /api/worker-schedule | -
+09:17:03 | 204 |       3.875µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:17:03 | 204 |       3.792µs | 127.0.0.1 | OPTIONS | /api/worker-schedule | -
+09:17:03 | 204 |       5.125µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:17:03 | 200 |    9.291084ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:17:03 | 200 |    9.850334ms | 127.0.0.1 | GET | /api/worker-schedule | -
+09:17:03 | 200 |    1.372375ms | 127.0.0.1 | GET | /api/worker-schedule | -
+09:17:03 | 200 |    3.675208ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:17:50 | 204 |      14.875µs | 127.0.0.1 | OPTIONS | /api/worker-schedule/5 | -
+09:17:50 | 200 |   30.055875ms | 127.0.0.1 | PATCH | /api/worker-schedule/5 | -
+09:17:50 | 204 |           7µs | 127.0.0.1 | OPTIONS | /api/worker-schedule | -
+09:17:50 | 200 |    1.086167ms | 127.0.0.1 | GET | /api/worker-schedule | -
+09:17:51 | 204 |          12µs | 127.0.0.1 | OPTIONS | /api/worker-schedule/1 | -
+09:17:51 | 200 |    9.215333ms | 127.0.0.1 | PATCH | /api/worker-schedule/1 | -
+09:17:51 | 200 |      451.75µs | 127.0.0.1 | GET | /api/worker-schedule | -
+09:17:52 | 204 |       8.208µs | 127.0.0.1 | OPTIONS | /api/worker-schedule/3 | -
+09:17:52 | 200 |    17.73475ms | 127.0.0.1 | PATCH | /api/worker-schedule/3 | -
+09:17:52 | 200 |     1.16175ms | 127.0.0.1 | GET | /api/worker-schedule | -
+09:17:53 | 204 |       5.083µs | 127.0.0.1 | OPTIONS | /api/worker-schedule/4 | -
+09:17:53 | 200 |    9.483167ms | 127.0.0.1 | PATCH | /api/worker-schedule/4 | -
+09:17:53 | 200 |     1.16525ms | 127.0.0.1 | GET | /api/worker-schedule | -
+09:17:54 | 204 |       6.708µs | 127.0.0.1 | OPTIONS | /api/worker-schedule/2 | -
+09:17:54 | 200 |   20.947417ms | 127.0.0.1 | PATCH | /api/worker-schedule/2 | -
+09:17:54 | 200 |    1.327833ms | 127.0.0.1 | GET | /api/worker-schedule | -
+09:19:01 | 204 |        33.5µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:19:01 | 204 |      35.209µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:19:01 | 204 |      15.875µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:19:01 | 204 |      58.958µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:19:01 | 200 |   42.299916ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:19:01 | 200 |    1.991334ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:19:01 | 200 |   54.355166ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:19:01 | 200 |       2.584ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:19:02 | 204 |           8µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:19:02 | 204 |       3.625µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:19:02 | 204 |       2.333µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:19:02 | 204 |           4µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.10475ms, err=<nil>
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 988.917µs, err=<nil>
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.813542ms, err=<nil>
+09:19:02 | 200 |    5.370417ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+09:19:02 | 200 |    4.492083ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 726.083µs, err=<nil>
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 531.041µs, err=<nil>
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:19:03 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 931.667µs, err=<nil>
+09:19:02 | 200 |     2.45475ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:19:02 | 200 |    2.173416ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:19:03 | 204 |        9.25µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:19:03 | 204 |           6µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:19:03 | 200 |    9.045083ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:19:03 | 200 |    1.845792ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:19:03 | 204 |       7.833µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:19:03 | 200 |    5.160166ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:19:03 | 200 |     2.24075ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:19:12 | 204 |      64.791µs | 127.0.0.1 | OPTIONS | /api/activity-log | -
+09:19:12 | 204 |      18.125µs | 127.0.0.1 | OPTIONS | /api/activity-log/stats | -
+09:19:12 | 204 |       4.833µs | 127.0.0.1 | OPTIONS | /api/activity-log | -
+09:19:12 | 204 |      13.375µs | 127.0.0.1 | OPTIONS | /api/activity-log/stats | -
+
+2026/05/12 09:19:13 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:139
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd5a25b380
+09:19:12 | 200 |   11.992583ms | 127.0.0.1 | GET | /api/activity-log | -
+
+2026/05/12 09:19:13 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:139
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd5a06fde0
+09:19:12 | 200 |    3.844834ms | 127.0.0.1 | GET | /api/activity-log | -
+
+2026/05/12 09:19:13 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:170
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd5a373050
+09:19:12 | 200 |   19.441584ms | 127.0.0.1 | GET | /api/activity-log/stats | -
+
+2026/05/12 09:19:13 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:170
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd5a373d80
+09:19:12 | 200 |    11.87325ms | 127.0.0.1 | GET | /api/activity-log/stats | -
+09:19:19 | 204 |     154.375µs | 127.0.0.1 | OPTIONS | /api/system/health | -
+09:19:19 | 200 |   15.916042ms | 127.0.0.1 | GET | /api/system/health | -
+09:19:21 | 204 |       7.875µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:19:21 | 204 |      14.667µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:19:21 | 200 |   18.992792ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:19:21 | 200 |    4.619417ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:19:22 | 204 |      30.375µs | 127.0.0.1 | OPTIONS | /api/worker-schedule | -
+09:19:22 | 204 |       4.709µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:19:22 | 204 |       7.584µs | 127.0.0.1 | OPTIONS | /api/worker-schedule | -
+09:19:22 | 204 |       9.833µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:19:22 | 200 |    3.741125ms | 127.0.0.1 | GET | /api/worker-schedule | -
+09:19:22 | 200 |    1.725167ms | 127.0.0.1 | GET | /api/worker-schedule | -
+09:19:22 | 200 |    6.695084ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:19:22 | 200 |    1.218458ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:19:24 | 200 |    7.312833ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:19:24 | 200 |    2.028541ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:19:25 | 204 |      13.416µs | 127.0.0.1 | OPTIONS | /api/reconciliation/report | -
+09:19:25 | 204 |       3.333µs | 127.0.0.1 | OPTIONS | /api/failed-sync-logs | -
+09:19:25 | 204 |       2.709µs | 127.0.0.1 | OPTIONS | /api/recon/backfill-source-ts/status | -
+09:19:25 | 200 |     4.43875ms | 127.0.0.1 | GET | /api/reconciliation/report | -
+09:19:25 | 200 |    7.510291ms | 127.0.0.1 | GET | /api/failed-sync-logs | -
+09:19:25 | 200 |   12.524666ms | 127.0.0.1 | GET | /api/recon/backfill-source-ts/status | -
+09:19:30 | 204 |      23.125µs | 127.0.0.1 | OPTIONS | /api/activity-log | -
+09:19:30 | 204 |       7.792µs | 127.0.0.1 | OPTIONS | /api/activity-log/stats | -
+09:19:30 | 204 |       6.667µs | 127.0.0.1 | OPTIONS | /api/activity-log | -
+09:19:30 | 204 |      10.709µs | 127.0.0.1 | OPTIONS | /api/activity-log/stats | -
+
+2026/05/12 09:19:30 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:170
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd59cd86b0
+09:19:30 | 200 |     21.1175ms | 127.0.0.1 | GET | /api/activity-log/stats | -
+
+2026/05/12 09:19:30 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:170
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd5a25ab00
+09:19:30 | 200 |    1.848416ms | 127.0.0.1 | GET | /api/activity-log/stats | -
+
+2026/05/12 09:19:30 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:139
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd5a25b870
+09:19:30 | 200 |   40.505875ms | 127.0.0.1 | GET | /api/activity-log | -
+
+2026/05/12 09:19:30 [35m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/activity_log_read_repo_gorm.go:139
+[0m[31m[error] [0mfailed to parse field: Details, error: unsupported data type: 0x23cd5a06f8c0
+09:19:30 | 200 |    1.933083ms | 127.0.0.1 | GET | /api/activity-log | -
+09:19:31 | 204 |       7.584µs | 127.0.0.1 | OPTIONS | /api/v1/schedules | -
+09:19:31 | 200 |    5.038375ms | 127.0.0.1 | GET | /api/v1/schedules | -
+09:19:32 | 204 |       7.791µs | 127.0.0.1 | OPTIONS | /api/v1/schema-proposals | -
+09:19:32 | 200 |    5.340583ms | 127.0.0.1 | GET | /api/v1/schema-proposals | -
+09:19:34 | 204 |      12.792µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:19:34 | 204 |       4.958µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:19:34 | 204 |       3.708µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:19:34 | 204 |       2.959µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:19:34 | 200 |    7.360042ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:19:34 | 200 |    2.196083ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:19:34 | 200 |   14.595292ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:19:34 | 200 |    2.008833ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:19:35 | 204 |       6.542µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:19:35 | 204 |       2.167µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:19:35 | 204 |       3.208µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:19:35 | 204 |           4µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 3.659ms, err=<nil>
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 3.097542ms, err=<nil>
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 7.410334ms, err=<nil>
+09:19:35 | 200 |   14.711584ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+09:19:35 | 200 |   19.212833ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 6.188916ms, err=<nil>
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 2.624167ms, err=<nil>
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:19:35 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 2.691792ms, err=<nil>
+09:19:35 | 200 |   11.885208ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:19:35 | 200 |    8.016208ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:19:46 | 204 |      37.709µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:19:46 | 200 |    9.218458ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:19:55 | 204 |     209.458µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:19:55 | 204 |      24.958µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 09:19:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:19:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 15.715625ms, err=<nil>
+2026/05/12 09:19:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:19:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 15.966333ms, err=<nil>
+2026/05/12 09:19:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:19:55 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 2.298334ms, err=<nil>
+09:19:55 | 200 |     36.9885ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:19:55 | 200 |   40.681875ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:20:10 | 204 |        20.5µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 09:20:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:20:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 3.355666ms, err=<nil>
+2026/05/12 09:20:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:20:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.241041ms, err=<nil>
+2026/05/12 09:20:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:20:11 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 1.852333ms, err=<nil>
+09:20:10 | 200 |    7.334416ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:20:25 | 204 |      104.25µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+09:20:25 | 200 |   24.299333ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:20:26 | 204 |       7.125µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 09:20:26 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:20:26 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 4.826875ms, err=<nil>
+2026/05/12 09:20:26 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:20:26 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 2.194875ms, err=<nil>
+2026/05/12 09:20:26 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:20:26 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 24.2975ms, err=<nil>
+09:20:26 | 200 |   32.259333ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:20:37 | 204 |          40µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:20:37 | 204 |      21.709µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:20:37 | 204 |      21.917µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:20:37 | 204 |      49.208µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:20:37 | 200 |   24.137208ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:20:37 | 200 |   23.391041ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:20:37 | 200 |    2.314625ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:20:37 | 200 |    2.198667ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:20:38 | 204 |      15.834µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:20:38 | 204 |       5.542µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 4.808541ms, err=<nil>
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.523375ms, err=<nil>
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 5.284416ms, err=<nil>
+09:20:38 | 200 |   13.220792ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.014208ms, err=<nil>
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 3.133125ms, err=<nil>
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+09:20:38 | 200 |   18.348625ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:20:38 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 2.534458ms, err=<nil>
+09:20:38 | 200 |    7.155208ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:20:38 | 200 |    3.457084ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:20:39 | 204 |       6.916µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:20:39 | 204 |    2.877667ms | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:20:39 | 200 |    17.65275ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:20:39 | 200 |    2.468167ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:20:39 | 204 |       8.083µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:20:39 | 200 |    7.879375ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:20:39 | 200 |    2.130667ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:21:46 | 204 |       6.709µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:21:46 | 204 |       4.292µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:21:46 | 200 |    7.086917ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:21:46 | 200 |     1.08925ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:21:46 | 204 |       8.875µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:21:46 | 200 |    6.130375ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:21:46 | 200 |     2.31325ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:23:06 | 204 |      33.375µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:23:06 | 204 |      22.167µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:23:06 | 200 |    7.761625ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:23:06 | 200 |    2.461291ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:23:06 | 204 |       7.666µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:23:06 | 200 |    6.888375ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:23:06 | 200 |    4.083625ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:28:27 | 204 |      81.166µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:28:27 | 204 |      58.041µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:28:27 | 204 |     173.292µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:28:27 | 204 |    1.148041ms | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:28:27 | 200 |   32.500667ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:28:27 | 200 |   33.559958ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:28:27 | 200 |    1.420834ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:28:27 | 200 |    1.046166ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:28:28 | 204 |      10.292µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:28:28 | 204 |       4.208µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:28:28 | 204 |       1.417µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:28:28 | 204 |       4.333µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.926208ms, err=<nil>
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.1735ms, err=<nil>
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 5.163542ms, err=<nil>
+09:28:28 | 200 |    9.037459ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 942.417µs, err=<nil>
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 871.167µs, err=<nil>
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:28:29 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 921.75µs, err=<nil>
+09:28:28 | 200 |    3.064166ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:28:28 | 200 |   12.230959ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:28:28 | 200 |    1.637792ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:30:33 | 204 |      15.125µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+09:30:33 | 204 |      14.125µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 09:30:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:30:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.233333ms, err=<nil>
+2026/05/12 09:30:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+2026/05/12 09:30:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 1.568541ms, err=<nil>
+2026/05/12 09:30:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+09:30:33 | 200 |     8.98375ms | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 09:30:33 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 6.571167ms, err=<nil>
+09:30:33 | 200 |   10.914708ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:30:40 | 204 |        10.5µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors/goopay | -
+2026/05/12 09:30:40 [KafkaConnect] DELETE http://127.0.0.1:18083/connectors/goopay
+2026/05/12 09:30:40 [KafkaConnect] DELETE http://127.0.0.1:18083/connectors/goopay finished in 75.449209ms, err=<nil>
+{"level":"info","ts":1778553040.844076,"msg":"connector deleted","connector":"goopay"}
+09:30:40 | 202 |  106.670375ms | 127.0.0.1 | DELETE | /api/v1/system/connectors/goopay | -
+09:30:40 | 204 |      37.042µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:30:40 | 204 |       3.542µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 09:30:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:30:40 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 895.291µs, err=<nil>
+09:30:40 | 200 |    1.169416ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:30:40 | 200 |     855.667µs | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 09:30:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:30:42 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 741.625µs, err=<nil>
+09:30:42 | 200 |         887µs | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:30:42 | 200 |    1.700292ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:30:44 | 204 |      16.292µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:30:44 | 204 |       4.375µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:30:44 | 204 |       1.958µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:30:44 | 204 |       6.208µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:30:44 | 200 |   14.172583ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:30:44 | 200 |   13.319333ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:30:44 | 200 |    3.080542ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:30:44 | 200 |    4.319917ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:30:46 | 204 |      11.875µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:30:46 | 204 |           4µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+09:30:46 | 204 |       3.584µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:30:46 | 204 |       2.834µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/1/transform-status | -
+2026/05/12 09:30:46 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:30:46 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 1.829959ms, err=<nil>
+09:30:46 | 200 |    2.017458ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+2026/05/12 09:30:46 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:30:46 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 607.75µs, err=<nil>
+09:30:46 | 200 |     716.375µs | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:30:46 | 200 |   11.267125ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:30:46 | 200 |    3.580541ms | 127.0.0.1 | GET | /api/v1/source-objects/1/transform-status | -
+09:30:50 | 204 |           7µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:30:50 | 204 |       5.917µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:30:50 | 200 |    6.520458ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:30:50 | 200 |    1.334583ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:30:50 | 204 |       7.083µs | 127.0.0.1 | OPTIONS | /api/mapping-rules | -
+09:30:50 | 200 |    6.586542ms | 127.0.0.1 | GET | /api/mapping-rules | -
+09:30:50 | 200 |    2.233542ms | 127.0.0.1 | GET | /api/mapping-rules | -
+
+2026/05/12 09:31:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:30 [35;1mERROR: relation "cdc_reconciliation_report" does not exist (SQLSTATE 42P01)
+[0m[33m[6.941ms] [34;1m[rows:-][0m SELECT DISTINCT ON (target_table) * FROM cdc_reconciliation_report ORDER BY target_table, checked_at DESC
+
+2026/05/12 09:31:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:64 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[6.983ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '24 hours' AND created_at <= NOW()
+
+2026/05/12 09:31:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/probes/postgres.go:23 [35;1mERROR: relation "cdc_table_registry" does not exist (SQLSTATE 42P01)
+[0m[33m[7.036ms] [34;1m[rows:0][0m SELECT count(*) FROM "cdc_table_registry"
+
+2026/05/12 09:31:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:81 [35;1mERROR: relation "cdc_activity_log" does not exist (SQLSTATE 42P01)
+[0m[33m[6.967ms] [34;1m[rows:0][0m SELECT * FROM "cdc_activity_log" WHERE created_at > NOW() - INTERVAL '1 day' AND created_at <= NOW() ORDER BY started_at DESC LIMIT 10
+
+2026/05/12 09:31:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:66 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[0.507ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '1 hour' AND created_at <= NOW()
+
+2026/05/12 09:31:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:155 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.623ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE fingerprint = '5a2c839a5ec5f67e06dd072a1e24871ba4cb4677bc460f279a76a9be2f65dcd7' ORDER BY "cdc_alerts"."id" LIMIT 1 FOR UPDATE
+{"level":"warn","ts":1778553078.249253,"msg":"alert fire failed","name":"DebeziumConnectorFailed","error":"lookup alert: ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:31:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:155 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.334ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE fingerprint = 'bbaa44fa0273ac508a1c55770e962fbc23e6ac21f021b0256da2dc0055e65a4d' ORDER BY "cdc_alerts"."id" LIMIT 1 FOR UPDATE
+{"level":"warn","ts":1778553078.25008,"msg":"alert fire failed","name":"InfrastructureDown","error":"lookup alert: ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:31:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:337 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.311ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE status IN ('firing','acknowledged') ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,fired_at DESC
+
+2026/05/12 09:31:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/messaging/stuck_job_reaper.go:127 [35;1mERROR: relation "cdc_system.cdc_jobs" does not exist (SQLSTATE 42P01)
+[0m[33m[5.664ms] [34;1m[rows:0][0m 
+        UPDATE cdc_system.cdc_jobs
+           SET status = 'failed',
+               error_message = COALESCE(NULLIF(error_message, ''), 'reaper: timeout exceeded'),
+               finished_at = NOW()
+         WHERE status = 'running'
+           AND started_at IS NOT NULL
+           AND started_at + (interval '1 second' * (CASE type WHEN 'debezium.restart' THEN 120::int WHEN 'debezium.signal' THEN 60::int WHEN 'debezium.snapshot' THEN 600::int WHEN 'mapping.alter-column' THEN 120::int WHEN 'mapping.backfill' THEN 1800::int WHEN 'master.create' THEN 120::int WHEN 'master.swap' THEN 60::int WHEN 'recon.backfill-source-ts' THEN 900::int WHEN 'recon.check' THEN 600::int WHEN 'recon.heal' THEN 300::int WHEN 'recon.retry-failed' THEN 120::int WHEN 'source.create-default-columns' THEN 120::int WHEN 'source.detect-timestamp-field' THEN 300::int WHEN 'source.scan-fields' THEN 300::int WHEN 'source.standardize' THEN 300::int WHEN 'transmute' THEN 900::int ELSE 30::int END)::int) < NOW()
+    
+{"level":"warn","ts":1778553093.222021,"msg":"reaper sweep failed","error":"ERROR: relation \"cdc_system.cdc_jobs\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:31:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:380 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[6.929ms] [34;1m[rows:0][0m UPDATE "cdc_system"."cdc_alerts" SET "last_fired_at"='2026-05-12 02:31:33.214',"silenced_until"=NULL,"status"='firing' WHERE status = 'silenced' AND silenced_until IS NOT NULL AND silenced_until <= '2026-05-12 02:31:33.214'
+{"level":"warn","ts":1778553093.222273,"msg":"reopen silences failed","error":"ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:31:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:399 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[1.213ms] [34;1m[rows:0][0m UPDATE "cdc_system"."cdc_alerts" SET "resolved_at"='2026-05-12 02:31:33.222',"silence_reason"='auto-resolved: stale',"status"='resolved' WHERE status = 'firing' AND last_fired_at < '2026-05-11 02:31:33.222'
+{"level":"warn","ts":1778553093.223646,"msg":"resolve stale failed","error":"ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:31:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:64 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[5.382ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '24 hours' AND created_at <= NOW()
+
+2026/05/12 09:31:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:66 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[2.723ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '1 hour' AND created_at <= NOW()
+
+2026/05/12 09:31:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:30 [35;1mERROR: relation "cdc_reconciliation_report" does not exist (SQLSTATE 42P01)
+[0m[33m[10.332ms] [34;1m[rows:-][0m SELECT DISTINCT ON (target_table) * FROM cdc_reconciliation_report ORDER BY target_table, checked_at DESC
+
+2026/05/12 09:31:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:81 [35;1mERROR: cached plan must not change result type (SQLSTATE 0A000)
+[0m[33m[12.302ms] [34;1m[rows:0][0m SELECT * FROM "cdc_activity_log" WHERE created_at > NOW() - INTERVAL '1 day' AND created_at <= NOW() ORDER BY started_at DESC LIMIT 10
+
+2026/05/12 09:31:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:155 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.557ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE fingerprint = '5a2c839a5ec5f67e06dd072a1e24871ba4cb4677bc460f279a76a9be2f65dcd7' ORDER BY "cdc_alerts"."id" LIMIT 1 FOR UPDATE
+{"level":"warn","ts":1778553093.2590468,"msg":"alert fire failed","name":"DebeziumConnectorFailed","error":"lookup alert: ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:31:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:337 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.392ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE status IN ('firing','acknowledged') ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,fired_at DESC
+
+2026/05/12 09:31:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:64 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[13.903ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '24 hours' AND created_at <= NOW()
+
+2026/05/12 09:31:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:30 [35;1mERROR: relation "cdc_reconciliation_report" does not exist (SQLSTATE 42P01)
+[0m[33m[14.453ms] [34;1m[rows:-][0m SELECT DISTINCT ON (target_table) * FROM cdc_reconciliation_report ORDER BY target_table, checked_at DESC
+
+2026/05/12 09:31:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:66 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[0.806ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '1 hour' AND created_at <= NOW()
+
+2026/05/12 09:31:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:81 [35;1mERROR: cached plan must not change result type (SQLSTATE 0A000)
+[0m[33m[18.289ms] [34;1m[rows:0][0m SELECT * FROM "cdc_activity_log" WHERE created_at > NOW() - INTERVAL '1 day' AND created_at <= NOW() ORDER BY started_at DESC LIMIT 10
+
+2026/05/12 09:31:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:155 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.468ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE fingerprint = '5a2c839a5ec5f67e06dd072a1e24871ba4cb4677bc460f279a76a9be2f65dcd7' ORDER BY "cdc_alerts"."id" LIMIT 1 FOR UPDATE
+{"level":"warn","ts":1778553108.265155,"msg":"alert fire failed","name":"DebeziumConnectorFailed","error":"lookup alert: ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:31:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:337 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.552ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE status IN ('firing','acknowledged') ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,fired_at DESC
+
+2026/05/12 09:32:03 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/messaging/stuck_job_reaper.go:127 [35;1mERROR: relation "cdc_system.cdc_jobs" does not exist (SQLSTATE 42P01)
+[0m[33m[4.888ms] [34;1m[rows:0][0m 
+        UPDATE cdc_system.cdc_jobs
+           SET status = 'failed',
+               error_message = COALESCE(NULLIF(error_message, ''), 'reaper: timeout exceeded'),
+               finished_at = NOW()
+         WHERE status = 'running'
+           AND started_at IS NOT NULL
+           AND started_at + (interval '1 second' * (CASE type WHEN 'debezium.restart' THEN 120::int WHEN 'debezium.signal' THEN 60::int WHEN 'debezium.snapshot' THEN 600::int WHEN 'mapping.alter-column' THEN 120::int WHEN 'mapping.backfill' THEN 1800::int WHEN 'master.create' THEN 120::int WHEN 'master.swap' THEN 60::int WHEN 'recon.backfill-source-ts' THEN 900::int WHEN 'recon.check' THEN 600::int WHEN 'recon.heal' THEN 300::int WHEN 'recon.retry-failed' THEN 120::int WHEN 'source.create-default-columns' THEN 120::int WHEN 'source.detect-timestamp-field' THEN 300::int WHEN 'source.scan-fields' THEN 300::int WHEN 'source.standardize' THEN 300::int WHEN 'transmute' THEN 900::int ELSE 30::int END)::int) < NOW()
+    
+{"level":"warn","ts":1778553123.221073,"msg":"reaper sweep failed","error":"ERROR: relation \"cdc_system.cdc_jobs\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:32:03 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:64 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[5.307ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '24 hours' AND created_at <= NOW()
+
+2026/05/12 09:32:03 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:30 [35;1mERROR: relation "cdc_reconciliation_report" does not exist (SQLSTATE 42P01)
+[0m[33m[5.683ms] [34;1m[rows:-][0m SELECT DISTINCT ON (target_table) * FROM cdc_reconciliation_report ORDER BY target_table, checked_at DESC
+
+2026/05/12 09:32:03 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:66 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[1.200ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '1 hour' AND created_at <= NOW()
+
+2026/05/12 09:32:03 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:81 [35;1mERROR: cached plan must not change result type (SQLSTATE 0A000)
+[0m[33m[8.084ms] [34;1m[rows:0][0m SELECT * FROM "cdc_activity_log" WHERE created_at > NOW() - INTERVAL '1 day' AND created_at <= NOW() ORDER BY started_at DESC LIMIT 10
+
+2026/05/12 09:32:03 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:155 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.806ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE fingerprint = '5a2c839a5ec5f67e06dd072a1e24871ba4cb4677bc460f279a76a9be2f65dcd7' ORDER BY "cdc_alerts"."id" LIMIT 1 FOR UPDATE
+{"level":"warn","ts":1778553123.248847,"msg":"alert fire failed","name":"DebeziumConnectorFailed","error":"lookup alert: ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:32:03 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:337 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.448ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE status IN ('firing','acknowledged') ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,fired_at DESC
+
+2026/05/12 09:32:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:30 [35;1mERROR: relation "cdc_reconciliation_report" does not exist (SQLSTATE 42P01)
+[0m[33m[5.057ms] [34;1m[rows:-][0m SELECT DISTINCT ON (target_table) * FROM cdc_reconciliation_report ORDER BY target_table, checked_at DESC
+
+2026/05/12 09:32:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:64 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[5.050ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '24 hours' AND created_at <= NOW()
+
+2026/05/12 09:32:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:66 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[0.606ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '1 hour' AND created_at <= NOW()
+
+2026/05/12 09:32:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:81 [35;1mERROR: cached plan must not change result type (SQLSTATE 0A000)
+[0m[33m[9.462ms] [34;1m[rows:0][0m SELECT * FROM "cdc_activity_log" WHERE created_at > NOW() - INTERVAL '1 day' AND created_at <= NOW() ORDER BY started_at DESC LIMIT 10
+
+2026/05/12 09:32:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:155 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.723ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE fingerprint = '5a2c839a5ec5f67e06dd072a1e24871ba4cb4677bc460f279a76a9be2f65dcd7' ORDER BY "cdc_alerts"."id" LIMIT 1 FOR UPDATE
+{"level":"warn","ts":1778553138.253613,"msg":"alert fire failed","name":"DebeziumConnectorFailed","error":"lookup alert: ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:32:18 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:337 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.352ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE status IN ('firing','acknowledged') ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,fired_at DESC
+
+2026/05/12 09:32:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/messaging/stuck_job_reaper.go:127 [35;1mERROR: relation "cdc_system.cdc_jobs" does not exist (SQLSTATE 42P01)
+[0m[33m[6.157ms] [34;1m[rows:0][0m 
+        UPDATE cdc_system.cdc_jobs
+           SET status = 'failed',
+               error_message = COALESCE(NULLIF(error_message, ''), 'reaper: timeout exceeded'),
+               finished_at = NOW()
+         WHERE status = 'running'
+           AND started_at IS NOT NULL
+           AND started_at + (interval '1 second' * (CASE type WHEN 'debezium.restart' THEN 120::int WHEN 'debezium.signal' THEN 60::int WHEN 'debezium.snapshot' THEN 600::int WHEN 'mapping.alter-column' THEN 120::int WHEN 'mapping.backfill' THEN 1800::int WHEN 'master.create' THEN 120::int WHEN 'master.swap' THEN 60::int WHEN 'recon.backfill-source-ts' THEN 900::int WHEN 'recon.check' THEN 600::int WHEN 'recon.heal' THEN 300::int WHEN 'recon.retry-failed' THEN 120::int WHEN 'source.create-default-columns' THEN 120::int WHEN 'source.detect-timestamp-field' THEN 300::int WHEN 'source.scan-fields' THEN 300::int WHEN 'source.standardize' THEN 300::int WHEN 'transmute' THEN 900::int ELSE 30::int END)::int) < NOW()
+    
+{"level":"warn","ts":1778553153.222547,"msg":"reaper sweep failed","error":"ERROR: relation \"cdc_system.cdc_jobs\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:32:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:380 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[7.024ms] [34;1m[rows:0][0m UPDATE "cdc_system"."cdc_alerts" SET "last_fired_at"='2026-05-12 02:32:33.215',"silenced_until"=NULL,"status"='firing' WHERE status = 'silenced' AND silenced_until IS NOT NULL AND silenced_until <= '2026-05-12 02:32:33.215'
+{"level":"warn","ts":1778553153.2227788,"msg":"reopen silences failed","error":"ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:32:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:399 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[1.441ms] [34;1m[rows:0][0m UPDATE "cdc_system"."cdc_alerts" SET "resolved_at"='2026-05-12 02:32:33.222',"silence_reason"='auto-resolved: stale',"status"='resolved' WHERE status = 'firing' AND last_fired_at < '2026-05-11 02:32:33.222'
+{"level":"warn","ts":1778553153.2244842,"msg":"resolve stale failed","error":"ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:32:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:30 [35;1mERROR: relation "cdc_reconciliation_report" does not exist (SQLSTATE 42P01)
+[0m[33m[4.254ms] [34;1m[rows:-][0m SELECT DISTINCT ON (target_table) * FROM cdc_reconciliation_report ORDER BY target_table, checked_at DESC
+
+2026/05/12 09:32:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:64 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[5.785ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '24 hours' AND created_at <= NOW()
+
+2026/05/12 09:32:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:66 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[0.706ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '1 hour' AND created_at <= NOW()
+
+2026/05/12 09:32:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:81 [35;1mERROR: cached plan must not change result type (SQLSTATE 0A000)
+[0m[33m[6.913ms] [34;1m[rows:0][0m SELECT * FROM "cdc_activity_log" WHERE created_at > NOW() - INTERVAL '1 day' AND created_at <= NOW() ORDER BY started_at DESC LIMIT 10
+
+2026/05/12 09:32:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:155 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.403ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE fingerprint = '5a2c839a5ec5f67e06dd072a1e24871ba4cb4677bc460f279a76a9be2f65dcd7' ORDER BY "cdc_alerts"."id" LIMIT 1 FOR UPDATE
+{"level":"warn","ts":1778553153.249541,"msg":"alert fire failed","name":"DebeziumConnectorFailed","error":"lookup alert: ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:32:33 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:337 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.366ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE status IN ('firing','acknowledged') ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,fired_at DESC
+
+2026/05/12 09:32:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:30 [35;1mERROR: relation "cdc_reconciliation_report" does not exist (SQLSTATE 42P01)
+[0m[33m[5.961ms] [34;1m[rows:-][0m SELECT DISTINCT ON (target_table) * FROM cdc_reconciliation_report ORDER BY target_table, checked_at DESC
+
+2026/05/12 09:32:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:64 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[6.483ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '24 hours' AND created_at <= NOW()
+
+2026/05/12 09:32:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:81 [35;1mERROR: cached plan must not change result type (SQLSTATE 0A000)
+[0m[33m[6.378ms] [34;1m[rows:0][0m SELECT * FROM "cdc_activity_log" WHERE created_at > NOW() - INTERVAL '1 day' AND created_at <= NOW() ORDER BY started_at DESC LIMIT 10
+
+2026/05/12 09:32:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/observability/system_health_queries.go:66 [35;1mERROR: relation "failed_sync_logs" does not exist (SQLSTATE 42P01)
+[0m[33m[0.402ms] [34;1m[rows:0][0m SELECT count(*) FROM "failed_sync_logs" WHERE created_at > NOW() - INTERVAL '1 hour' AND created_at <= NOW()
+
+2026/05/12 09:32:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:155 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.493ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE fingerprint = '5a2c839a5ec5f67e06dd072a1e24871ba4cb4677bc460f279a76a9be2f65dcd7' ORDER BY "cdc_alerts"."id" LIMIT 1 FOR UPDATE
+{"level":"warn","ts":1778553168.256586,"msg":"alert fire failed","name":"DebeziumConnectorFailed","error":"lookup alert: ERROR: relation \"cdc_system.cdc_alerts\" does not exist (SQLSTATE 42P01)"}
+
+2026/05/12 09:32:48 [31;1m/Users/trainguyen/Documents/work/cdc-system/cdc-cms-service/internal/infra/persistence/alert_manager.go:337 [35;1mERROR: relation "cdc_system.cdc_alerts" does not exist (SQLSTATE 42P01)
+[0m[33m[0.288ms] [34;1m[rows:0][0m SELECT * FROM "cdc_system"."cdc_alerts" WHERE status IN ('firing','acknowledged') ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,fired_at DESC
+09:32:57 | 204 |      26.917µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:32:57 | 204 |           7µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/registry/11 | -
+09:32:57 | 404 |   30.698459ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:32:57 | 404 |    1.476125ms | 127.0.0.1 | GET | /api/v1/source-objects/registry/11 | -
+09:32:59 | 204 |      16.084µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+09:32:59 | 204 |         2.5µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 09:32:59 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+2026/05/12 09:32:59 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 2.70175ms, err=<nil>
+09:32:59 | 200 |    2.928334ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:32:59 | 200 |    7.731542ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:33:01 | 204 |        9.75µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:33:01 | 204 |        2.75µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:33:01 | 204 |       6.292µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:33:01 | 204 |       5.583µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:33:01 | 200 |     8.65625ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:33:01 | 200 |    2.163167ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:33:01 | 200 |   19.180833ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:33:01 | 200 |    1.230167ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:33:11 | 204 |       19.75µs | 127.0.0.1 | OPTIONS | /api/v1/system/connectors | -
+2026/05/12 09:33:12 [KafkaConnect] POST http://127.0.0.1:18083/connectors
+2026/05/12 09:33:12 [KafkaConnect] POST http://127.0.0.1:18083/connectors finished in 261.998792ms, err=<nil>
+{"level":"info","ts":1778553192.6710742,"msg":"connector created","connector":"goopay"}
+09:33:11 | 201 |  290.519958ms | 127.0.0.1 | POST | /api/v1/system/connectors | -
+2026/05/12 09:33:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors
+09:33:12 | 204 |       4.833µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+2026/05/12 09:33:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors finished in 995.458µs, err=<nil>
+2026/05/12 09:33:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status
+09:33:12 | 200 |     1.03325ms | 127.0.0.1 | GET | /api/v1/sources | -
+2026/05/12 09:33:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/status finished in 902.667µs, err=<nil>
+2026/05/12 09:33:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config
+2026/05/12 09:33:12 [KafkaConnect] GET http://127.0.0.1:18083/connectors/goopay/config finished in 3.67175ms, err=<nil>
+09:33:12 | 200 |    5.803833ms | 127.0.0.1 | GET | /api/v1/system/connectors | -
+09:33:14 | 204 |       6.667µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:33:14 | 204 |       2.208µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:33:14 | 204 |      13.125µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:33:14 | 204 |       3.208µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:33:14 | 200 |    2.717208ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:33:14 | 200 |     918.958µs | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:33:14 | 200 |    6.542333ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:33:14 | 200 |    1.213792ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:33:16 | 200 |    5.192375ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:33:21 | 204 |      22.333µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+{"level":"info","ts":1778553201.972469,"msg":"shadow table ensured","schema":"shadow_centralized_export_service","target":"sd_export_jobs","registry_id":1}
+{"level":"error","ts":1778553201.9842849,"msg":"post-register v2 sync failed","registry_id":1,"error":"no active source connection for engine=mongodb source_db=centralized-export-service"}
+09:33:21 | 202 |  137.620084ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+09:33:21 | 204 |         7.5µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:33:21 | 200 |    8.154208ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:33:25 | 204 |       6.583µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:33:25 | 204 |       4.792µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:33:25 | 200 |    7.227416ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:33:25 | 200 |    9.247334ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:33:25 | 200 |    2.541708ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:33:25 | 200 |    3.603333ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:34:21 | 204 |          23µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:34:21 | 204 |       4.667µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:34:21 | 204 |      11.458µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:34:21 | 204 |       3.375µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:34:21 | 200 |       5.673ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:34:21 | 200 |    6.754375ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:34:21 | 200 |     2.33825ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:34:21 | 200 |    3.133709ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:34:33 | 204 |      17.625µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:34:33 | 204 |       5.583µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:34:33 | 204 |       7.833µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:34:33 | 204 |       2.209µs | 127.0.0.1 | OPTIONS | /api/v1/shadow-bindings | -
+09:34:33 | 200 |   15.156709ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:34:33 | 200 |    4.680542ms | 127.0.0.1 | GET | /api/v1/shadow-bindings | -
+09:34:33 | 200 |   28.649417ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:34:33 | 200 |     5.21825ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+09:34:34 | 204 |       6.875µs | 127.0.0.1 | OPTIONS | /api/v1/sources | -
+09:34:34 | 200 |    2.944291ms | 127.0.0.1 | GET | /api/v1/sources | -
+09:34:39 | 204 |      59.792µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects/register | -
+{"level":"info","ts":1778553279.179463,"msg":"shadow table ensured","schema":"shadow_centralized_export_service","target":"sd_export_jobs","registry_id":2}
+{"level":"error","ts":1778553279.196927,"msg":"post-register v2 sync failed","registry_id":2,"error":"no active source connection for engine=mongodb source_db=centralized-export-service"}
+09:34:39 | 202 |      70.742ms | 127.0.0.1 | POST | /api/v1/source-objects/register | -
+09:34:39 | 204 |      14.834µs | 127.0.0.1 | OPTIONS | /api/v1/source-objects | -
+09:34:39 | 200 |    2.511375ms | 127.0.0.1 | GET | /api/v1/source-objects | -
+signal: killed

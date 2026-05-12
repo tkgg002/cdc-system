@@ -293,7 +293,10 @@ export default function SourceConnectors() {
     queryKey: ['debezium-connectors'],
     queryFn: async () => {
       const r = await cmsApi.get<{ data: ConnectorView[]; count: number }>('/api/v1/system/connectors');
-      return r.data.data;
+      // Defensive: backend may return tasks=null on a freshly-registered
+      // connector that has not yet produced workers. Downstream
+      // .tasks.filter/.length would crash the whole page.
+      return (r.data.data ?? []).map((c) => ({ ...c, tasks: c.tasks ?? [] }));
     },
     refetchInterval: 15000,
   });
@@ -626,6 +629,14 @@ export default function SourceConnectors() {
               disabled={!live}
             >
               Refresh Active
+            </Button>
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => setDeletePending(row.connector_name)}
+            >
+              Delete
             </Button>
           </Space>
         );

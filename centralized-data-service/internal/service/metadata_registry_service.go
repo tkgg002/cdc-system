@@ -148,15 +148,14 @@ func (rs *MetadataRegistryService) ReloadAll(ctx context.Context) error {
 	routeBySourceID := make(map[int64]*ResolvedSourceRoute, len(sources))
 
 	for i := range sources {
-		src := sources[i]
-		sourceByID[src.ID] = &src
+		sourceByID[sources[i].ID] = &sources[i]
 	}
 	for i := range connections {
 		connectionCodeByID[connections[i].ID] = strings.TrimSpace(connections[i].ConnectionCode)
 	}
 
 	for i := range allBindings {
-		binding := allBindings[i]
+		binding := &allBindings[i]
 		src := sourceByID[binding.SourceObjectID]
 		if src == nil {
 			rs.logger.Warn("shadow binding points to unknown source object",
@@ -166,10 +165,10 @@ func (rs *MetadataRegistryService) ReloadAll(ctx context.Context) error {
 			continue
 		}
 
-		cfg := synthesizeLegacyTableRegistry(src, &binding)
+		cfg := synthesizeLegacyTableRegistry(src, binding)
 		route := &ResolvedSourceRoute{
 			SourceObject:        src,
-			ShadowBinding:       &binding,
+			ShadowBinding:       binding,
 			TableConfig:         cfg,
 			ShadowConnectionKey: connectionCodeByID[binding.ShadowConnectionID],
 		}
