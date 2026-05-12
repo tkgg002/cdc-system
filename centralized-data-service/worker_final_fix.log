@@ -1,0 +1,71 @@
+2026/05/12 10:30:35 config path: ./config/config-local.yml
+{"level":"info","ts":1778556635.398357,"caller":"worker/main.go:33","msg":"starting CDC Worker","service":"centralized-data-service","port":":8082"}
+{"level":"info","ts":1778556635.398711,"caller":"idgen/sonyflake.go:31","msg":"sonyflake initialized","machineID":2754,"ip":"192.168.10.194"}
+{"level":"info","ts":1778556635.4266849,"caller":"observability/otel.go:400","msg":"OpenTelemetry initialized","service":"cdc-worker","endpoint":"http://otel-collector:4318","sample_ratio":1,"log_memory_limit_mib":256,"log_fallback_threshold":10}
+{"level":"info","ts":1778556635.426754,"msg":"OTel zap bridge active — logs forwarding to SigNoz (severity-aware)"}
+{"level":"info","ts":1778556635.467509,"msg":"PostgreSQL connected (multi-pg registry)","control_plane":"postgres://gpay_admin:***@localhost:5433/cdc_dw?sslmode=disable","shadow_plane":"postgres://gpay_admin:***@localhost:5436/cdc_shadow?sslmode=disable","destination":"postgres://gpay_admin:***@localhost:5434/goopay_dest?sslmode=disable"}
+{"level":"info","ts":1778556635.46754,"msg":"postgres read-replica not configured, reusing primary with SET TRANSACTION READ ONLY"}
+{"level":"info","ts":1778556635.4857621,"msg":"NATS JetStream connected","url":"nats://cdc_worker:worker_secret_2026@localhost:14222"}
+{"level":"info","ts":1778556635.503066,"msg":"NATS streams ready"}
+{"level":"info","ts":1778556635.516542,"msg":"Redis connected","addr":"localhost:16379"}
+{"level":"info","ts":1778556635.530817,"msg":"V2 metadata registry reloaded","sources":1,"connections":5,"shadow_bindings":1,"v2_mapping_rules":15}
+{"level":"info","ts":1778556635.536746,"msg":"MongoDB connected","url":"mongodb://localhost:17017/?directConnection=true"}
+{"level":"info","ts":1778556635.53683,"msg":"Reconciliation Core initialized (replica + leader election)"}
+{"level":"info","ts":1778556635.537697,"msg":"transmute handler registered","subject_run":"cdc.cmd.transmute","subject_shadow":"cdc.cmd.transmute-shadow"}
+{"level":"info","ts":1778556635.537726,"msg":"transmute scheduler started (60s poll, cron + FOR UPDATE SKIP LOCKED + fencing)"}
+{"level":"info","ts":1778556635.5377312,"msg":"job monitor registered","subject":"cdc.evt.transmute.completed"}
+{"level":"info","ts":1778556635.537735,"msg":"master DDL handler registered","subject":"cdc.cmd.master-create"}
+{"level":"info","ts":1778556635.537738,"msg":"provisioning orchestrator DISABLED (set PROVISIONING_ORCHESTRATOR_ENABLED=1 to enable)"}
+{"level":"info","ts":1778556635.5378728,"msg":"transmute scheduler started","interval":60,"machine_id":0,"fencing_token":0}
+{"level":"info","ts":1778556635.5421271,"msg":"MongoDB connected","url":"mongodb://localhost:17017/?directConnection=true"}
+{"level":"info","ts":1778556635.542186,"msg":"reconciliation handlers registered (7 commands)"}
+{"level":"info","ts":1778556635.542194,"msg":"command listeners registered","subjects":["cdc.cmd.standardize","cdc.cmd.discover","cdc.cmd.backfill","cdc.cmd.scan-raw-data","cdc.cmd.batch-transform","cdc.cmd.recon-check","cdc.cmd.recon-heal","cdc.cmd.retry-failed","cdc.cmd.debezium-signal","cdc.cmd.debezium-snapshot","cdc.cmd.scan-fields","cdc.cmd.sync-register","cdc.cmd.sync-state","cdc.cmd.restart-debezium","cdc.cmd.alter-column","cdc.cmd.master-create","cdc.cmd.transmute","cdc.cmd.transmute-shadow"]}
+{"level":"info","ts":1778556635.542469,"msg":"starting consumer pool","pool_size":10}
+{"level":"info","ts":1778556635.5425081,"msg":"kafka consumer started","brokers":["localhost:19092"],"group":"cdc-worker-group-debug-v1"}
+{"level":"info","ts":1778556635.542515,"msg":"CDC Worker started","port":":8082"}
+{"level":"info","ts":1778556635.5426009,"msg":"metrics HTTP server listening","addr":":9090","paths":["/metrics","/health"]}
+{"level":"info","ts":1778556635.542659,"msg":"full-count aggregator starting","run_at_utc":"03:00","pg_fast_path_cutoff":10000000}
+{"level":"info","ts":1778556635.542706,"msg":"dlq state machine started","poll_interval":300,"batch_size":100,"max_retries":3}
+{"level":"info","ts":1778556635.542722,"msg":"partition dropper started","interval":86400,"failed_sync_logs_retention":7776000,"cdc_activity_log_retention":2592000}
+{"level":"info","ts":1778556635.542837,"msg":"kafka consumer starting","brokers":["localhost:19092"],"group":"cdc-worker-group-debug-v1","prefixes":["cdc.gpay","cdc.goopay","cdc.mariadb","cdc.market"]}
+2026/05/12 10:30:40 Post "http://otel-collector:4318/v1/logs": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:30:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"info","ts":1778556645.551299,"msg":"discovered kafka topics (multi-prefix union)","prefixes":["cdc.gpay","cdc.goopay","cdc.mariadb","cdc.market"],"topics":["cdc.goopay.centralized-export-service.export-jobs","cdc.goopay_export.centralized-export-service.export-jobs"],"debezium_tables":1,"count_cdc.gpay":0,"count_cdc.goopay":2,"count_cdc.mariadb":0,"count_cdc.market":0}
+{"level":"info","ts":1778556645.551587,"msg":"kafka consumer started","topics":["cdc.goopay.centralized-export-service.export-jobs","cdc.goopay_export.centralized-export-service.export-jobs"],"group":"cdc-worker-group-debug-v1"}
+2026/05/12 10:30:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:31:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"info","ts":1778556665.559145,"msg":"reconcile schedule added to existing schedules"}
+{"level":"info","ts":1778556665.561688,"msg":"schedule poller started","enabled_count":6,"registered":["bridge=5m","transform=5m","field-scan=60m","partition-check=1440m","airbyte-sync=5m","reconcile=30m"],"tick_interval":60,"recon_core_available":true}
+2026/05/12 10:31:10 Post "http://otel-collector:4318/v1/logs": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:31:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:31:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:31:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:31:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"info","ts":1778556710.978689,"msg":"debezium signal received","type":"","table":"export-jobs"}
+2026/05/12 10:31:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"info","ts":1778556715.961225,"msg":"scan-fields dispatch","target":"sd_export_jobs","source":"export-jobs","engine":"debezium","effective_id":1,"source_object_id":1}
+2026/05/12 10:32:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"info","ts":1778556725.5691159,"msg":"executing scheduled operation","operation":"reconcile","interval_min":30,"first_run":true}
+{"level":"info","ts":1778556725.569193,"msg":"reconcile cycle started","started_at":1778556725.569111}
+{"level":"info","ts":1778556725.589941,"msg":"reconcile cycle completed","tables_checked":0,"drift_detected":0,"error_count":0,"elapsed":0.020821958}
+2026/05/12 10:32:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:32:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:32:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:32:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:32:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:33:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:33:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:33:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:33:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:33:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:33:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:34:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:34:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:34:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:34:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:34:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:34:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:35:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:35:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:35:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:35:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host

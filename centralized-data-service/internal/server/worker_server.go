@@ -252,6 +252,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 
 	mongoIntrospectSvc := service.NewMongoIntrospectionService()
 	cmdHandler.SetMongoService(mongoIntrospectSvc)
+	cmdHandler.SetMongoURL(cfg.MongoDB.URL)
 
 	natsClient.Conn.Subscribe("cdc.cmd.standardize", cmdHandler.HandleStandardize)
 	natsClient.Conn.Subscribe("cdc.cmd.discover", cmdHandler.HandleDiscover)

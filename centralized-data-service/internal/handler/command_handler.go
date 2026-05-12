@@ -42,6 +42,9 @@ type CommandHandler struct {
 	natsConn *nats.Conn
 	// mongoSvc — for MongoDB introspection (Flow 1)
 	mongoSvc *service.MongoIntrospectionService
+	// mongoURL — pre-configured MongoDB connection URI from worker config.
+	// Used by scanFieldsMongoSource to connect to the source cluster.
+	mongoURL string
 }
 
 // SetKafkaConnectURL injects the Kafka Connect REST base URL (used by
@@ -65,6 +68,10 @@ func (h *CommandHandler) SetMetadataRegistry(metadata service.MetadataRegistry) 
 
 func (h *CommandHandler) SetMongoService(svc *service.MongoIntrospectionService) {
 	h.mongoSvc = svc
+}
+
+func (h *CommandHandler) SetMongoURL(url string) {
+	h.mongoURL = url
 }
 
 // CommandResult is the admin-facing result envelope. It must stay
@@ -231,6 +238,91 @@ func (h *CommandHandler) HandleStandardize(msg *nats.Msg) {
 // HandleCreateDefaultColumns creates the CDC table + adds all approved mapping rule columns.
 // This is the "tạo field default" action from Luồng 1.
 // Subject: "cdc.cmd.create-default-columns"
+func (h *CommandHandler) scanFieldsMongoSource(ctx context.Context, registryID int64, sourceTable string, autoApprove bool) (int, int, error) {
+	// 1. Get registry details from source_object_registry
+	var registry struct {
+		SourceDatabase   string `gorm:"column:source_database"`
+		SourceObjectName string `gorm:"column:source_object_name"`
+	}
+	if err := h.db.Table("cdc_system.source_object_registry").Where("id = ?", registryID).First(&registry).Error; err != nil {
+		return 0, 0, fmt.Errorf("failed to get source_object_registry id=%d: %v", registryID, err)
+	}
+
+	// 2. Use the worker's pre-configured MongoDB URL (injected via SetMongoURL)
+	if h.mongoURL == "" {
+		return 0, 0, fmt.Errorf("mongoURL not configured on worker; cannot introspect source")
+	}
+
+	// 3. Introspect Source
+	fieldMap, err := h.mongoSvc.IntrospectCollection(h.mongoURL, registry.SourceDatabase, registry.SourceObjectName, 10)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to introspect mongo source: %v", err)
+	}
+
+	if len(fieldMap) == 0 {
+		return 0, 0, fmt.Errorf("source collection %s.%s is empty; no fields found", registry.SourceDatabase, registry.SourceObjectName)
+	}
+
+	// Convert fieldMap to JSON strings for reuse of existing logic
+	rows := []string{}
+	for _, v := range []map[string]interface{}{fieldMap} {
+		b, _ := json.Marshal(v)
+		rows = append(rows, string(b))
+	}
+
+	return h.processDiscoveryRows(ctx, registryID, sourceTable, rows, autoApprove)
+}
+
+func (h *CommandHandler) processDiscoveryRows(ctx context.Context, registryID int64, sourceTable string, rows []string, autoApprove bool) (int, int, error) {
+	discovered := make(map[string]string)
+	for _, row := range rows {
+		var doc map[string]interface{}
+		if err := json.Unmarshal([]byte(row), &doc); err != nil {
+			continue
+		}
+		for k, v := range doc {
+			if k == "_raw_data" || k == "_synced_at" || k == "_source" {
+				continue
+			}
+			if _, seen := discovered[k]; !seen {
+				discovered[k] = service.InferTypeFromRawData(v)
+			}
+		}
+	}
+
+	existingRules := []model.MappingRuleV2{}
+	h.db.Table("cdc_system.mapping_rule_v2").Where("source_object_id = ?", registryID).Find(&existingRules)
+	mapped := make(map[string]bool)
+	for _, r := range existingRules {
+		mapped[r.SourceField] = true
+	}
+
+	status := "pending"
+	if autoApprove {
+		status = "approved"
+	}
+
+	added := 0
+	for field, dataType := range discovered {
+		if !mapped[field] {
+			rule := model.MappingRuleV2{
+				SourceObjectID: registryID,
+				SourceField:    field,
+				TargetColumn:   field,
+				DataType:       dataType,
+				SourceFormat:   "raw",
+				IsActive:       true,
+				Status:         status,
+			}
+			if err := h.db.Table("cdc_system.mapping_rule_v2").Create(&rule).Error; err == nil {
+				added++
+			}
+		}
+	}
+
+	return added, len(discovered), nil
+}
+
 func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 	var payload struct {
 		RegistryID     uint   `json:"registry_id"`
@@ -301,10 +393,25 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 		}
 	}
 
-	// Always ensure CDC system columns and approved mapping rules exist
+	// Always ensure CDC system columns exist
 	if err := h.ensureCDCColumnsInSchema(schemaName, payload.TargetTable); err != nil {
 		h.publishResult(msg, CommandResult{Command: "create-default-columns", TargetTable: payload.TargetTable, Status: "error", Error: err.Error()})
 		return
+	}
+
+	// 1.5 Auto-discovery: Scan _raw_data for new fields and auto-approve them
+	// This fulfills the requirement: "when clicking Sync, it should automatically scan from raw_data to add fields"
+	h.logger.Info("triggering auto-discovery before sync", zap.String("table", payload.TargetTable))
+	// Pre-step: trigger auto-discovery to find fields from raw data
+	// If the table is empty, this will now fallback to direct source scan for MongoDB.
+	var so struct {
+		SourceEngineType string `gorm:"column:source_engine_type"`
+	}
+	h.db.Table("cdc_system.source_object_registry").Select("source_engine_type").Where("id = ?", payload.RegistryID).First(&so)
+
+	_, _, scanErr := h.scanFieldsDebezium(context.Background(), payload.RegistryID, payload.TargetTable, payload.SourceTable, so.SourceEngineType, true)
+	if scanErr != nil {
+		h.logger.Warn("auto-discovery during sync failed (continuing with existing rules)", zap.Error(scanErr))
 	}
 
 	// 2. Add approved business fields (works for both new and existing tables)
@@ -1260,7 +1367,8 @@ func inferSQLTypeFromLegacyCatalogProp(prop interface{}) string {
 
 // scanFieldsDebezium samples _raw_data JSONB (last 100 rows) to infer
 // new fields for Debezium-backed tables.
-func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, registryID uint, targetTable, sourceTable string) (int, int, error) {
+// autoApprove=true will set discovered fields to 'approved' status immediately.
+func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, registryID uint, targetTable, sourceTable, sourceType string, autoApprove bool) (int, int, error) {
 	v2ObjectID := int64(registryID)
 	// Heuristic: If registryID > 0 but no V2 object found, try to resolve via legacy locator
 	if h.mappingV2Repo != nil && v2ObjectID > 0 {
@@ -1277,6 +1385,11 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, registryID uint
 
 	schemaName := h.resolveTargetSchema(targetTable)
 	if !h.tableExists(targetTable) || !h.hasColumn(targetTable, "_raw_data") {
+		// Fallback for MongoDB: if shadow doesn't exist yet, scan source directly
+		if sourceType == "mongodb" {
+			zap.S().Infof("Shadow table %s does not exist, falling back to direct MongoDB source scanning", targetTable)
+			return h.scanFieldsMongoSource(ctx, int64(registryID), sourceTable, autoApprove)
+		}
 		return 0, 0, fmt.Errorf("table %s has no _raw_data column in shadow db", targetTable)
 	}
 	type sampleRow struct {
@@ -1289,81 +1402,20 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, registryID uint
 	}
 
 	if len(rows) == 0 {
+		// Fallback for MongoDB: if shadow is empty, try to scan source directly
+		if sourceType == "mongodb" {
+			zap.S().Infof("Shadow table %s is empty, falling back to direct MongoDB source scanning", targetTable)
+			return h.scanFieldsMongoSource(ctx, int64(registryID), sourceTable, autoApprove)
+		}
 		return 0, 0, fmt.Errorf("shadow table %s is empty; wait for Debezium to sync some data before scanning fields", targetTable)
 	}
 
-	// Merge first-seen types so we get one vote per field.
-	typeByField := make(map[string]string)
-	for _, r := range rows {
-		var m map[string]interface{}
-		if err := json.Unmarshal(r.Raw, &m); err != nil {
-			continue
-		}
-		for k, v := range m {
-			if _, ok := typeByField[k]; ok {
-				continue
-			}
-			typeByField[k] = service.InferTypeFromRawData(v)
-		}
-	}
-	existing, _ := h.mappingRepo.GetByTable(ctx, sourceTable)
-	seen := make(map[string]bool, len(existing))
-	for _, r := range existing {
-		seen[r.SourceField] = true
+	rawJSONs := make([]string, len(rows))
+	for i, r := range rows {
+		rawJSONs[i] = string(r.Raw)
 	}
 
-	// Phase 2 v2 — also check mapping_rule_v2
-	if h.mappingV2Repo != nil && v2ObjectID > 0 {
-		existingV2, _ := h.mappingV2Repo.ListBySourceObject(ctx, v2ObjectID)
-		for _, r := range existingV2 {
-			seen[r.SourceField] = true
-		}
-	}
-	sysFields := systemFieldSet()
-	added, total := 0, len(typeByField)
-	for field, dtype := range typeByField {
-		if seen[field] {
-			continue
-		}
-		status := "pending"
-		ruleType := "discovered"
-		if sysFields[field] {
-			status = "approved"
-			ruleType = "system"
-		}
-		rule := &model.MappingRule{
-			SourceTable:  sourceTable,
-			SourceField:  field,
-			TargetColumn: field,
-			DataType:     dtype,
-			Status:       status,
-			RuleType:     ruleType,
-			IsActive:     true,
-		}
-		if err := h.mappingRepo.Create(ctx, rule); err != nil {
-			h.logger.Warn("scan-fields debezium: create rule failed", zap.String("field", field), zap.Error(err))
-			continue
-		}
-
-		// Phase 2 v2 — also write to mapping_rule_v2
-		if h.mappingV2Repo != nil && v2ObjectID > 0 {
-			v2Rule := &model.MappingRuleV2{
-				SourceObjectID: v2ObjectID,
-				SourceField:    field,
-				TargetColumn:   field,
-				DataType:       dtype,
-				SourceFormat:   "raw",
-				Status:         status,
-				IsActive:       true,
-			}
-			if err := h.mappingV2Repo.Create(ctx, v2Rule); err != nil {
-				h.logger.Warn("scan-fields debezium: create v2 rule failed", zap.String("field", field), zap.Error(err))
-			}
-		}
-
-		added++
-	}
-	return added, total, nil
+	return h.processDiscoveryRows(ctx, int64(registryID), sourceTable, rawJSONs, autoApprove)
 }
 
 // HandleScanFields implements boundary-refactor #1 (subject
@@ -1371,6 +1423,7 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, registryID uint
 func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 	var payload struct {
 		RegistryID     uint   `json:"registry_id"`
+		SourceObjectID int64  `json:"source_object_id"`
 		TargetTable    string `json:"target_table"`
 		SourceTable    string `json:"source_table"`
 		SyncEngine     string `json:"sync_engine"`
@@ -1383,19 +1436,28 @@ func (h *CommandHandler) HandleScanFields(msg *nats.Msg) {
 		h.publishResultWithSubject(msg, "cdc.result.scan-fields", CommandResult{Command: "scan-fields", Status: "error", Error: "invalid payload"})
 		return
 	}
+
+	// Resolve effective registry ID: V2 source_object_id takes priority over legacy registry_id
+	effectiveID := payload.RegistryID
+	if payload.SourceObjectID > 0 {
+		effectiveID = uint(payload.SourceObjectID)
+	}
+
 	ctx := context.Background()
 	engine := strings.ToLower(strings.TrimSpace(payload.SyncEngine))
 	h.logger.Info("scan-fields dispatch",
 		zap.String("target", payload.TargetTable),
 		zap.String("source", payload.SourceTable),
 		zap.String("engine", engine),
+		zap.Uint("effective_id", effectiveID),
+		zap.Int64("source_object_id", payload.SourceObjectID),
 	)
 
 	var added, total int
 	var sourceUsed string = "debezium"
 	var err error
 	_ = engine
-	added, total, err = h.scanFieldsDebezium(ctx, payload.RegistryID, payload.TargetTable, payload.SourceTable)
+	added, total, err = h.scanFieldsDebezium(ctx, effectiveID, payload.TargetTable, payload.SourceTable, payload.SourceType, false)
 
 	if err != nil {
 		h.publishResultWithSubject(msg, "cdc.result.scan-fields", CommandResult{
@@ -1695,7 +1757,8 @@ func (h *CommandHandler) publishResultWithSubject(msg *nats.Msg, subject string,
 	result.Error = sanitizeAdminError(result.Error)
 	data, _ := json.Marshal(result)
 	h.nats_publish(msg, subject, data)
-	h.writeActivity("cmd-"+result.Command, result.TargetTable, result.Status, int64(result.RowsAffected), nil, result.Error)
+	h.logger.Error("command failed", zap.String("command", result.Command), zap.String("error", result.Error))
+	h.writeActivity(result.Command, result.TargetTable, result.Status, int64(result.RowsAffected), nil, result.Error)
 }
 
 // writeActivity mirrors publishResult's ActivityLog side-effect in a
