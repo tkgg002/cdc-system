@@ -156,3 +156,4 @@ func (c BackfillCommand) Validate() error {
 	}
 	return nil
 }
+

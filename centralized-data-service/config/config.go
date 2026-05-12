@@ -62,6 +62,7 @@ type MongoDBConfig struct {
 // ConnectorName defaults the handler to a known Debezium connector if the
 // payload omits one.
 type DebeziumConfig struct {
+	SignalDatabase       string `mapstructure:"signalDatabase"`
 	SignalCollection     string `mapstructure:"signalCollection"`
 	ConnectorStatusURL   string `mapstructure:"connectorStatusUrl"`
 	IncrementalChunkSize int    `mapstructure:"incrementalChunkSize"`

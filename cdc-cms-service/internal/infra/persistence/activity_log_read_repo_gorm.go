@@ -76,7 +76,7 @@ func (r *ActivityLogReadRepo) projectionColumns() string {
 			al.status,
 			al.rows_affected,
 			al.duration_ms,
-			al.details,
+			COALESCE(al.details::text, '{}') as details,
 			al.error_message,
 			al.triggered_by,
 			TO_CHAR(al.started_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS started_at,

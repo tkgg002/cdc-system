@@ -120,3 +120,4 @@ $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
 &{1 admin admin@goopay.vn $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y System Admin admin true 2026-04-28 07:59:02.883866 +0000 UTC 2026-04-28 07:59:02.883866 +0000 UTC}
 $2a$10$0koc2s0krtdFu5L62ltWzOtnBk0b.DFbcgJHjLl4.jXntdhFUd60y
 08:39:30 | 200 |  160.233041ms | 127.0.0.1 | POST | /api/auth/login | -
+signal: killed

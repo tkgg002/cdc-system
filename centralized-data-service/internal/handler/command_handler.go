@@ -238,14 +238,16 @@ func (h *CommandHandler) HandleStandardize(msg *nats.Msg) {
 // HandleCreateDefaultColumns creates the CDC table + adds all approved mapping rule columns.
 // This is the "tạo field default" action from Luồng 1.
 // Subject: "cdc.cmd.create-default-columns"
+// Subject: "cdc.cmd.scan-fields" fallback
 func (h *CommandHandler) scanFieldsMongoSource(ctx context.Context, registryID int64, sourceTable string, autoApprove bool) (int, int, error) {
 	// 1. Get registry details from source_object_registry
-	var registry struct {
-		SourceDatabase   string `gorm:"column:source_database"`
-		SourceObjectName string `gorm:"column:source_object_name"`
-	}
-	if err := h.db.Table("cdc_system.source_object_registry").Where("id = ?", registryID).First(&registry).Error; err != nil {
-		return 0, 0, fmt.Errorf("failed to get source_object_registry id=%d: %v", registryID, err)
+	var registry model.SourceObjectRegistry
+	if err := h.db.Where("id = ?", registryID).First(&registry).Error; err != nil {
+		// Heuristic: If not found by ID, try legacy registry ID in locator
+		err = h.db.Raw(`SELECT * FROM cdc_system.source_object_registry WHERE source_locator_json->>'legacy_registry_id' = ?`, strconv.FormatInt(registryID, 10)).Scan(&registry).Error
+		if err != nil || registry.ID == 0 {
+			return 0, 0, fmt.Errorf("failed to get source_object_registry id=%d: %v", registryID, err)
+		}
 	}
 
 	// 2. Use the worker's pre-configured MongoDB URL (injected via SetMongoURL)
@@ -254,13 +256,21 @@ func (h *CommandHandler) scanFieldsMongoSource(ctx context.Context, registryID i
 	}
 
 	// 3. Introspect Source
-	fieldMap, err := h.mongoSvc.IntrospectCollection(h.mongoURL, registry.SourceDatabase, registry.SourceObjectName, 10)
+	sourceDB := ""
+	if registry.SourceDatabase != nil {
+		sourceDB = *registry.SourceDatabase
+	}
+	if sourceDB == "" {
+		return 0, 0, fmt.Errorf("source_database is missing in registry id=%d", registryID)
+	}
+
+	fieldMap, err := h.mongoSvc.IntrospectCollection(h.mongoURL, sourceDB, registry.SourceObjectName, 10)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to introspect mongo source: %v", err)
 	}
 
 	if len(fieldMap) == 0 {
-		return 0, 0, fmt.Errorf("source collection %s.%s is empty; no fields found", registry.SourceDatabase, registry.SourceObjectName)
+		return 0, 0, fmt.Errorf("source collection %s.%s is empty; no fields found", sourceDB, registry.SourceObjectName)
 	}
 
 	// Convert fieldMap to JSON strings for reuse of existing logic
@@ -404,12 +414,17 @@ func (h *CommandHandler) HandleCreateDefaultColumns(msg *nats.Msg) {
 	h.logger.Info("triggering auto-discovery before sync", zap.String("table", payload.TargetTable))
 	// Pre-step: trigger auto-discovery to find fields from raw data
 	// If the table is empty, this will now fallback to direct source scan for MongoDB.
+	effectiveID := int64(payload.RegistryID)
+	if payload.SourceObjectID > 0 {
+		effectiveID = payload.SourceObjectID
+	}
+
 	var so struct {
 		SourceEngineType string `gorm:"column:source_engine_type"`
 	}
-	h.db.Table("cdc_system.source_object_registry").Select("source_engine_type").Where("id = ?", payload.RegistryID).First(&so)
+	h.db.Table("cdc_system.source_object_registry").Select("source_engine_type").Where("id = ?", effectiveID).First(&so)
 
-	_, _, scanErr := h.scanFieldsDebezium(context.Background(), payload.RegistryID, payload.TargetTable, payload.SourceTable, so.SourceEngineType, true)
+	_, _, scanErr := h.scanFieldsDebezium(context.Background(), uint(effectiveID), payload.TargetTable, payload.SourceTable, so.SourceEngineType, true)
 	if scanErr != nil {
 		h.logger.Warn("auto-discovery during sync failed (continuing with existing rules)", zap.Error(scanErr))
 	}
@@ -884,7 +899,8 @@ func (h *CommandHandler) HandleDiscoverMongoDatabases(msg *nats.Msg) {
 		return
 	}
 
-	dbs, err := h.mongoSvc.DiscoverDatabases(req.Host, req.Port)
+	uri := fmt.Sprintf("mongodb://%s:%s", req.Host, req.Port)
+	dbs, err := h.mongoSvc.DiscoverDatabases(uri)
 	respPayload := map[string]any{}
 	if err != nil {
 		h.logger.Error("mongo discovery failed", zap.Error(err))
@@ -924,7 +940,8 @@ func (h *CommandHandler) HandleDiscoverMongoCollections(msg *nats.Msg) {
 		return
 	}
 
-	cols, err := h.mongoSvc.DiscoverCollections(req.Host, req.Port, req.DB)
+	uri := fmt.Sprintf("mongodb://%s:%s", req.Host, req.Port)
+	cols, err := h.mongoSvc.DiscoverCollections(uri, req.DB)
 	respPayload := map[string]any{}
 	if err != nil {
 		respPayload["error"] = err.Error()
@@ -1387,8 +1404,8 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, registryID uint
 	if !h.tableExists(targetTable) || !h.hasColumn(targetTable, "_raw_data") {
 		// Fallback for MongoDB: if shadow doesn't exist yet, scan source directly
 		if sourceType == "mongodb" {
-			zap.S().Infof("Shadow table %s does not exist, falling back to direct MongoDB source scanning", targetTable)
-			return h.scanFieldsMongoSource(ctx, int64(registryID), sourceTable, autoApprove)
+			zap.S().Infof("Shadow table %s does not exist, falling back to direct MongoDB source scanning (v2ID=%d)", targetTable, v2ObjectID)
+			return h.scanFieldsMongoSource(ctx, v2ObjectID, sourceTable, autoApprove)
 		}
 		return 0, 0, fmt.Errorf("table %s has no _raw_data column in shadow db", targetTable)
 	}
@@ -1404,8 +1421,8 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, registryID uint
 	if len(rows) == 0 {
 		// Fallback for MongoDB: if shadow is empty, try to scan source directly
 		if sourceType == "mongodb" {
-			zap.S().Infof("Shadow table %s is empty, falling back to direct MongoDB source scanning", targetTable)
-			return h.scanFieldsMongoSource(ctx, int64(registryID), sourceTable, autoApprove)
+			zap.S().Infof("Shadow table %s is empty, falling back to direct MongoDB source scanning (v2ID=%d)", targetTable, v2ObjectID)
+			return h.scanFieldsMongoSource(ctx, v2ObjectID, sourceTable, autoApprove)
 		}
 		return 0, 0, fmt.Errorf("shadow table %s is empty; wait for Debezium to sync some data before scanning fields", targetTable)
 	}
@@ -1415,7 +1432,7 @@ func (h *CommandHandler) scanFieldsDebezium(ctx context.Context, registryID uint
 		rawJSONs[i] = string(r.Raw)
 	}
 
-	return h.processDiscoveryRows(ctx, int64(registryID), sourceTable, rawJSONs, autoApprove)
+	return h.processDiscoveryRows(ctx, v2ObjectID, sourceTable, rawJSONs, autoApprove)
 }
 
 // HandleScanFields implements boundary-refactor #1 (subject

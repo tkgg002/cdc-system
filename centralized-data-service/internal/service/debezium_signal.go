@@ -17,6 +17,7 @@ import (
 // service-local struct so `internal/service` does not import the top
 // level config package (circular dep from test harness).
 type DebeziumSignalConfig struct {
+	SignalDatabase       string
 	SignalCollection     string
 	ConnectorStatusURL   string
 	IncrementalChunkSize int
@@ -113,10 +114,15 @@ func (d *DebeziumSignalClient) TriggerIncrementalSnapshot(
 		"data": data,
 	}
 
-	coll := d.mongoClient.Database(database).Collection(d.cfg.SignalCollection)
+	signalDB := database
+	if d.cfg.SignalDatabase != "" {
+		signalDB = d.cfg.SignalDatabase
+	}
+
+	coll := d.mongoClient.Database(signalDB).Collection(d.cfg.SignalCollection)
 	res, err := coll.InsertOne(ctx, doc)
 	if err != nil {
-		return "", fmt.Errorf("insert signal into %s.%s: %w", database, d.cfg.SignalCollection, err)
+		return "", fmt.Errorf("insert signal into %s.%s: %w", signalDB, d.cfg.SignalCollection, err)
 	}
 
 	signalID := fmt.Sprintf("%v", res.InsertedID)

@@ -6,6 +6,8 @@
 // re-exports these via type aliases for Swagger compatibility.
 package queries
 
+
+
 // ActivityLogRow is the per-row projection enriched with V2 source/
 // shadow scope (LEFT JOIN LATERAL on shadow_binding + source_object_
 // registry). `scope_ambiguous=true` when more than one shadow_binding
@@ -13,24 +15,24 @@ package queries
 // not uniquely determined and the FE should fall back to target_table
 // only.
 type ActivityLogRow struct {
-	ID              uint64  `json:"id"`
-	Operation       string  `json:"operation"`
-	TargetTable     string  `json:"target_table"`
-	SourceDatabase  *string `json:"source_database,omitempty"`
-	SourceSchema    *string `json:"source_schema,omitempty"`
-	SourceNamespace *string `json:"source_namespace,omitempty"`
-	SourceTable     *string `json:"source_table,omitempty"`
-	ShadowSchema    *string `json:"shadow_schema,omitempty"`
-	ShadowTable     *string `json:"shadow_table,omitempty"`
-	ScopeAmbiguous  bool    `json:"scope_ambiguous"`
-	Status          string  `json:"status"`
-	RowsAffected    int64   `json:"rows_affected"`
-	DurationMs      *int    `json:"duration_ms"`
-	Details         any     `json:"details"`
-	ErrorMessage    *string `json:"error_message"`
-	TriggeredBy     string  `json:"triggered_by"`
-	StartedAt       string  `json:"started_at"`
-	CompletedAt     *string `json:"completed_at"`
+	ID              uint64          `json:"id"`
+	Operation       string          `json:"operation"`
+	TargetTable     string          `json:"target_table"`
+	SourceDatabase  *string         `json:"source_database,omitempty"`
+	SourceSchema    *string         `json:"source_schema,omitempty"`
+	SourceNamespace *string         `json:"source_namespace,omitempty"`
+	SourceTable     *string         `json:"source_table,omitempty"`
+	ShadowSchema    *string         `json:"shadow_schema,omitempty"`
+	ShadowTable     *string         `json:"shadow_table,omitempty"`
+	ScopeAmbiguous  bool            `json:"scope_ambiguous"`
+	Status          string          `json:"status"`
+	RowsAffected    int64           `json:"rows_affected"`
+	DurationMs      *int            `json:"duration_ms"`
+	Details         *string         `json:"details"`
+	ErrorMessage    *string         `json:"error_message"`
+	TriggeredBy     string          `json:"triggered_by"`
+	StartedAt       string          `json:"started_at"`
+	CompletedAt     *string         `json:"completed_at"`
 }
 
 // OpStat is one operation bucket in the 24h aggregate (GET

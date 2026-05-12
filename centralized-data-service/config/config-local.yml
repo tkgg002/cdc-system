@@ -117,3 +117,10 @@ airbyte:
 jwt:
   secret: change-me-in-production
   expiration: 24h
+
+debezium:
+  kafkaConnectUrl: http://127.0.0.1:18083
+  connectorName: goopay-mongodb-cdc
+  signalDatabase: centralized-export-service
+  signalCollection: debezium_signal
+  incrementalChunkSize: 1000

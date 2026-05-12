@@ -5,11 +5,11 @@
     "mongodb.connection.string": "mongodb://gpay-mongo:27017/?replicaSet=rs0",
     "mongodb.name": "goopay",
     "database.include.list": "payment-bill-service,centralized-export-service",
-    "collection.include.list": "payment-bill-service.payment-bills,payment-bill-service.refund-requests,payment-bill-service.payment-bill-histories,payment-bill-service.payment-bill-codes,payment-bill-service.payment-bill-events,payment-bill-service.payment-bill-holdings,payment-bill-service.identitycounters,payment-bill-service.refund-requests-histories,centralized-export-service.export-jobs",
+    "collection.include.list": "payment-bill-service.payment-bills,payment-bill-service.refund-requests,payment-bill-service.payment-bill-histories,payment-bill-service.payment-bill-codes,payment-bill-service.payment-bill-events,payment-bill-service.payment-bill-holdings,payment-bill-service.identitycounters,payment-bill-service.refund-requests-histories,centralized-export-service.export-jobs,centralized-export-service.debezium_signal",
     "capture.mode": "change_streams_update_full",
     "topic.prefix": "cdc.goopay",
     "schema.history.internal.kafka.bootstrap.servers": "gpay-kafka:9092",
-    "signal.data.collection": "goopay.debezium_signals",
+    "signal.data.collection": "centralized-export-service.debezium_signal",
 
     "schema.name.adjustment.mode": "avro",
     "field.name.adjustment.mode": "avro",

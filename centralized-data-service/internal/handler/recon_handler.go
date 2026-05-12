@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"centralized-data-service/internal/model"
@@ -27,6 +28,7 @@ type ReconHandler struct {
 	masking     *service.MaskingService
 	backfill    *service.BackfillSourceTsService
 	tsDetector  *service.TimestampDetector // Migration 017 — manual re-detect
+	signal      *service.DebeziumSignalClient
 	natsPub     NatsPublisher
 	logger      *zap.Logger
 }
@@ -74,6 +76,11 @@ func (h *ReconHandler) WithTimestampDetector(td *service.TimestampDetector) *Rec
 
 func (h *ReconHandler) WithMetadataRegistry(metadata service.MetadataRegistry) *ReconHandler {
 	h.metadata = metadata
+	return h
+}
+
+func (h *ReconHandler) WithSignalClient(s *service.DebeziumSignalClient) *ReconHandler {
+	h.signal = s
 	return h
 }
 
@@ -273,12 +280,13 @@ func (h *ReconHandler) HandleDebeziumSignal(msg *nats.Msg) {
 		Database   string `json:"database"`
 		Collection string `json:"collection"`
 		Table      string `json:"table"`
+		Filter     string `json:"filter"` // optional incremental snapshot filter
 	}
 	json.Unmarshal(msg.Data, &payload)
 
 	h.logger.Info("debezium signal received", zap.String("type", payload.Type), zap.String("table", payload.Table))
 
-	// Determine database + collection
+	// 1. Resolve source database + collection
 	db := payload.Database
 	collection := payload.Collection
 	if payload.Table != "" && db == "" {
@@ -289,27 +297,45 @@ func (h *ReconHandler) HandleDebeziumSignal(msg *nats.Msg) {
 		}
 	}
 
-	if db == "" || h.mongoClient == nil {
-		h.logActivity("debezium-signal", payload.Table, "error", 0, fmt.Errorf("database or mongodb not configured"))
+	if db == "" || collection == "" {
+		h.logActivity("debezium-signal", payload.Table, "error", 0, fmt.Errorf("database or collection could not be resolved"))
 		return
 	}
 
-	// Insert signal into MongoDB debezium_signal collection
-	signalDoc := bson.M{
-		"type": "execute-snapshot",
-		"data": bson.M{
-			"data-collections": []string{db + "." + collection},
-			"type":             "incremental",
-		},
+	// 2. Dispatch via SignalClient (if wired) or direct MongoDB insert
+	var signalID string
+	var err error
+
+	if h.signal != nil && h.signal.IsConfigured() {
+		// Use the structured client (handles defaults, qualified names, etc.)
+		signalID, err = h.signal.TriggerIncrementalSnapshot(context.Background(), db, collection, payload.Filter)
+	} else {
+		// Fallback: manual MongoDB insert into default "debezium_signal"
+		if h.mongoClient == nil {
+			h.logActivity("debezium-signal", payload.Table, "error", 0, fmt.Errorf("mongodb client not configured"))
+			return
+		}
+		signalDoc := bson.M{
+			"type": "execute-snapshot",
+			"data": bson.M{
+				"data-collections": []string{db + "." + collection},
+				"type":             "incremental",
+			},
+		}
+		coll := h.mongoClient.Database(db).Collection("debezium_signal")
+		var res *mongo.InsertOneResult
+		res, err = coll.InsertOne(context.Background(), signalDoc)
+		if err == nil {
+			signalID = fmt.Sprintf("%v", res.InsertedID)
+		}
 	}
 
-	coll := h.mongoClient.Database(db).Collection("debezium_signal")
-	_, err := coll.InsertOne(context.Background(), signalDoc)
 	if err != nil {
 		h.logActivity("debezium-signal", payload.Table, "error", 0, err)
 		return
 	}
 
+	h.logger.Info("debezium signal dispatched", zap.String("signal_id", signalID), zap.String("table", payload.Table))
 	h.logActivity("debezium-signal", payload.Table, "success", 1, nil)
 }
 
@@ -500,16 +526,35 @@ func (h *ReconHandler) HandleDetectTimestampField(msg *nats.Msg) {
 }
 
 func (h *ReconHandler) resolveTargetTableConfig(targetTable string) *model.TableRegistry {
+	// 1. Try Metadata Registry (cached)
 	if h.metadata != nil {
 		if item := h.metadata.GetTableConfig(targetTable); item != nil {
 			return item
 		}
+		// Try with sd_ prefix fallback for V1
+		if !strings.HasPrefix(targetTable, "sd_") {
+			if item := h.metadata.GetTableConfig("sd_" + targetTable); item != nil {
+				return item
+			}
+		}
+		// 2. Try resolving by SourceTable (V2 modern behavior: lookup shadow by source name)
+		if item := h.metadata.GetTableConfigBySource(targetTable); item != nil {
+			return item
+		}
 	}
-	var entry model.TableRegistry
-	if err := h.db.Where("target_table = ?", targetTable).First(&entry).Error; err != nil {
-		return nil
+
+	// 3. Try V1 cdc_table_registry
+	var v1 model.TableRegistry
+	if err := h.db.Where("target_table = ?", targetTable).First(&v1).Error; err == nil {
+		return &v1
 	}
-	return &entry
+	if !strings.HasPrefix(targetTable, "sd_") {
+		if err := h.db.Where("target_table = ?", "sd_"+targetTable).First(&v1).Error; err == nil {
+			return &v1
+		}
+	}
+
+	return nil
 }
 
 func (h *ReconHandler) resolveTableConfigByID(id uint) *model.TableRegistry {

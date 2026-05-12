@@ -1,0 +1,121 @@
+=== RUN   TestBatchBufferBuildFailedSyncLogMasksTopLevelFields
+--- PASS: TestBatchBufferBuildFailedSyncLogMasksTopLevelFields (0.00s)
+=== RUN   TestBatchBufferBuildFailedSyncLogMasksNestedAndArrayFields
+--- PASS: TestBatchBufferBuildFailedSyncLogMasksNestedAndArrayFields (0.00s)
+=== RUN   TestBatchBufferBuildFailedSyncLogHeuristicMaskingWithoutRegistry
+--- PASS: TestBatchBufferBuildFailedSyncLogHeuristicMaskingWithoutRegistry (0.00s)
+=== RUN   TestSanitizeAdminErrorStripsNewlinesAndTruncates
+--- PASS: TestSanitizeAdminErrorStripsNewlinesAndTruncates (0.00s)
+=== RUN   TestSanitizeAdminResultMapKeepsAllowlistOnly
+--- PASS: TestSanitizeAdminResultMapKeepsAllowlistOnly (0.00s)
+=== RUN   TestSanitizeAdminResultMapSanitizesErrorFieldsAndSortsNewFields
+--- PASS: TestSanitizeAdminResultMapSanitizesErrorFieldsAndSortsNewFields (0.00s)
+=== RUN   TestDLQMessageSerialize
+--- PASS: TestDLQMessageSerialize (0.00s)
+=== RUN   TestDLQHandlerBuildFailedSyncLogMasksTopLevelFields
+--- PASS: TestDLQHandlerBuildFailedSyncLogMasksTopLevelFields (0.00s)
+=== RUN   TestDLQHandlerBuildFailedSyncLogMasksNestedAndArrayFields
+--- PASS: TestDLQHandlerBuildFailedSyncLogMasksNestedAndArrayFields (0.00s)
+=== RUN   TestDLQHandlerHeuristicMaskingWithoutRegistry
+--- PASS: TestDLQHandlerHeuristicMaskingWithoutRegistry (0.00s)
+=== RUN   TestDLQHandlerNormalizeRawJSONSanitizesBeforePersistence
+--- PASS: TestDLQHandlerNormalizeRawJSONSanitizesBeforePersistence (0.00s)
+=== RUN   TestDLQHandlerSanitizeDLQErrorRedactsSensitiveText
+--- PASS: TestDLQHandlerSanitizeDLQErrorRedactsSensitiveText (0.00s)
+=== RUN   TestHandleWithRetrySuccessFirstTry
+--- PASS: TestHandleWithRetrySuccessFirstTry (0.00s)
+=== RUN   TestHandleWithRetryFailAllRetries
+--- PASS: TestHandleWithRetryFailAllRetries (3.00s)
+=== RUN   TestMinimizeBridgePayloadDropsRawDocumentButKeepsMetadata
+--- PASS: TestMinimizeBridgePayloadDropsRawDocumentButKeepsMetadata (0.00s)
+=== RUN   TestMinimizeBridgePayloadFallsBackToChannelTableOnly
+--- PASS: TestMinimizeBridgePayloadFallsBackToChannelTableOnly (0.00s)
+=== RUN   TestMinimizeBridgePayloadUsesTopLevelRecordIDAndSortedFields
+--- PASS: TestMinimizeBridgePayloadUsesTopLevelRecordIDAndSortedFields (0.00s)
+=== RUN   TestExtractSourceAndTable_FromSubject
+=== RUN   TestExtractSourceAndTable_FromSubject/cdc.goopay.goopay_wallet.wallet_transactions
+=== RUN   TestExtractSourceAndTable_FromSubject/cdc.goopay.goopay_payment.payments
+=== RUN   TestExtractSourceAndTable_FromSubject/cdc.goopay.goopay_legacy.legacy_refunds
+=== RUN   TestExtractSourceAndTable_FromSubject/short.subject
+=== RUN   TestExtractSourceAndTable_FromSubject/x
+--- PASS: TestExtractSourceAndTable_FromSubject (0.00s)
+    --- PASS: TestExtractSourceAndTable_FromSubject/cdc.goopay.goopay_wallet.wallet_transactions (0.00s)
+    --- PASS: TestExtractSourceAndTable_FromSubject/cdc.goopay.goopay_payment.payments (0.00s)
+    --- PASS: TestExtractSourceAndTable_FromSubject/cdc.goopay.goopay_legacy.legacy_refunds (0.00s)
+    --- PASS: TestExtractSourceAndTable_FromSubject/short.subject (0.00s)
+    --- PASS: TestExtractSourceAndTable_FromSubject/x (0.00s)
+=== RUN   TestExtractPrimaryKey_MongoObjectId
+--- PASS: TestExtractPrimaryKey_MongoObjectId (0.00s)
+=== RUN   TestExtractPrimaryKey_StringID
+--- PASS: TestExtractPrimaryKey_StringID (0.00s)
+=== RUN   TestExtractPrimaryKey_NumericID
+--- PASS: TestExtractPrimaryKey_NumericID (0.00s)
+=== RUN   TestExtractPrimaryKey_Missing
+--- PASS: TestExtractPrimaryKey_Missing (0.00s)
+=== RUN   TestHandleDelete_FirstTouch_TombstoneInsert
+--- PASS: TestHandleDelete_FirstTouch_TombstoneInsert (0.00s)
+=== RUN   TestHandleDelete_NilBefore_SkipRoute
+--- PASS: TestHandleDelete_NilBefore_SkipRoute (0.00s)
+=== RUN   TestKafkaConsumerDiscover_UnionThreePrefixes
+--- PASS: TestKafkaConsumerDiscover_UnionThreePrefixes (0.00s)
+=== RUN   TestKafkaConsumerDiscover_NoCollisionWhenSameObjectName
+--- PASS: TestKafkaConsumerDiscover_NoCollisionWhenSameObjectName (0.00s)
+=== RUN   TestKafkaConsumerDiscover_RegistryFilterPermissiveOnEmpty
+--- PASS: TestKafkaConsumerDiscover_RegistryFilterPermissiveOnEmpty (0.00s)
+=== RUN   TestKafkaConsumerDiscover_RegistryFilterAppliedWhenSet
+--- PASS: TestKafkaConsumerDiscover_RegistryFilterAppliedWhenSet (0.00s)
+=== RUN   TestKafkaConsumerDiscover_BlankPrefixesIgnored
+--- PASS: TestKafkaConsumerDiscover_BlankPrefixesIgnored (0.00s)
+=== RUN   TestExtractDLQMetadata_KeyID
+--- PASS: TestExtractDLQMetadata_KeyID (0.00s)
+=== RUN   TestExtractDLQMetadata_AfterFallback
+--- PASS: TestExtractDLQMetadata_AfterFallback (0.00s)
+=== RUN   TestExtractDLQMetadata_StringKey
+--- PASS: TestExtractDLQMetadata_StringKey (0.00s)
+=== RUN   TestExtractDLQMetadata_NonJSONValue
+    kafka_consumer_dlq_test.go:76: wrapped raw must contain original text, got {"encoding":"base64","note":"original payload contained binary or invalid utf8","raw_base64":"dGhpcyBpcyBkZWZpbml0ZWx5IG5vdCBKU09O"}
+--- FAIL: TestExtractDLQMetadata_NonJSONValue (0.00s)
+=== RUN   TestKafkaConsumerSanitizeDLQRawJSONMasksTopLevelFields
+--- PASS: TestKafkaConsumerSanitizeDLQRawJSONMasksTopLevelFields (0.00s)
+=== RUN   TestKafkaConsumerSanitizeDLQRawJSONMasksNestedAndArrayFields
+--- PASS: TestKafkaConsumerSanitizeDLQRawJSONMasksNestedAndArrayFields (0.00s)
+=== RUN   TestKafkaConsumerSanitizeDLQRawJSONHeuristicMaskingWithoutRegistry
+--- PASS: TestKafkaConsumerSanitizeDLQRawJSONHeuristicMaskingWithoutRegistry (0.00s)
+=== RUN   TestKafkaConsumerWriteDLQSanitizesErrorText
+--- PASS: TestKafkaConsumerWriteDLQSanitizesErrorText (0.00s)
+=== RUN   TestUnwrapAvroUnion_String
+--- PASS: TestUnwrapAvroUnion_String (0.00s)
+=== RUN   TestUnwrapAvroUnion_Null
+--- PASS: TestUnwrapAvroUnion_Null (0.00s)
+=== RUN   TestUnwrapAvroUnion_PlainString
+--- PASS: TestUnwrapAvroUnion_PlainString (0.00s)
+=== RUN   TestUnwrapAvroUnion_MultiKeyPassThrough
+--- PASS: TestUnwrapAvroUnion_MultiKeyPassThrough (0.00s)
+=== RUN   TestUnwrapAvroUnionMap_UnwrapsAllFields
+--- PASS: TestUnwrapAvroUnionMap_UnwrapsAllFields (0.00s)
+=== RUN   TestDLQWriteBeforeACK_SemanticContract
+    kafka_consumer_dlq_test.go:231: write-before-ACK contract enforced in kafka_consumer.go consume loop
+--- PASS: TestDLQWriteBeforeACK_SemanticContract (0.00s)
+=== RUN   TestTopicSetEqual
+=== RUN   TestTopicSetEqual/equal_unordered
+=== RUN   TestTopicSetEqual/different_length
+=== RUN   TestTopicSetEqual/different_content
+=== RUN   TestTopicSetEqual/both_empty
+--- PASS: TestTopicSetEqual (0.00s)
+    --- PASS: TestTopicSetEqual/equal_unordered (0.00s)
+    --- PASS: TestTopicSetEqual/different_length (0.00s)
+    --- PASS: TestTopicSetEqual/different_content (0.00s)
+    --- PASS: TestTopicSetEqual/both_empty (0.00s)
+=== RUN   TestRefreshTopics_NoChange
+--- PASS: TestRefreshTopics_NoChange (0.00s)
+=== RUN   TestRefreshTopics_AddTopic
+--- PASS: TestRefreshTopics_AddTopic (0.00s)
+=== RUN   TestReconHandlerSanitizeRetryRawJSONMasksTopLevelFields
+--- PASS: TestReconHandlerSanitizeRetryRawJSONMasksTopLevelFields (0.00s)
+=== RUN   TestReconHandlerSanitizeRetryRawJSONMasksNestedAndArrayFields
+--- PASS: TestReconHandlerSanitizeRetryRawJSONMasksNestedAndArrayFields (0.00s)
+=== RUN   TestReconHandlerSanitizeRetryRawJSONHeuristicMaskingWithoutRegistry
+--- PASS: TestReconHandlerSanitizeRetryRawJSONHeuristicMaskingWithoutRegistry (0.00s)
+FAIL
+FAIL	centralized-data-service/internal/handler	3.379s
+FAIL

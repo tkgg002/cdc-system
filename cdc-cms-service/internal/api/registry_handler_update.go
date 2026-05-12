@@ -71,6 +71,14 @@ func (h *RegistryHandler) Update(c *fiber.Ctx) error {
 			if _, syncErr := h.bus.Execute(ctx, commands.V2SyncCommand{Entry: updated}); syncErr != nil {
 				h.logger.Error("post-update v2 sync failed", zap.Uint("registry_id", existing.ID), zap.Error(syncErr))
 			}
+
+			// Automated sync trigger: If it's a Debezium source, restart the connector to pick up changes
+			if updated.SyncEngine == "debezium" {
+				h.logger.Info("triggering debezium restart for auto-sync", zap.Uint("registry_id", updated.ID))
+				if _, derr := h.bus.Dispatch(ctx, commands.RestartDebeziumCommand{}); derr != nil {
+					h.logger.Warn("auto-sync restart dispatch failed", zap.Error(derr))
+				}
+			}
 		}
 	}
 

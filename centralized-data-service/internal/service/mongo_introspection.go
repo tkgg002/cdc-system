@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
@@ -17,8 +16,7 @@ func NewMongoIntrospectionService() *MongoIntrospectionService {
 	return &MongoIntrospectionService{}
 }
 
-func (s *MongoIntrospectionService) DiscoverDatabases(host, port string) ([]string, error) {
-	uri := fmt.Sprintf("mongodb://%s:%s", host, port)
+func (s *MongoIntrospectionService) DiscoverDatabases(uri string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -36,8 +34,7 @@ func (s *MongoIntrospectionService) DiscoverDatabases(host, port string) ([]stri
 	return databases, nil
 }
 
-func (s *MongoIntrospectionService) DiscoverCollections(host, port, dbName string) ([]string, error) {
-	uri := fmt.Sprintf("mongodb://%s:%s", host, port)
+func (s *MongoIntrospectionService) DiscoverCollections(uri, dbName string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

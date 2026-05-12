@@ -69,3 +69,262 @@
 2026/05/12 10:35:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
 2026/05/12 10:35:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
 2026/05/12 10:35:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:35:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:35:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:36:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:36:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:36:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:36:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:36:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:36:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:37:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:37:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:37:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:37:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:37:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:37:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:38:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:38:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:38:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:38:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:38:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:38:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:39:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:39:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:39:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:39:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:39:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:39:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:40:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:40:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:40:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:40:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:40:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:40:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:41:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+
+2026/05/12 10:41:05 [32m/Users/trainguyen/Documents/work/cdc-system/centralized-data-service/internal/server/worker_server.go:620 [33mSLOW SQL >= 200ms
+[0m[31;1m[246.569ms] [33m[rows:6][35m SELECT * FROM "cdc_system"."cdc_worker_schedule" WHERE is_enabled = true[0m
+2026/05/12 10:41:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"info","ts":1778557278.583852,"msg":"scan-fields dispatch","target":"sd_export_jobs","source":"export-jobs","engine":"debezium","effective_id":1,"source_object_id":1}
+2026/05/12 10:41:20 Post "http://otel-collector:4318/v1/logs": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:41:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:41:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:41:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:41:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"info","ts":1778557324.957294,"msg":"debezium signal received","type":"","table":"export-jobs"}
+2026/05/12 10:42:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+
+2026/05/12 10:42:06 [32m/Users/trainguyen/Documents/work/cdc-system/centralized-data-service/internal/server/worker_server.go:620 [33mSLOW SQL >= 200ms
+[0m[31;1m[431.478ms] [33m[rows:6][35m SELECT * FROM "cdc_system"."cdc_worker_schedule" WHERE is_enabled = true[0m
+2026/05/12 10:42:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:42:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:42:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+
+2026/05/12 10:42:37 [32m/Users/trainguyen/Documents/work/cdc-system/centralized-data-service/internal/service/transmute_scheduler.go:99 [33mSLOW SQL >= 200ms
+[0m[31;1m[1014.879ms] [33m[rows:1][35m SELECT set_config('app.fencing_machine_id', '0', true), set_config('app.fencing_token', '0', true)[0m
+
+2026/05/12 10:42:39 [32m/Users/trainguyen/Documents/work/cdc-system/centralized-data-service/internal/service/transmute_scheduler.go:118 [33mSLOW SQL >= 200ms
+[0m[31;1m[1784.629ms] [33m[rows:-][35m SELECT ts.id, mb.master_table, ts.cron_expr
+			   FROM cdc_system.transmute_schedule ts
+			   JOIN cdc_system.master_binding mb ON mb.id = ts.master_binding_id
+			  WHERE ts.is_enabled = true
+			    AND ts.mode = 'cron'
+			    AND mb.is_active = true
+			    AND mb.schema_status = 'approved'
+			    AND (ts.next_run_at IS NULL OR ts.next_run_at <= NOW())
+			  FOR UPDATE SKIP LOCKED
+			  LIMIT 10[0m
+2026/05/12 10:42:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"error","ts":1778557369.561446,"msg":"kafka fetch error","error":"[16] Not Coordinator For Group: the broker returns this error code if it receives an offset fetch or commit request for a group that it is not a coordinator for"}
+2026/05/12 10:42:50 Post "http://otel-collector:4318/v1/logs": dial tcp: lookup otel-collector: no such host
+
+2026/05/12 10:42:50 [32m/Users/trainguyen/Documents/work/cdc-system/centralized-data-service/internal/repository/source_object_registry_repo.go:27 [33mSLOW SQL >= 200ms
+[0m[31;1m[308.189ms] [33m[rows:1][35m SELECT * FROM "cdc_system"."source_object_registry" WHERE is_active = true ORDER BY normalized_source_key[0m
+{"level":"info","ts":1778557370.9892778,"msg":"V2 metadata registry reloaded","sources":1,"connections":5,"shadow_bindings":1,"v2_mapping_rules":15}
+{"level":"info","ts":1778557371.137845,"msg":"discovered kafka topics (multi-prefix union)","prefixes":["cdc.gpay","cdc.goopay","cdc.mariadb","cdc.market"],"topics":["cdc.goopay.centralized-export-service.export-jobs","cdc.goopay_export.centralized-export-service.export-jobs"],"debezium_tables":1,"count_cdc.gpay":0,"count_cdc.goopay":2,"count_cdc.mariadb":0,"count_cdc.market":0}
+2026/05/12 10:42:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:43:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+
+2026/05/12 10:43:05 [32m/Users/trainguyen/Documents/work/cdc-system/centralized-data-service/internal/server/worker_server.go:620 [33mSLOW SQL >= 200ms
+[0m[31;1m[278.565ms] [33m[rows:6][35m SELECT * FROM "cdc_system"."cdc_worker_schedule" WHERE is_enabled = true[0m
+{"level":"error","ts":1778557390.589398,"msg":"kafka fetch error","error":"[16] Not Coordinator For Group: the broker returns this error code if it receives an offset fetch or commit request for a group that it is not a coordinator for"}
+2026/05/12 10:43:16 Post "http://otel-collector:4318/v1/logs": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:43:16 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:43:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:43:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"error","ts":1778557415.610222,"msg":"kafka fetch error","error":"[16] Not Coordinator For Group: the broker returns this error code if it receives an offset fetch or commit request for a group that it is not a coordinator for"}
+2026/05/12 10:43:40 Post "http://otel-collector:4318/v1/logs": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:43:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"error","ts":1778557431.1651719,"msg":"kafka fetch error","error":"[16] Not Coordinator For Group: the broker returns this error code if it receives an offset fetch or commit request for a group that it is not a coordinator for"}
+
+2026/05/12 10:43:52 [32m/Users/trainguyen/Documents/work/cdc-system/centralized-data-service/internal/repository/source_object_registry_repo.go:27 [33mSLOW SQL >= 200ms
+[0m[31;1m[428.767ms] [33m[rows:1][35m SELECT * FROM "cdc_system"."source_object_registry" WHERE is_active = true ORDER BY normalized_source_key[0m
+
+2026/05/12 10:43:53 [32m/Users/trainguyen/Documents/work/cdc-system/centralized-data-service/internal/repository/connection_registry_repo.go:21 [33mSLOW SQL >= 200ms
+[0m[31;1m[269.701ms] [33m[rows:5][35m SELECT * FROM "cdc_system"."connection_registry" ORDER BY connection_code[0m
+{"level":"info","ts":1778557433.4092329,"msg":"V2 metadata registry reloaded","sources":1,"connections":5,"shadow_bindings":1,"v2_mapping_rules":15}
+{"level":"info","ts":1778557433.441664,"msg":"discovered kafka topics (multi-prefix union)","prefixes":["cdc.gpay","cdc.goopay","cdc.mariadb","cdc.market"],"topics":["cdc.goopay.centralized-export-service.export-jobs","cdc.goopay_export.centralized-export-service.export-jobs"],"debezium_tables":1,"count_cdc.gpay":0,"count_cdc.goopay":2,"count_cdc.mariadb":0,"count_cdc.market":0}
+2026/05/12 10:43:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:43:55 Post "http://otel-collector:4318/v1/logs": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:44:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:44:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:44:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:44:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:44:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:44:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:45:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:45:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:45:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:45:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:45:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:45:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:46:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:46:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:46:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:46:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:46:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:46:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:47:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:47:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:47:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:47:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:47:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:47:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:48:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:48:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:48:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:48:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:48:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:48:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:49:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:49:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:49:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:49:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:49:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:49:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:50:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:50:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:50:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:50:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:50:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:50:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:51:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:51:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:51:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:51:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:51:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:51:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:52:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:52:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:52:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:52:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:52:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:52:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:53:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:53:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:53:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:53:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:53:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:53:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:54:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:54:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:54:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:54:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:54:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:54:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:55:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:55:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:55:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:55:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:55:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:55:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:56:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:56:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:56:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:56:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:56:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:56:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:57:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:57:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:57:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:57:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:57:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:57:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:58:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:58:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:58:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:58:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:58:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:58:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:59:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:59:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:59:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:59:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:59:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 10:59:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:00:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:00:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:00:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:00:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:00:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:00:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:01:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:01:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:01:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:01:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:01:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:01:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:02:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:02:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:02:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:02:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:02:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:02:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:03:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:03:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:03:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:03:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:03:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:03:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:04:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:04:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:04:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:04:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:04:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:04:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:05:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:05:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:05:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:05:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:05:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:05:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:06:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:06:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:06:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:06:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:06:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:06:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:07:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:07:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:07:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:07:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:07:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:07:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:08:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:08:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:08:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:08:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:08:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:08:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:09:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:09:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:09:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:09:35 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+{"level":"info","ts":1778558976.78558,"msg":"debezium signal received","type":"","table":"export-jobs"}
+2026/05/12 11:09:45 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:09:55 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:10:05 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:10:15 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+2026/05/12 11:10:25 failed to upload metrics: Post "http://otel-collector:4318/v1/metrics": dial tcp: lookup otel-collector: no such host
+signal: killed

@@ -42,7 +42,7 @@ system:
   natsMonitorUrl: http://localhost:18222
   prometheusUrl: ""
   kafkaExporterUrl: ""
-  debeziumConnector: goopay-mongodb-cdc
+  debeziumConnector: goopay
   healthCacheKey: system_health:snapshot
 
 jwt:

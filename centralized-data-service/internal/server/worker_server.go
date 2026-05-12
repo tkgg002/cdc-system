@@ -384,6 +384,7 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 			signalClient = service.NewDebeziumSignalClient(
 				mongoClientShared,
 				service.DebeziumSignalConfig{
+					SignalDatabase:       cfg.Debezium.SignalDatabase,
 					SignalCollection:     cfg.Debezium.SignalCollection,
 					ConnectorStatusURL:   cfg.Debezium.ConnectorStatusURL,
 					IncrementalChunkSize: cfg.Debezium.IncrementalChunkSize,
@@ -400,7 +401,8 @@ func NewWorkerServer(cfg *config.AppConfig, logger *zap.Logger) (*WorkerServer, 
 		reconHandler := handler.NewReconHandler(reconCore, db, mongoClientForRecon, schemaAdapter, logger).
 			WithHealer(reconHealerShared).
 			WithMetadataRegistry(registrySvc).
-			WithMaskingService(maskingSvc)
+			WithMaskingService(maskingSvc).
+			WithSignalClient(signalClient)
 
 		// Backfill (_source_ts) service — tier 4 runs. Requires Mongo
 		// client + registry to resolve source → dest pairs.

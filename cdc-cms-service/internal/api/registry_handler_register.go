@@ -65,6 +65,14 @@ func (h *RegistryHandler) Register(c *fiber.Ctx) error {
 		if _, err := h.bus.Execute(dispatchCtx, syncCmd); err != nil {
 			h.logger.Error("post-register v2 sync failed", zap.Uint("registry_id", created.ID), zap.Error(err))
 		}
+
+		// Automated sync trigger: If it's a Debezium source, restart the connector to pick up the new collection
+		if created.SyncEngine == "debezium" {
+			h.logger.Info("triggering debezium restart for new source auto-sync", zap.Uint("registry_id", created.ID))
+			if _, derr := h.bus.Dispatch(dispatchCtx, commands.RestartDebeziumCommand{}); derr != nil {
+				h.logger.Warn("auto-sync restart dispatch failed", zap.Error(derr))
+			}
+		}
 	}
 
 	return c.Status(202).JSON(fiber.Map{
