@@ -79,10 +79,10 @@ func (r *ActivityLogReadRepo) projectionColumns() string {
 			COALESCE(al.details::text, '{}') as details,
 			al.error_message,
 			al.triggered_by,
-			TO_CHAR(al.started_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS started_at,
+			TO_CHAR(al.started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS started_at,
 			CASE
 				WHEN al.completed_at IS NULL THEN NULL
-				ELSE TO_CHAR(al.completed_at, 'YYYY-MM-DD"T"HH24:MI:SSOF')
+				ELSE TO_CHAR(al.completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
 			END AS completed_at
 	`
 }
