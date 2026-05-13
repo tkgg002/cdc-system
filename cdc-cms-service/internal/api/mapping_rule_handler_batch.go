@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"strconv"
 
 	"cdc-cms-service/internal/api/dto"
@@ -37,17 +38,26 @@ func (h *MappingRuleHandler) BatchUpdate(c *fiber.Ctx) error {
 		if err != nil {
 			continue
 		}
-		idem := ""
-		if baseIdem != "" {
-			idem = baseIdem + ":rule:" + strconv.Itoa(int(id))
+		// Per-command idempotency suffix: the job table has UNIQUE
+		// (idempotency_key); reusing one key for both update-status and
+		// alter-column makes the second Dispatch silently short-circuit.
+		ctxFor := func(suffix string) context.Context {
+			idem := ""
+			if baseIdem != "" {
+				idem = baseIdem + ":rule:" + strconv.Itoa(int(id)) + ":" + suffix
+			}
+			return messaging.WithMetadata(c.UserContext(), username, c.Get("X-Correlation-Id"), idem)
 		}
-		ctx := messaging.WithMetadata(c.UserContext(), username, c.Get("X-Correlation-Id"), idem)
-		h.bus.Execute(ctx, commands.UpdateMappingRuleCommand{ID: int64(id), Status: body.Status, UpdatedBy: username})
+		h.bus.Execute(ctxFor("status"), commands.UpdateMappingRuleCommand{ID: int64(id), Status: body.Status, UpdatedBy: username})
 
 		if body.Status == "approved" && rule.ShadowTable != nil {
-			h.bus.Dispatch(ctx, commands.AlterColumnCommand{TargetTable: *rule.ShadowTable, ColumnName: rule.TargetColumn, DataType: rule.DataType, Action: "add"})
+			schema := ""
+			if rule.ShadowSchema != nil {
+				schema = *rule.ShadowSchema
+			}
+			h.bus.Dispatch(ctxFor("alter"), commands.AlterColumnCommand{TargetSchema: schema, TargetTable: *rule.ShadowTable, ColumnName: rule.TargetColumn, DataType: rule.DataType, Action: "add"})
 			if body.AutoBackfill {
-				h.bus.Dispatch(ctx, commands.BackfillCommand{TargetTable: *rule.ShadowTable, SourceField: rule.SourceField, TargetColumn: rule.TargetColumn, DataType: rule.DataType})
+				h.bus.Dispatch(ctxFor("backfill"), commands.BackfillCommand{TargetTable: *rule.ShadowTable, SourceField: rule.SourceField, TargetColumn: rule.TargetColumn, DataType: rule.DataType})
 			}
 			h.natsClient.PublishReload(*rule.ShadowTable, username, "batch_update", "")
 		}

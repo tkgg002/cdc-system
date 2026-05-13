@@ -989,8 +989,10 @@ func (h *CommandHandler) HandleBatchTransform(msg *nats.Msg) {
 		sourceTable = targetTable
 	}
 
-	// 2. Get active mapping rules
-	rules, err := h.mappingRepo.GetByTable(context.Background(), sourceTable)
+	// 2. Get active mapping rules. Reads from mapping_rule_v2 because the
+	// FE/CMS approve flow writes there; the legacy cdc_mapping_rules
+	// table is unused (V2 migration complete).
+	rules, err := h.mappingV2Repo.GetActiveRulesBySourceTable(context.Background(), sourceTable)
 	if err != nil || len(rules) == 0 {
 		h.publishResult(msg, CommandResult{
 			Command:     "batch-transform",
@@ -1009,8 +1011,9 @@ func (h *CommandHandler) HandleBatchTransform(msg *nats.Msg) {
 			continue
 		}
 		castExpr := buildCastExpr(rule.SourceField, rule.DataType)
-		setClauses = append(setClauses, fmt.Sprintf("%s = %s", rule.TargetColumn, castExpr))
-		whereClauses = append(whereClauses, fmt.Sprintf("%s IS NULL", rule.TargetColumn))
+		quotedCol := quoteCommandIdent(rule.TargetColumn)
+		setClauses = append(setClauses, fmt.Sprintf("%s = %s", quotedCol, castExpr))
+		whereClauses = append(whereClauses, fmt.Sprintf("%s IS NULL", quotedCol))
 	}
 
 	if len(setClauses) == 0 {
@@ -1032,7 +1035,13 @@ func (h *CommandHandler) HandleBatchTransform(msg *nats.Msg) {
 		strings.Join(whereClauses, " OR "),
 	)
 
-	result := h.db.Exec(transformSQL)
+	// Shadow tables live in the shadow plane (cdc_shadow:5436), not the
+	// destination plane. Same root cause as HandleAlterColumn fix.
+	execDB := h.db
+	if h.shadowDB != nil {
+		execDB = h.shadowDB
+	}
+	result := execDB.Exec(transformSQL)
 	if result.Error != nil {
 		h.publishResult(msg, CommandResult{
 			Command:     "batch-transform",
@@ -1671,10 +1680,11 @@ func (h *CommandHandler) HandleRestartDebezium(msg *nats.Msg) {
 // identifiers).
 func (h *CommandHandler) HandleAlterColumn(msg *nats.Msg) {
 	var payload struct {
-		TargetTable string `json:"target_table"`
-		ColumnName  string `json:"column_name"`
-		DataType    string `json:"data_type"`
-		Action      string `json:"action"`
+		TargetSchema string `json:"target_schema"`
+		TargetTable  string `json:"target_table"`
+		ColumnName   string `json:"column_name"`
+		DataType     string `json:"data_type"`
+		Action       string `json:"action"`
 	}
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		h.publishResultWithSubject(msg, "cdc.result.alter-column", CommandResult{Command: "alter-column", Status: "error", Error: "invalid payload"})
@@ -1684,6 +1694,16 @@ func (h *CommandHandler) HandleAlterColumn(msg *nats.Msg) {
 		h.publishResultWithSubject(msg, "cdc.result.alter-column", CommandResult{Command: "alter-column", TargetTable: payload.TargetTable, Status: "error", Error: "invalid identifier"})
 		return
 	}
+	if payload.TargetSchema != "" && !isSafeIdent(payload.TargetSchema) {
+		h.publishResultWithSubject(msg, "cdc.result.alter-column", CommandResult{Command: "alter-column", TargetTable: payload.TargetTable, Status: "error", Error: "invalid schema identifier"})
+		return
+	}
+	// Schema-qualify when provided so DDL does not depend on session
+	// search_path (lesson 2026-04-28 / 2026-05-11).
+	qualifiedTable := fmt.Sprintf(`"%s"`, payload.TargetTable)
+	if payload.TargetSchema != "" {
+		qualifiedTable = fmt.Sprintf(`"%s"."%s"`, payload.TargetSchema, payload.TargetTable)
+	}
 	var sql string
 	switch strings.ToLower(payload.Action) {
 	case "add":
@@ -1691,21 +1711,28 @@ func (h *CommandHandler) HandleAlterColumn(msg *nats.Msg) {
 			h.publishResultWithSubject(msg, "cdc.result.alter-column", CommandResult{Command: "alter-column", TargetTable: payload.TargetTable, Status: "error", Error: "invalid data_type"})
 			return
 		}
-		sql = fmt.Sprintf(`ALTER TABLE "%s" ADD COLUMN IF NOT EXISTS "%s" %s`, payload.TargetTable, payload.ColumnName, payload.DataType)
+		sql = fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS "%s" %s`, qualifiedTable, payload.ColumnName, payload.DataType)
 	case "drop":
-		sql = fmt.Sprintf(`ALTER TABLE "%s" DROP COLUMN IF EXISTS "%s"`, payload.TargetTable, payload.ColumnName)
+		sql = fmt.Sprintf(`ALTER TABLE %s DROP COLUMN IF EXISTS "%s"`, qualifiedTable, payload.ColumnName)
 	case "alter_type":
 		if !isSafeType(payload.DataType) {
 			h.publishResultWithSubject(msg, "cdc.result.alter-column", CommandResult{Command: "alter-column", TargetTable: payload.TargetTable, Status: "error", Error: "invalid data_type"})
 			return
 		}
-		sql = fmt.Sprintf(`ALTER TABLE "%s" ALTER COLUMN "%s" TYPE %s USING "%s"::%s`,
-			payload.TargetTable, payload.ColumnName, payload.DataType, payload.ColumnName, payload.DataType)
+		sql = fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN "%s" TYPE %s USING "%s"::%s`,
+			qualifiedTable, payload.ColumnName, payload.DataType, payload.ColumnName, payload.DataType)
 	default:
 		h.publishResultWithSubject(msg, "cdc.result.alter-column", CommandResult{Command: "alter-column", TargetTable: payload.TargetTable, Status: "error", Error: "action must be add|drop|alter_type"})
 		return
 	}
-	if err := h.db.Exec(sql).Error; err != nil {
+	// Shadow tables live in the shadow plane (gpay-postgres-shadow:5436
+	// cdc_shadow), not the destination plane. Other handlers in this file
+	// already use h.shadowDB for shadow DDL (see line 150).
+	execDB := h.db
+	if h.shadowDB != nil {
+		execDB = h.shadowDB
+	}
+	if err := execDB.Exec(sql).Error; err != nil {
 		h.publishResultWithSubject(msg, "cdc.result.alter-column", CommandResult{Command: "alter-column", TargetTable: payload.TargetTable, Status: "error", Error: err.Error()})
 		h.writeActivity("alter-column", payload.TargetTable, "error", 0, nil, err.Error())
 		return

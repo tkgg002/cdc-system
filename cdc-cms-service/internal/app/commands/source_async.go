@@ -114,12 +114,16 @@ func (c DetectTimestampFieldCommand) Validate() error {
 // one subject.
 
 // AlterColumnCommand publishes cdc.cmd.alter-column.
+// TargetSchema is optional for backward-compat; when provided the worker
+// schema-qualifies the ALTER TABLE statement so it does not depend on the
+// connection's search_path (lesson 2026-04-28 / 2026-05-11).
 type AlterColumnCommand struct {
 	ports.AsyncCommandMixin
-	TargetTable string `json:"target_table"`
-	ColumnName  string `json:"column_name"`
-	DataType    string `json:"data_type"`
-	Action      string `json:"action"`
+	TargetSchema string `json:"target_schema,omitempty"`
+	TargetTable  string `json:"target_table"`
+	ColumnName   string `json:"column_name"`
+	DataType     string `json:"data_type"`
+	Action       string `json:"action"`
 }
 
 func (AlterColumnCommand) Type() string { return "mapping.alter-column" }

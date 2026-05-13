@@ -60,14 +60,22 @@ func (h *UpdateMappingRuleHandler) Handle(ctx context.Context, c ports.Command) 
 		return nil, errors.New("mapping rule store not ready")
 	}
 
+	// shadow_table lives in cdc_system.shadow_binding (JOINed via
+	// source_object_id). Selecting it directly off mapping_rule_v2
+	// raises 42703 — the column was relocated when the binding became a
+	// first-class entity.
 	var rule struct {
 		ShadowTable *string `gorm:"column:shadow_table"`
 	}
 	err := h.db.WithContext(ctx).
-		Table("cdc_system.mapping_rule_v2").
-		Select("shadow_table").
-		Where("id = ?", cmd.ID).
-		Take(&rule).Error
+		Raw(`SELECT sb.shadow_table
+		     FROM cdc_system.mapping_rule_v2 mr
+		     LEFT JOIN cdc_system.shadow_binding sb
+		       ON sb.source_object_id = mr.source_object_id
+		      AND sb.is_active = TRUE
+		     WHERE mr.id = ?
+		     LIMIT 1`, cmd.ID).
+		Scan(&rule).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrMappingRuleNotFound
