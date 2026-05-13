@@ -1221,17 +1221,33 @@ func (h *CommandHandler) HandlePeriodicScan(msg *nats.Msg) {
 }
 
 // buildCastExpr builds a PostgreSQL expression to extract a typed value from _raw_data JSONB.
+// JSONB/JSON targets must use the `->` operator (returns jsonb) rather than `->>` (returns text);
+// otherwise UPDATE fails with 42804 "expression is of type text" against a jsonb column.
+// Timestamp targets must handle the Mongo BSON-Date convention where the value lands in JSON
+// as a raw number (epoch milliseconds); ::TIMESTAMP on the text form blows up with 22008.
 func buildCastExpr(field, dataType string) string {
+	switch strings.ToLower(dataType) {
+	case "jsonb":
+		return fmt.Sprintf("(_raw_data->'%s')", field)
+	case "json":
+		return fmt.Sprintf("((_raw_data->'%s')::JSON)", field)
+	}
 	base := fmt.Sprintf("(_raw_data->>'%s')", field)
 	switch strings.ToLower(dataType) {
-	case "integer", "int", "int4", "int8", "bigint", "smallint":
+	case "integer", "int", "int4", "smallint":
 		return fmt.Sprintf("(%s)::INTEGER", base)
+	case "int8", "bigint":
+		return fmt.Sprintf("(%s)::BIGINT", base)
 	case "numeric", "decimal", "float", "float8", "double precision":
 		return fmt.Sprintf("(%s)::NUMERIC", base)
 	case "boolean", "bool":
 		return fmt.Sprintf("(%s)::BOOLEAN", base)
 	case "timestamp", "timestamp without time zone", "timestamp with time zone", "timestamptz":
-		return fmt.Sprintf("(%s)::TIMESTAMP", base)
+		return fmt.Sprintf(
+			"(CASE WHEN jsonb_typeof(_raw_data->'%s') = 'number' "+
+				"THEN to_timestamp((%s)::BIGINT / 1000.0) AT TIME ZONE 'UTC' "+
+				"ELSE (%s)::TIMESTAMP END)",
+			field, base, base)
 	default:
 		return fmt.Sprintf("(%s)::TEXT", base)
 	}
